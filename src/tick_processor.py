@@ -7,17 +7,17 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 
-# Make src/ importable so we can call _vacate_title_on_retirement from
-# app.py. app.py imports tkinter, but importing the module itself does
-# NOT require a display (only tk.Tk() does), so this is safe in
-# headless contexts. There is no circular-import risk because app.py
-# does NOT import tick_processor.
+# Make src/ importable so we can call _vacate_title_on_retirement and
+# generate_fighter from app.py. app.py imports tkinter, but importing
+# the module itself does NOT require a display (only tk.Tk() does), so
+# this is safe in headless contexts. There is no circular-import risk
+# because app.py does NOT import tick_processor.
 sys.path.insert(0, str(BASE_DIR))
-from app import _vacate_title_on_retirement  # noqa: E402
+from app import _vacate_title_on_retirement, generate_fighter  # noqa: E402
 
 
 # ----------------------------------------------------------------
-# Retirement checking (Task ID 12).
+# Retirement checking (Task ID 12, extended in Task ID 14).
 #
 # Fighters age. When a fighter crosses age 40 with declining
 # career_health, they retire. Age 45 is mandatory retirement
@@ -25,18 +25,23 @@ from app import _vacate_title_on_retirement  # noqa: E402
 # (delegated to app._vacate_title_on_retirement). A news item is
 # written per retirement.
 #
+# Task ID 14 added the regen hook: each retirement also generates a
+# replacement fighter (via app.generate_fighter) with the same
+# fight_style_archetype_id (style DNA). The new fighter enters as a
+# free agent and a regen_lineage row is recorded linking the retiring
+# fighter to the replacement (for future memory-resurfacing features).
+#
 # This function runs on every tick (called from run_tick after the
 # clock advance). It does NOT commit — the caller commits. This
 # matches the existing pattern in app.py where every helper leaves
 # the commit to the outermost caller.
 #
 # Foundation for:
-#   - Task 14 (regen) — retiring fighters need to be replaced by new
-#     generated fighters.
+#   - Task 14 (regen) — retiring fighters trigger generate_fighter.
 #   - Task 11 (titles) — retiring champions vacate the belt (handled
 #     by _vacate_title_on_retirement in app.py).
-#   - The "playable forever" loop — without retirement, the roster is
-#     static and no room exists for regen fighters.
+#   - The "playable forever" loop — without retirement + regen, the
+#     roster shrinks permanently and eventually empties.
 # ----------------------------------------------------------------
 
 def _check_retirements(conn, current_date):
@@ -55,6 +60,11 @@ def _check_retirements(conn, current_date):
         (b) Vacate any title they hold (call
             _vacate_title_on_retirement from app.py).
         (c) Write a news item announcing the retirement.
+        (d) Task ID 14: generate a replacement fighter via
+            app.generate_fighter (inherits the retiring fighter's
+            fight_style_archetype_id as style DNA; enters as a free
+            agent) and record a regen_lineage row linking the retiring
+            fighter to the replacement.
       - Returns the list of retired fighter_ids (for logging/testing).
 
     Args:
@@ -77,8 +87,12 @@ def _check_retirements(conn, current_date):
     # health. LEFT JOIN fighter_career so a fighter without a career
     # row (defensive — shouldn't happen with the seed) is treated as
     # career_health=100 (healthy, won't retire on the health rule).
+    # We also pull fight_style_archetype_id so we can pass it to the
+    # regen_lineage INSERT below (Task ID 14 — the new replacement
+    # fighter inherits the retiring fighter's style DNA).
     rows = conn.execute(
         "SELECT f.fighter_id, f.first_name, f.last_name, f.date_of_birth, "
+        "f.fight_style_archetype_id, "
         "COALESCE(fc.career_health, 100) AS career_health "
         "FROM fighters f "
         "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
@@ -101,7 +115,7 @@ def _check_retirements(conn, current_date):
         src_id = src_row[0]
 
     retired = []
-    for fighter_id, first_name, last_name, dob, career_health in rows:
+    for fighter_id, first_name, last_name, dob, style_archetype_id, career_health in rows:
         # Compute age: years between dob and current_date, adjusted
         # down by 1 if the birthday hasn't happened yet this year.
         # Comparing (month, day) tuples handles leap-year babies
@@ -165,6 +179,50 @@ def _check_retirements(conn, current_date):
                 current_date,
             ),
         )
+
+        # ----------------------------------------------------------------
+        # Regen engine (Task ID 14). When a fighter retires, generate
+        # a replacement fighter from the name pools with the same
+        # fight_style_archetype_id (style DNA). The new fighter enters
+        # as a free agent (current_promotion_id=NULL, is_active=1,
+        # is_retired=0) so they appear in Task 13's Free Agents tab
+        # and can be signed by any promotion. Record the regen_lineage
+        # row linking the retiring fighter to the replacement (for
+        # future memory-resurfacing features in Stage 3+).
+        #
+        # The replacement fighter's fighter_id is appended to the
+        # `retired` list returned by this function (alongside the
+        # retiring fighter's fighter_id) so the caller can log both.
+        # We don't append to `retired` here — that list is "fighters
+        # retired on this tick", and the replacement isn't retired.
+        # The replacement_id is logged via a separate print in
+        # run_tick (see below).
+        # ----------------------------------------------------------------
+        replacement_id = generate_fighter(
+            conn,
+            style_dna_source_id=fighter_id,  # inherit retiring fighter's style archetype
+            current_date=current_date,
+        )
+        if replacement_id is not None:
+            # Record the regen lineage. style_dna_archetype_id is the
+            # retiring fighter's archetype (already fetched above) —
+            # the replacement inherits it via generate_fighter.
+            # INSERT OR IGNORE protects against the (theoretically
+            # impossible) case of duplicate (retiring, replacement)
+            # pairs — the UNIQUE constraint on regen_lineage enforces
+            # this. regen_date is the sim date the retirement happened
+            # on (NOT CURRENT_TIMESTAMP which is wall-clock time).
+            conn.execute(
+                "INSERT OR IGNORE INTO regen_lineage (retiring_fighter_id, "
+                "replacement_fighter_id, style_dna_archetype_id, regen_date) "
+                "VALUES (?, ?, ?, ?)",
+                (fighter_id, replacement_id, style_archetype_id, current_date),
+            )
+            # Note: the replacement enters as a free agent. They'll
+            # appear in the Free Agents tab (Task 13) and can be signed
+            # by any promotion. No further action needed here — the
+            # news item about the new prospect is written by
+            # generate_fighter itself.
 
         retired.append(fighter_id)
 
@@ -348,13 +406,27 @@ def run_tick(conn, tick_type="day", steps=1):
         # eligible today, not yesterday). The function does NOT commit
         # — the conn.commit() below covers both the clock UPDATE and
         # any retirement side effects (fighters UPDATE, titles UPDATE,
-        # news_items INSERTs). Prints a one-line log per tick if any
-        # fighters were retired, mirroring the pattern in
-        # resolve_next_fight's auto-schedule warning.
+        # news_items INSERTs). Task ID 14: each retirement also triggers
+        # generate_fighter() which adds a replacement fighter + writes
+        # the new-prospect news item + records the regen_lineage row.
+        # Prints a one-line log per tick if any fighters were retired,
+        # mirroring the pattern in resolve_next_fight's auto-schedule
+        # warning.
         retired = _check_retirements(conn, dt.strftime("%Y-%m-%d"))
         if retired:
             print(f"  Retired {len(retired)} fighter(s) on "
                   f"{dt.strftime('%Y-%m-%d')}: {retired}")
+            # Task ID 14: log regens alongside retirements. Each retired
+            # fighter spawned a replacement — query regen_lineage to
+            # find the replacement_ids.
+            regens = conn.execute(
+                "SELECT retiring_fighter_id, replacement_fighter_id "
+                "FROM regen_lineage WHERE regen_date = ?",
+                (dt.strftime("%Y-%m-%d"),),
+            ).fetchall()
+            if regens:
+                print(f"  Generated {len(regens)} replacement fighter(s) on "
+                      f"{dt.strftime('%Y-%m-%d')}: {regens}")
         # Task ID 13: check for contract expiry on every tick. Runs
         # AFTER _check_retirements so a retired-and-contract-expiring
         # fighter is handled correctly: _check_retirements sets

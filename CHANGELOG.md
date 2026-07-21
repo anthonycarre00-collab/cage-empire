@@ -9,6 +9,128 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Name pools + regen lineage + memory links tables (Task ID 14).
+  Three new tables ship in this task:
+  * `name_pools` — first_male / first_female / last / nickname
+    entries drawn from by `generate_fighter()` when a fighter retires.
+    UNIQUE (name_type, name_value) so re-seeding is idempotent.
+  * `regen_lineage` — one row per (retiring_fighter_id,
+    replacement_fighter_id) pair, recording the style_dna_archetype_id
+    inherited and the regen_date. Foundation for future memory-
+    resurfacing features (style echoes, gym heirs, regional rivals,
+    successors) in Stage 3+. UNIQUE (retiring_fighter_id,
+    replacement_fighter_id).
+  * `fighter_memory_links` — created but NOT populated in this task.
+    The table exists so future memory-resurfacing tasks can write to
+    it without needing a schema change. CHECK constraint on link_type
+    (style_echo / gym_heir / regional_rival / successor) and
+    link_strength (0-100, default 50). UNIQUE (fighter_id,
+    linked_fighter_id, link_type).
+  Note on `used_names`: the spec calls for a separate `used_names`
+  table to prevent duplicate fighter names. We chose to check
+  uniqueness against the existing `fighters` table (first_name +
+  last_name combination) in `generate_fighter()` instead. This is
+  simpler, avoids a redundant table, and stays correct when fighters
+  are deleted (their names become available again). Documented in
+  the `name_pools` schema comment in `build_db.py`.
+- `generate_fighter(conn, style_dna_source_id=None, current_date=None,
+  gender='male')` module-scope function in `app.py` (Task ID 14) —
+  the core regen function. Called by `tick_processor._check_retirements`
+  for each retiring fighter (see "Changed" below). Generates a new
+  fighter from the name pools with the same
+  `fight_style_archetype_id` (style DNA) as the retiring fighter. The
+  new fighter: has a unique (first, last) name checked against the
+  `fighters` table; has a nickname (50% chance); has a random DOB
+  making them 18-26 years old; has default attributes (all 50),
+  personality (all 50), career (0-0-0, career_health=100); enters as
+  a FREE AGENT (`current_promotion_id=NULL`, `is_active=1`,
+  `is_retired=0`); does NOT get a rankings row at generation time
+  (the `rankings` table requires a `promotion_id`; the row is created
+  defensively by `_update_rankings_after_resolution` when the fighter
+  is signed and fights their first bout — see decision D2 in the
+  function's section comment); does NOT get a contract (the player
+  or AI signs them via Task 13's `sign_free_agent`); triggers a
+  "new prospect" news item (`topic='prospect'`,
+  `published_at=current_date`) so the player sees them arrive in the
+  Free Agents tab. Returns the new `fighter_id` (int) on success,
+  `None` on failure (name pool exhausted — all (first, last)
+  combinations already used). Style DNA inheritance: if
+  `style_dna_source_id` is provided, the new fighter inherits that
+  fighter's `fight_style_archetype_id`; if None, picks a random
+  archetype. The `gender` parameter ('male' or 'female', default
+  'male') determines which first-name pool to draw from. Design
+  decisions D1-D5 documented in the function's section comment
+  (D1: no used_names table; D2: no rankings row at gen time;
+  D3: no memory resurfacing yet; D4: default attrs/personality/career;
+  D5: DOB computed by subtracting age_years * 365 days + random
+  offset within the year — approximate, doesn't account for leap
+  years, but close enough for sim purposes).
+- `_seed_name_pools(conn)` helper in `seed_data.py` (Task ID 14) —
+  seeds the `name_pools` table with 25 male first names (Aaron..Zane),
+  25 female first names (Aria..Zoe), 26 last names (Adams..Zhang), and
+  20 nicknames (The Hammer..Vortex). Total: 96 name pool entries.
+  Uses `INSERT OR IGNORE` so re-seeding is idempotent. Module-level
+  constants `MALE_FIRST_COUNT=25`, `FEMALE_FIRST_COUNT=25`,
+  `LAST_COUNT=26`, `NICKNAME_COUNT=20` expose the counts to the
+  seed summary print without duplicating the lists.
+- Regen on retirement: retiring fighters generate a replacement
+  (Task ID 14). `tick_processor._check_retirements()` now calls
+  `generate_fighter(conn, style_dna_source_id=fighter_id,
+  current_date=current_date)` for each retiring fighter, after the
+  retirement UPDATE + title vacation + retirement news item. If the
+  replacement is successfully generated, a `regen_lineage` row is
+  inserted linking the retiring fighter to the replacement (with the
+  retiring fighter's `fight_style_archetype_id` as
+  `style_dna_archetype_id`). The replacement enters as a free agent —
+  they appear in Task 13's Free Agents tab and can be signed by any
+  promotion. The replacement is logged via a one-line print in
+  `run_tick` ("Generated N replacement fighter(s) on YYYY-MM-DD: [...]"),
+  mirroring the retirement log pattern. The retirement path now
+  fetches `f.fight_style_archetype_id` in the SELECT so it can pass
+  it to the regen_lineage INSERT (it was previously not fetched).
+  No new commit — the existing `conn.commit()` in `run_tick` covers
+  the regen side effects (fighter INSERT, attributes/personality/
+  career INSERTs, news_items INSERT, regen_lineage INSERT).
+- New prospect news items (Task ID 14) — written by
+  `generate_fighter()` when a replacement fighter is generated.
+  Headline: `"New prospect <first> <last>[ "<nickname>"] emerges on
+  the scene"`. Body: a brief announcement that the new talent has
+  arrived as a free agent. `topic='prospect'` (so the future news
+  engine in Task 23 can filter prospect-arrival news), `fighter_id`
+  set, `published_at=current_date` (the sim date the regen happened
+  on, NOT `CURRENT_TIMESTAMP` which is wall-clock time). Falls back
+  to today's date string if `current_date` is None (e.g., when
+  `generate_fighter` is called directly without a date — see case K
+  of `test_regen.py`).
+- Acceptance test `scripts/test_regen.py` (Task ID 14) — tests
+  schema (version, migration name prefix, 3 new tables exist, total
+  table count == 37, name_pools CHECK constraint, regen_lineage
+  UNIQUE constraint, fighter_memory_links CHECK constraint),
+  name pool seed (all 4 name_types populated, >= 20 per type, total
+  == 96), `generate_fighter()` basic (returns valid fighter_id,
+  free agent status, unique name, style DNA inherited, default
+  attrs/personality/career, age 18-26, prospect news item written),
+  `generate_fighter()` without style DNA source (random archetype
+  picked), name uniqueness (10 calls produce 10 unique names, no
+  collision with seeded fighters), name pool exhaustion (shrunk pool
+  → second call returns None with warning), regen on retirement
+  (5 → 6 fighters, regen_lineage row created, style DNA inherited,
+  free agent, appears in `get_free_agents_for_display`, prospect
+  news), multiple regens on one tick (3 retirements → 8 fighters,
+  3 regen_lineage rows, 3 prospect news), female gender (gender
+  == 'female', first name from first_female pool), regression
+  (Tasks 3-13 side effects still work — fight_history +2, title
+  transferred, event completed, new event scheduled, no retirements
+  on a normal tick, no regens on contract expiry — regen = retirement
+  only), and `generate_fighter()` callable directly (no args beyond
+  conn, returns valid fighter_id, free agent). 11 cases A-K.
+  Uses `build_db.CODE_SCHEMA_VERSION` dynamically (no hardcoded
+  version string — same pattern as `test_retirement.py`,
+  `test_free_agency.py`, `test_rankings.py`, `test_contracts.py`,
+  `test_titles.py`, `test_schema_versioning.py`,
+  `test_fight_history.py`). Uses `random.seed(42)` for reproducibility
+  where relevant. Prints PASS/FAIL summary. Exit 0 = all PASS,
+  1 = any FAIL.
 - Contract expiry logic (Task ID 13) — when a fighter's contract
   `end_date` passes the current sim date, the contract transitions to
   `'expired'` and the fighter becomes a free agent
@@ -425,6 +547,42 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.8.0 → 1.9.0 (Task ID 14) — sixth MINOR bump
+  in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0, Task ID 10's 1.4.0 →
+  1.5.0, Task ID 11's 1.5.0 → 1.6.0, Task ID 12's 1.6.0 → 1.7.0,
+  Task ID 13's 1.7.0 → 1.8.0). Adds three new tables (`name_pools`,
+  `regen_lineage`, `fighter_memory_links`) — the regen engine
+  group. This closes the Stage 2 lifecycle loop: contracts → fights →
+  rankings → titles → retirement → regen → free agency → signing →
+  contracts (repeat forever). Total tables: 34 → 37.
+- `build_db.py` migration name updated from `v1_8_0_add_free_agency`
+  to `v1_9_0_add_regen` (Task ID 14). Note: build_db.py records only
+  the latest migration name on each rebuild (it drops + recreates the
+  DB file before recording), so the schema_migrations table contains
+  only the current task's migration after a rebuild — this is a known
+  quirk of the build_db.py design and is unchanged by Task 14.
+- `_check_retirements()` now generates a replacement fighter for each
+  retirement (Task ID 14). The retirement path now: (1) sets
+  is_active=0/is_retired=1, (2) vacates any held titles via
+  `_vacate_title_on_retirement`, (3) writes the retirement news item,
+  (4) calls `generate_fighter(conn, style_dna_source_id=fighter_id,
+  current_date=current_date)` to create a replacement with the same
+  style DNA, (5) inserts a `regen_lineage` row linking the retiring
+  fighter to the replacement. The replacement enters as a free agent
+  (Task 13's Free Agents tab) — no signing logic here, the player or
+  AI signs them. The retirement path now also fetches
+  `f.fight_style_archetype_id` in the SELECT (was not fetched before)
+  so it can be passed to the regen_lineage INSERT. The function does
+  NOT commit — the existing `conn.commit()` in `run_tick` covers all
+  the regen side effects. Prints a one-line log per tick if any
+  replacements were generated ("Generated N replacement fighter(s) on
+  YYYY-MM-DD: [...]"), mirroring the retirement log pattern.
+- Seed now populates name pools (Task ID 14). `_seed_name_pools(conn)`
+  inserts 25 male first names, 25 female first names, 26 last names,
+  and 20 nicknames (96 total). Uses `INSERT OR IGNORE` so re-seeding
+  is idempotent. Seed summary printout updated to include the name
+  pool count: `Name pool: 96 names (25 male first, 25 female first,
+  26 last, 20 nicknames)`.
 - Schema version bumped 1.7.0 → 1.8.0 (Task ID 13) — fifth MINOR bump
   in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0, Task ID 10's 1.4.0 →
   1.5.0, Task ID 11's 1.5.0 → 1.6.0, Task ID 12's 1.6.0 → 1.7.0).

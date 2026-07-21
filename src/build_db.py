@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.8.0"
+CODE_SCHEMA_VERSION = "1.9.0"
 
 
 def _parse_version(v):
@@ -524,6 +524,59 @@ CREATE TABLE IF NOT EXISTS titles (
     updated_at                   TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (promotion_id, weight_class_id)
 );
+
+-- ----------------------------------------------------------------
+-- Name pools + regen lineage (added in v1.9.0, Task ID 14).
+-- When a fighter retires, a replacement is generated from the name
+-- pools with a similar style DNA. The new fighter enters as a free
+-- agent (current_promotion_id=NULL, is_active=1, is_retired=0) and
+-- appears in Task 13's Free Agents tab, ready to be signed by any
+-- promotion. regen_lineage tracks which retiring fighter spawned
+-- which replacement (for future memory-resurfacing features in
+-- Stage 3+). fighter_memory_links exists in this task but is NOT
+-- populated — memory resurfacing (style echoes, gym heirs, regional
+-- rivals, successors) is a future enhancement that will write to
+-- this table without needing a schema change.
+--
+-- Note on `used_names`: the spec calls for a separate `used_names`
+-- table to prevent duplicate fighter names. We chose to check
+-- uniqueness against the existing `fighters` table (first_name +
+-- last_name combination) instead. This is simpler, avoids a
+-- redundant table, and stays correct when fighters are deleted
+-- (their names become available again, which matches the design
+-- intent — the world doesn't keep a permanent name registry). The
+-- generate_fighter() function in app.py implements this check.
+-- See docs/SCHEMA_DRIFT_AUDIT.md §M and docs/STAGES.md Task ID 14.
+-- ----------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS name_pools (
+    name_pool_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_type       TEXT NOT NULL CHECK (name_type IN ('first_male', 'first_female', 'last', 'nickname')),
+    name_value      TEXT NOT NULL,
+    region          TEXT,
+    created_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (name_type, name_value)
+);
+
+CREATE TABLE IF NOT EXISTS regen_lineage (
+    regen_lineage_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    retiring_fighter_id    INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    replacement_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    style_dna_archetype_id INTEGER REFERENCES style_archetypes(style_archetype_id) ON DELETE SET NULL,
+    regen_date             TEXT NOT NULL,
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (retiring_fighter_id, replacement_fighter_id)
+);
+
+CREATE TABLE IF NOT EXISTS fighter_memory_links (
+    memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor')),
+    link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
+    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fighter_id, linked_fighter_id, link_type)
+);
 """
 
 def main():
@@ -564,7 +617,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_free_agency",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_regen",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

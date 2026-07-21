@@ -146,6 +146,97 @@ def _seed_vacant_title(conn, promotion_id, weight_class_id):
     )
     return cur.lastrowid
 
+
+# ----------------------------------------------------------------
+# Name pool seeder (Task ID 14). Seeds the `name_pools` table with
+# first names (male + female), last names, and nicknames. The regen
+# engine (generate_fighter in app.py) draws from these pools when a
+# fighter retires — the new replacement fighter inherits the retiring
+# fighter's fight_style_archetype_id (style DNA) but gets a fresh
+# identity from the name pools.
+#
+# Pool sizes (kept modest on purpose — the seed is a starting point,
+# not an exhaustive registry; the mod tools in Task 29 will let users
+# import larger name packs):
+#   - 25 male first names (Aaron..Zane)
+#   - 25 female first names (Aria..Zoe)
+#   - 26 last names (Adams..Zhang)
+#   - 20 nicknames (The Hammer..Vortex)
+#
+# Total: 96 name pool entries. Each (name_type, name_value) pair is
+# UNIQUE so re-seeding is idempotent (INSERT OR IGNORE).
+#
+# Note on uniqueness: the spec calls for a separate `used_names`
+# table to prevent duplicate fighter names. We chose to check
+# uniqueness against the existing `fighters` table (first_name +
+# last_name combination) in generate_fighter() instead. This is
+# simpler and avoids a redundant table — see build_db.py's name_pools
+# schema comment for the full rationale.
+# ----------------------------------------------------------------
+
+# Module-level constants so the seed summary print in main() can
+# reference the counts without duplicating the lists.
+MALE_FIRST_COUNT = 25
+FEMALE_FIRST_COUNT = 25
+LAST_COUNT = 26
+NICKNAME_COUNT = 20
+
+
+def _seed_name_pools(conn):
+    """Seed the name_pools table with initial name data (Task ID 14).
+
+    Inserts 25 male first names, 25 female first names, 26 last names,
+    and 20 nicknames. Uses INSERT OR IGNORE so the seed is idempotent
+    — re-running seed_data.py won't crash on the UNIQUE (name_type,
+    name_value) constraint.
+
+    Returns the total number of name pool entries inserted (96 if all
+    were new, fewer if some already existed from a prior partial run).
+    """
+    male_firsts = ["Aaron", "Brian", "Carlos", "Diego", "Ethan", "Frank", "George",
+                   "Hiro", "Ivan", "Jake", "Kai", "Liam", "Miguel", "Nathan",
+                   "Omar", "Pablo", "Quinn", "Ryan", "Sergio", "Tyler", "Victor",
+                   "William", "Xavier", "Yuki", "Zane"]
+    female_firsts = ["Aria", "Bianca", "Carmen", "Diana", "Elena", "Fatima",
+                     "Grace", "Hana", "Isabel", "Jade", "Keiko", "Luna",
+                     "Maya", "Nadia", "Olivia", "Priya", "Quinn", "Rosa",
+                     "Sakura", "Tara", "Uma", "Valentina", "Willow", "Yara", "Zoe"]
+    lasts = ["Adams", "Brennan", "Castillo", "Diaz", "Evans", "Fischer", "Garcia",
+             "Hayashi", "Ibrahim", "Jensen", "Kim", "Lopez", "Martinez", "Nakamura",
+             "O'Brien", "Patel", "Quinn", "Rivera", "Silva", "Tanaka", "Ueda",
+             "Vargas", "Walsh", "Xu", "Yamamoto", "Zhang"]
+    nicknames = ["The Hammer", "Voltage", "The Drill", "Whisper", "Anvil",
+                 "The Storm", "Ice", "The Wolf", "Shadow", "Titan",
+                 "The Kid", "Smasher", "Venom", "The Bull", "Phoenix",
+                 "Razor", "The Ghost", "Fury", "The Cobra", "Vortex"]
+
+    for name in male_firsts:
+        conn.execute(
+            "INSERT OR IGNORE INTO name_pools (name_type, name_value) "
+            "VALUES ('first_male', ?)",
+            (name,),
+        )
+    for name in female_firsts:
+        conn.execute(
+            "INSERT OR IGNORE INTO name_pools (name_type, name_value) "
+            "VALUES ('first_female', ?)",
+            (name,),
+        )
+    for name in lasts:
+        conn.execute(
+            "INSERT OR IGNORE INTO name_pools (name_type, name_value) "
+            "VALUES ('last', ?)",
+            (name,),
+        )
+    for name in nicknames:
+        conn.execute(
+            "INSERT OR IGNORE INTO name_pools (name_type, name_value) "
+            "VALUES ('nickname', ?)",
+            (name,),
+        )
+
+    return len(male_firsts) + len(female_firsts) + len(lasts) + len(nicknames)
+
 def main():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -247,6 +338,15 @@ def main():
         # ----------------------------------------------------------------
         _seed_vacant_title(conn, rfl_promo_id, wc_id)  # Task ID 11
 
+        # ----------------------------------------------------------------
+        # Seed the name pools (Task ID 14). The regen engine
+        # (generate_fighter in app.py) draws from these pools when a
+        # fighter retires. 96 entries: 25 male firsts + 25 female
+        # firsts + 26 lasts + 20 nicknames. Uses INSERT OR IGNORE so
+        # re-seeding is idempotent.
+        # ----------------------------------------------------------------
+        _seed_name_pools(conn)  # Task ID 14
+
         conn.commit()
         print("Seeded database.")
         print(f"  Alpha Combat: {len(fighter_ids)} fighters, 1 event, 1 fight scheduled")
@@ -254,6 +354,9 @@ def main():
         print(f"  Contracts: {len(fighter_ids) + len(rfl_fighter_ids)} fighter contracts + 1 staff contract")
         print(f"  Rankings: {len(fighter_ids) + len(rfl_fighter_ids)} initial ranking rows (all at 1000.0)")
         print(f"  Titles: 2 vacant (1 per promotion per weight class)")
+        print(f"  Name pool: {MALE_FIRST_COUNT + FEMALE_FIRST_COUNT + LAST_COUNT + NICKNAME_COUNT} names "
+              f"({MALE_FIRST_COUNT} male first, {FEMALE_FIRST_COUNT} female first, "
+              f"{LAST_COUNT} last, {NICKNAME_COUNT} nicknames)")
 
 if __name__ == "__main__":
     main()

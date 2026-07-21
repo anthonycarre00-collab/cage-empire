@@ -1836,6 +1836,281 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
     return contract_id
 
 
+# ----------------------------------------------------------------
+# Regen engine (Task ID 14).
+#
+# When a fighter retires (Task 12), the roster shrinks by one. Without
+# regen, the roster eventually empties as fighters age out — breaking
+# the "playable forever" loop. generate_fighter() creates a replacement
+# fighter from the name pools with a similar style DNA (same
+# fight_style_archetype_id as the retiring fighter). The new fighter
+# enters as a FREE AGENT (current_promotion_id=NULL, is_active=1,
+# is_retired=0) so they appear in Task 13's Free Agents tab and can be
+# signed by any promotion.
+#
+# Called from tick_processor._check_retirements() for each retiring
+# fighter. The caller records the regen_lineage row linking the
+# retiring fighter to the replacement.
+#
+# Design choices (documented for future maintainers):
+#   D1. No `used_names` table — uniqueness is checked against the
+#       existing `fighters` table (first_name + last_name combination).
+#       This is simpler than maintaining a separate registry and stays
+#       correct when fighters are deleted (their names become available
+#       again). See build_db.py's name_pools schema comment.
+#   D2. No rankings row at generation time — the new fighter is a free
+#       agent with no promotion, and the rankings table requires a
+#       promotion_id (NOT NULL). When the player or AI signs them via
+#       Task 13's sign_free_agent, the next fight resolution will call
+#       _update_rankings_after_resolution which uses _get_or_create_ranking_row
+#       to create the rankings row defensively on the fly.
+#   D3. No memory resurfacing yet — the fighter_memory_links table
+#       exists but is NOT populated by this function. Memory resurfacing
+#       (style echoes, gym heirs, regional rivals, successors) is a
+#       future enhancement. This task just generates a fresh fighter
+#       with the same style archetype as the retiring fighter.
+#   D4. The new fighter enters with default attributes (all 50),
+#       personality (all 50), and career (0-0-0, career_health=100).
+#       Future Stage 3 tasks (training camps, scouting) will give them
+#       growth potential — for now they're a generic prospect.
+#   D5. The new fighter's DOB makes them 18-26 years old (young
+#       prospect). Computed by subtracting age_years * 365 days + a
+#       random offset within the year from the current_date. Approximate
+#       (doesn't account for leap years) but close enough for sim
+#       purposes — the age is recomputed from DOB when needed.
+# ----------------------------------------------------------------
+
+def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='male'):
+    """Generate a new fighter from the name pool with a similar style DNA.
+
+    Called by the retirement path (Task ID 14) when a fighter retires.
+    The new fighter:
+      - Has a unique name (first + last) drawn from the name pools,
+        checked against existing fighters to avoid duplicates.
+      - Has a nickname drawn from the nickname pool (50% chance of
+        having one).
+      - Has the same fight_style_archetype_id as the retiring fighter
+        (style DNA). If style_dna_source_id is None, picks a random
+        archetype.
+      - Has a random DOB making them 18-26 years old (young prospect).
+      - Has default attributes (all 50), personality (all 50), and
+        career (0-0-0, career_health=100).
+      - Enters as a FREE AGENT (current_promotion_id=NULL, is_active=1,
+        is_retired=0).
+      - Does NOT get a rankings row at generation time (rankings
+        require a promotion_id; the row is created defensively by
+        _update_rankings_after_resolution when the fighter is signed
+        and fights their first fight — see D2 above).
+      - Does NOT get a contract (they're a free agent — the player or
+        AI signs them via Task 13's sign_free_agent).
+      - Is assigned to a random weight class (for now — future
+        matchmaking will refine this).
+      - Is assigned to NO gym (current_gym_id=NULL is fine — future
+        training camp features in Task 16 will assign gyms).
+      - Triggers a "new prospect" news item so the player sees them
+        arrive in the Free Agents tab.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        style_dna_source_id: the retiring fighter's fighter_id. The
+            new fighter inherits their fight_style_archetype_id. If
+            None, picks a random archetype.
+        current_date: ISO date string 'YYYY-MM-DD' for the regen
+            news item's published_at timestamp and for computing the
+            new fighter's DOB. If None, uses today's wall-clock date
+            via datetime.now().
+        gender: 'male' or 'female'. Determines which first name pool
+            to draw from. Default 'male'.
+
+    Returns:
+        New fighter_id (int) on success, None on failure (e.g., name
+        pool exhausted — all name combinations already used).
+    """
+    # 1. Pick a first name from the appropriate pool.
+    name_type = 'first_male' if gender == 'male' else 'first_female'
+    firsts = conn.execute(
+        "SELECT name_value FROM name_pools WHERE name_type = ?",
+        (name_type,),
+    ).fetchall()
+    if not firsts:
+        print(f"Warning: name pool empty for {name_type} — cannot generate fighter.")
+        return None
+
+    # 2. Pick a last name.
+    lasts = conn.execute(
+        "SELECT name_value FROM name_pools WHERE name_type = 'last'"
+    ).fetchall()
+    if not lasts:
+        print("Warning: name pool empty for last — cannot generate fighter.")
+        return None
+
+    # 3. Find a unique (first, last) combination not already in the
+    #    fighters table. Shuffle both lists so different calls produce
+    #    different names (random.shuffle is in-place, so we convert
+    #    tuples to lists first). Walks the cartesian product looking
+    #    for the first unused combination. With 25 firsts × 26 lasts
+    #    = 650 possible combinations vs. ~5-20 active fighters, the
+    #    pool is effectively infinite for any realistic playthrough —
+    #    but the defensive None return path exists for the test that
+    #    artificially shrinks the pool.
+    first_list = [f[0] for f in firsts]
+    last_list = [l[0] for l in lasts]
+    random.shuffle(first_list)
+    random.shuffle(last_list)
+    chosen_first = None
+    chosen_last = None
+    for f in first_list:
+        for l in last_list:
+            existing = conn.execute(
+                "SELECT 1 FROM fighters WHERE first_name = ? AND last_name = ?",
+                (f, l),
+            ).fetchone()
+            if existing is None:
+                chosen_first, chosen_last = f, l
+                break
+        if chosen_first is not None:
+            break
+    if chosen_first is None:
+        print("Warning: all name combinations exhausted — cannot generate unique fighter.")
+        return None
+
+    # 4. Pick a nickname (50% chance of having one).
+    nickname = None
+    if random.random() < 0.5:
+        nicks = conn.execute(
+            "SELECT name_value FROM name_pools WHERE name_type = 'nickname'"
+        ).fetchall()
+        if nicks:
+            nickname = random.choice(nicks)[0]
+
+    # 5. Determine style archetype (style DNA). If a retiring fighter
+    #    was specified, inherit their fight_style_archetype_id.
+    #    Otherwise pick a random archetype.
+    style_archetype_id = None
+    if style_dna_source_id is not None:
+        row = conn.execute(
+            "SELECT fight_style_archetype_id FROM fighters WHERE fighter_id = ?",
+            (style_dna_source_id,),
+        ).fetchone()
+        if row:
+            style_archetype_id = row[0]
+    if style_archetype_id is None:
+        # Pick a random archetype (defensive: if no archetypes exist,
+        # style_archetype_id stays None — the column is nullable).
+        row = conn.execute(
+            "SELECT style_archetype_id FROM style_archetypes ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+        style_archetype_id = row[0] if row else None
+
+    # 6. Determine personality archetype (random).
+    row = conn.execute(
+        "SELECT personality_archetype_id FROM personality_archetypes "
+        "ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    pers_archetype_id = row[0] if row else None
+
+    # 7. Compute DOB (18-26 years old). Approximate: subtract
+    #    age_years * 365 days + a random offset within the year. Does
+    #    not account for leap years but the resulting DOB is "close
+    #    enough" — age is recomputed from DOB whenever needed.
+    if current_date:
+        try:
+            current_dt = datetime.strptime(current_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            current_dt = datetime.now()
+    else:
+        current_dt = datetime.now()
+    age_years = random.randint(18, 26)
+    dob_dt = current_dt - timedelta(days=age_years * 365 + random.randint(0, 364))
+    dob = dob_dt.strftime("%Y-%m-%d")
+
+    # 8. Pick a random weight class (defensive: if no weight classes
+    #    exist, wc_id stays None — the column is nullable).
+    row = conn.execute(
+        "SELECT weight_class_id FROM weight_classes ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    wc_id = row[0] if row else None
+
+    # 9. Insert the fighter as a free agent. current_promotion_id=NULL
+    #    and current_gym_id=NULL — they enter the world unsigned and
+    #    unaffiliated. is_active=1 (they're available to be booked
+    #    once signed), is_retired=0 (they're a fresh prospect).
+    fid = conn.execute(
+        "INSERT INTO fighters (first_name, last_name, nickname, gender, "
+        "date_of_birth, weight_class_id, current_gym_id, current_promotion_id, "
+        "fight_style_archetype_id, personality_archetype_id, "
+        "is_active, is_retired) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, 0)",
+        (chosen_first, chosen_last, nickname, gender, dob, wc_id,
+         style_archetype_id, pers_archetype_id),
+    ).lastrowid
+
+    # 10. Insert default attributes, personality, career rows. The
+    #     fighters table's UNIQUE constraint on fighter_id in each of
+    #     these tables ensures one row per fighter. Defaults from the
+    #     schema: punch_power=cardio=fight_iq=chin=50 (attributes),
+    #     aggression=composure=morale=50 (personality),
+    #     record_wins=losses=draws=0, career_health=100 (career).
+    conn.execute("INSERT INTO fighter_attributes (fighter_id) VALUES (?)", (fid,))
+    conn.execute("INSERT INTO fighter_personality (fighter_id) VALUES (?)", (fid,))
+    conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
+
+    # 11. NO rankings row at generation time. See D2 above — the
+    #     rankings table requires a promotion_id (NOT NULL), and the
+    #     new fighter is a free agent. _get_or_create_ranking_row in
+    #     app.py creates the rankings row on the fly when the fighter
+    #     is signed and fights their first bout.
+
+    # 12. Write a news item about the new prospect. Direct INSERT
+    #     (same pattern as _check_retirements, _vacate_title_on_retirement,
+    #     sign_free_agent — avoids pulling in app.write_news from
+    #     this same module). topic='prospect' so the future news
+    #     engine (Task 23) can filter prospect-arrival news.
+    src = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()
+    if src is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src[0]
+
+    nick_str = f' "{nickname}"' if nickname else ''
+    headline = f"New prospect {chosen_first} {chosen_last}{nick_str} emerges on the scene"
+    body = (f"A new talent, {chosen_first} {chosen_last}{nick_str}, has arrived "
+            f"as a free agent looking for a promotion to sign with.")
+    # published_at: prefer the explicit current_date (the sim date the
+    # regen happened on). If None (caller didn't pass one), fall back to
+    # today's wall-clock date. The news_items.published_at column is
+    # NOT NULL with a DEFAULT of CURRENT_TIMESTAMP, but we explicitly
+    # pass a value here so the caller controls the timestamp. Direct
+    # callers (e.g., the test in case K) that omit current_date get
+    # today's date — matching the pattern in app.write_news which also
+    # omits published_at (letting the DEFAULT apply, which is wall-clock
+    # time). For consistency with the rest of the regen path which
+    # passes the sim date, we use today's date string instead of relying
+    # on the DEFAULT (so the published_at is a clean YYYY-MM-DD, not a
+    # full CURRENT_TIMESTAMP).
+    if current_date:
+        published_at = current_date
+    else:
+        published_at = current_dt.strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, sentiment, "
+        "topic, fighter_id, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "neutral", "prospect", fid, published_at),
+    )
+
+    # 13. Return the new fighter_id. The caller (tick_processor's
+    #     _check_retirements) writes the regen_lineage row linking the
+    #     retiring fighter to this replacement.
+    return fid
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
