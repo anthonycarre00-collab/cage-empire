@@ -80,6 +80,36 @@ def _seed_default_staff_contract(conn, staff_id, promotion_id, role, start_date=
     )
     return contract_id
 
+
+# ----------------------------------------------------------------
+# Initial ranking seeder (Task ID 10). Each fighter gets an initial
+# `rankings` row at rating=1000.0 in their current weight class and
+# current promotion. This is the starting ELO baseline — everyone
+# enters at the same rating, and `_update_rankings_after_resolution()`
+# in app.py adjusts ratings on every fight resolution. Foundation
+# for Task ID 11 (titles), Task ID 14 (regen — new fighters enter at
+# the bottom at 1000.0), and Task ID 22 (rivalries — ranking
+# proximity boosts heat).
+# ----------------------------------------------------------------
+
+def _seed_initial_ranking(conn, fighter_id, weight_class_id, promotion_id):
+    """Create an initial rankings row for a fighter.
+
+    Inserts one row into `rankings` with rating=1000.0,
+    fights_count=0, wins=0, losses=0, draws=0. Uses INSERT OR IGNORE
+    so the seed is idempotent — re-running seed_data.py after a
+    partial failure won't crash on the UNIQUE (fighter_id,
+    weight_class_id, promotion_id) constraint. Returns the ranking_id
+    (or None if the row already existed and INSERT OR IGNORE skipped).
+    """
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO rankings (fighter_id, weight_class_id, "
+        "promotion_id, rating, fights_count, wins, losses, draws) "
+        "VALUES (?, ?, ?, 1000.0, 0, 0, 0, 0)",
+        (fighter_id, weight_class_id, promotion_id),
+    )
+    return cur.lastrowid
+
 def main():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -118,6 +148,7 @@ def main():
             conn.execute("INSERT INTO fighter_personality (fighter_id) VALUES (?)", (fid,))
             conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
             _seed_default_fighter_contract(conn, fid, promo_id)  # Task ID 9
+            _seed_initial_ranking(conn, fid, wc_id, promo_id)    # Task ID 10
 
         staff_id = one(conn, "INSERT INTO staff (first_name, last_name, age, nation_id, role_type, specialty, promotion_id) VALUES (?, ?, ?, ?, ?, ?, ?)", ("Nina", "Cross", 41, nation_id, "commentator", "analysis", promo_id))
         conn.execute("INSERT INTO broadcast_staff (staff_id, on_air_role) VALUES (?, ?)", (staff_id, "play_by_play"))
@@ -160,12 +191,14 @@ def main():
             conn.execute("INSERT INTO fighter_personality (fighter_id) VALUES (?)", (fid,))
             conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
             _seed_default_fighter_contract(conn, fid, rfl_promo_id)  # Task ID 9
+            _seed_initial_ranking(conn, fid, wc_id, rfl_promo_id)   # Task ID 10
 
         conn.commit()
         print("Seeded database.")
         print(f"  Alpha Combat: {len(fighter_ids)} fighters, 1 event, 1 fight scheduled")
         print(f"  Rival Fight League: {len(rfl_fighter_ids)} fighters (inert, no events)")
         print(f"  Contracts: {len(fighter_ids) + len(rfl_fighter_ids)} fighter contracts + 1 staff contract")
+        print(f"  Rankings: {len(fighter_ids) + len(rfl_fighter_ids)} initial ranking rows (all at 1000.0)")
 
 if __name__ == "__main__":
     main()

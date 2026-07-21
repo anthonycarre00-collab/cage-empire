@@ -9,6 +9,52 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `rankings` table (Task ID 10) — one row per fighter per weight class
+  per promotion, with an ELO-style rating (default 1000.0), cumulative
+  fights_count / wins / losses / draws, and last_fight_date. UNIQUE
+  constraint on (fighter_id, weight_class_id, promotion_id) ensures
+  one row per fighter per WC per promotion. CHECK constraints enforce
+  non-negative rating / fights_count / wins / losses / draws.
+  Foundation for Task ID 11 (titles — champion vs #1 contender),
+  Task ID 14 (regen — new fighters enter at the bottom at 1000.0),
+  and Task ID 22 (rivalries — ranking proximity boosts heat).
+- `_update_rankings_after_resolution()` private helper in `app.py`
+  (Task ID 10) — updates both fighters' ELO ratings after a fight
+  resolution. K-factor fixed at 32.0 (not dependent on fights_count).
+  Zero-sum: the winner's gain is exactly the loser's loss (within
+  floating-point precision). Draw handling: both fighters get
+  score=0.5, which produces zero rating change when both start at
+  the same rating. Defensive: creates the rankings row on the fly if
+  the seed missed it, and is a no-op if either fighter doesn't exist.
+- `get_rankings_for_display(conn, promotion_id, weight_class_id=None,
+  limit=10)` module-scope helper in `app.py` (Task ID 10) — extracted
+  for testability, same pattern as `get_fighters_for_display()` from
+  Task 6 and `get_contracts_for_display()` from Task 9. Returns a
+  list of 7-tuples (rank, fighter_name, weight_class_name,
+  rating_rounded_1dp, fights_count, 'W-L-D' string,
+  last_fight_date_or_'N/A'), ordered by rating DESC, fights_count DESC.
+  Handles invalid promotion_id (returns empty list, no crash).
+- Rankings tab in the UI (Task ID 10) — third tab in the right-pane
+  ttk.Notebook (after "News & Commentary" and "Contracts"). Shows
+  the top 10 fighters by ELO rating for the selected promotion. When
+  the promotion filter is "All Promotions", falls back to the first
+  promotion's rankings (cross-promotion combined rankings are not
+  meaningful under per-promotion ELO). Respects the promotion filter
+  from Task 6.
+- `_seed_initial_ranking()` helper in `seed_data.py` (Task ID 10) —
+  creates an initial rankings row at rating=1000.0 for each fighter.
+  Uses INSERT OR IGNORE so the seed is idempotent. Called from both
+  fighter creation loops (AC and RFL) after the contract INSERT.
+- Acceptance test `scripts/test_rankings.py` (Task ID 10) — tests
+  schema (CHECK + UNIQUE constraints), seed (5 rows at 1000.0 with
+  correct defaults), ELO update on fight resolution (zero-sum,
+  correct direction, fights_count, last_fight_date), ELO upset math
+  (underdog gain >= 10x favorite gain), draw handling (zero rating
+  change), `get_rankings_for_display()` helper (7-tuple shape,
+  1-indexed rank, weight_class filter, invalid promotion, limit),
+  UI smoke test (skips in headless), and regression (fight_history +
+  event lifecycle + event scheduler + contracts + rankings all still
+  work together).
 - Contracts group (Task ID 9) — 4 new tables: `contracts` (polymorphic
   base with contract_target_type CHECK constraint), `fighter_contracts`,
   `staff_contracts`, `broadcast_contracts` (subtype tables with UNIQUE
@@ -136,6 +182,19 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.4.0 → 1.5.0 (Task ID 10) — second MINOR bump
+  in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0). Adds the `rankings`
+  table.
+- `build_db.py` migration name updated to `v1_5_0_add_rankings`.
+- `seed_data.py` now creates an initial rankings row (rating=1000.0)
+  for every fighter. Seed summary printout updated to include the
+  rankings count.
+- `resolve_next_fight()` in `app.py` now updates both fighters' ELO
+  ratings after writing `fight_history` rows (Task ID 4) and before
+  the event status transition (Task ID 7). The update is zero-sum.
+  For draws, both fighters get score=0.5, which produces zero rating
+  change when both start at the same rating. Docstring's side-effects
+  list updated to include the new rankings line.
 - Schema version bumped 1.3.0 → 1.4.0 (Task ID 9) — first MINOR bump
   since Task ID 4 (1.2.1 → 1.3.0). First schema change in Stage 2.
 - `build_db.py` migration name updated to `v1_4_0_add_contracts`.

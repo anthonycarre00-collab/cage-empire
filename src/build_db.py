@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.4.0"
+CODE_SCHEMA_VERSION = "1.5.0"
 
 
 def _parse_version(v):
@@ -463,6 +463,37 @@ CREATE TABLE IF NOT EXISTS broadcast_contracts (
     network_name          TEXT NOT NULL,
     created_at            TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- Rankings (added in v1.5.0, Task ID 10).
+-- One row per fighter per weight class per promotion. Auto-updated
+-- on fight resolution by `_update_rankings_after_resolution()` in
+-- app.py using a simple ELO-style rating system (K=32, zero-sum).
+-- Foundation for Task ID 11 (titles — champion vs #1 contender),
+-- Task ID 14 (regen — new fighters enter at the bottom at rating
+-- 1000.0), and Task ID 22 (rivalries — ranking proximity boosts
+-- heat). The `rankings` UNIQUE (fighter_id, weight_class_id,
+-- promotion_id) constraint ensures one row per fighter per WC per
+-- promotion; the same fighter fighting in two promotions gets two
+-- ranking rows (cross-promotional ranking is out of scope until
+-- Task 25+). See docs/SCHEMA_DRIFT_AUDIT.md §K and
+-- docs/STAGES.md Task ID 10.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rankings (
+    ranking_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id      INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    weight_class_id INTEGER NOT NULL REFERENCES weight_classes(weight_class_id) ON DELETE CASCADE,
+    promotion_id    INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    rating          REAL NOT NULL DEFAULT 1000.0 CHECK (rating >= 0),
+    fights_count    INTEGER NOT NULL DEFAULT 0 CHECK (fights_count >= 0),
+    wins            INTEGER NOT NULL DEFAULT 0 CHECK (wins >= 0),
+    losses          INTEGER NOT NULL DEFAULT 0 CHECK (losses >= 0),
+    draws           INTEGER NOT NULL DEFAULT 0 CHECK (draws >= 0),
+    last_fight_date TEXT,
+    created_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fighter_id, weight_class_id, promotion_id)
+);
 """
 
 def main():
@@ -503,7 +534,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_contracts",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_rankings",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

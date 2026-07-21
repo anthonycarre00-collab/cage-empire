@@ -137,6 +137,85 @@ def get_contracts_for_display(conn, promotion_id=None):
     sql += " ORDER BY c.end_date"
     return conn.execute(sql).fetchall()
 
+
+# ----------------------------------------------------------------
+# Rankings display helper (Task ID 10).
+#
+# Returns the top-N fighters by ELO rating for a given promotion
+# (optionally filtered by weight class). Used by the Rankings tab in
+# the UI (third tab in the right-pane Notebook). The rank field is
+# 1-indexed (rank 1 = highest rating). Ties are broken by
+# fights_count DESC (more-active fighters rank higher), which is the
+# same tiebreaker the ELO system uses implicitly (a fighter with the
+# same rating but more fights has had more chances to move).
+#
+# Schema version is bumped 1.4.0 -> 1.5.0 in this task (the new
+# `rankings` table is the only schema change).
+# ----------------------------------------------------------------
+
+def get_rankings_for_display(conn, promotion_id, weight_class_id=None, limit=10):
+    """Return top N fighters by rating for a promotion.
+
+    Args:
+        conn: sqlite3 connection.
+        promotion_id: the promotion whose rankings to return. If the
+            promotion_id is invalid (no rows in `rankings` for it),
+            returns an empty list — no crash.
+        weight_class_id: if not None, filter to this weight class;
+            else include all weight classes.
+        limit: max number of rows to return. Default 10.
+
+    Returns:
+        List of 7-tuples:
+        (rank, fighter_name, weight_class_name, rating_rounded_1dp,
+         fights_count, 'W-L-D' string, last_fight_date_or_'N/A').
+        - rank:                1-indexed int (1 = highest rating).
+        - fighter_name:        fighters.first_name || ' ' || last_name.
+        - weight_class_name:   weight_classes.name (always non-NULL
+                              because rankings.weight_class_id is NOT
+                              NULL with ON DELETE CASCADE).
+        - rating_rounded_1dp:  float (rating rounded to 1 decimal).
+        - fights_count:        int.
+        - record string:       'W-L-D' from the rankings counters.
+        - last_fight_date:     ISO date string or 'N/A' if NULL
+                              (fighter has not fought yet).
+
+        Ordered by rating DESC, fights_count DESC.
+    """
+    sql = (
+        "SELECT r.rating, r.fights_count, r.wins, r.losses, r.draws, "
+        "       r.last_fight_date, "
+        "       f.first_name || ' ' || f.last_name AS fighter_name, "
+        "       w.name AS weight_class_name "
+        "FROM rankings r "
+        "JOIN fighters f ON f.fighter_id = r.fighter_id "
+        "LEFT JOIN weight_classes w ON w.weight_class_id = r.weight_class_id "
+        "WHERE r.promotion_id = ?"
+    )
+    params = [promotion_id]
+    if weight_class_id is not None:
+        sql += " AND r.weight_class_id = ?"
+        params.append(weight_class_id)
+    sql += " ORDER BY r.rating DESC, r.fights_count DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    # Build the 7-tuple with 1-indexed rank and rounded rating.
+    out = []
+    for i, (rating, fights_count, wins, losses, draws,
+            last_fight_date, fighter_name, wc_name) in enumerate(rows, start=1):
+        record_str = f"{wins}-{losses}-{draws}"
+        last_fight_display = last_fight_date if last_fight_date else "N/A"
+        out.append((
+            i,
+            fighter_name,
+            wc_name if wc_name else "Unknown",
+            round(float(rating), 1),
+            int(fights_count),
+            record_str,
+            last_fight_display,
+        ))
+    return out
+
 # ----------------------------------------------------------------
 # Real attribute-based fight resolver (Task ID 3).
 #
@@ -451,6 +530,196 @@ def _update_event_status_after_resolution(conn, event_id):
 
 
 # ----------------------------------------------------------------
+# Rankings ELO update (Task ID 10).
+#
+# After a fight resolves and the result is written to `fight_history`
+# (Task ID 4) — but BEFORE the event status transition (Task ID 7) —
+# both fighters' `rankings` rows are updated using a simple ELO-style
+# rating system. The update is zero-sum: the winner's gain is exactly
+# the loser's loss (within floating-point precision).
+#
+# ELO math (per docs/STAGES.md Task ID 10):
+#   K = 32.0
+#   expected_a = 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
+#   expected_b = 1 - expected_a
+#   Non-draw: score_a=1.0, score_b=0.0.
+#   Draw:      score_a=0.5, score_b=0.5.
+#   new_rating_a = rating_a + K * (score_a - expected_a)
+#   new_rating_b = rating_b + K * (score_b - expected_b)
+#
+# K-factor is fixed at 32.0 (not dependent on fights_count — the brief
+# explicitly forbids that). With a 700-point differential, the
+# favorite-wins gain is ~0.48 and the upset gain is ~31.52 — a ~65x
+# ratio, which makes upsets matter. Foundation for Task ID 11 (titles
+# — champion vs #1 contender), Task ID 14 (regen — new fighters
+# enter at the bottom at 1000.0), and Task ID 22 (rivalries —
+# ranking proximity boosts heat).
+#
+# Schema version is bumped 1.4.0 -> 1.5.0 in this task (the new
+# `rankings` table is the only schema change).
+# ----------------------------------------------------------------
+
+# ELO K-factor. Fixed at 32.0 per the Task ID 10 brief — not
+# dependent on fights_count. A larger K would make ratings swing
+# faster; a smaller K would make them more conservative. 32 is the
+# standard chess-ELO K for established players and works well enough
+# for MMA booking sim purposes.
+_ELO_K = 32.0
+
+# Initial rating every new fighter enters at. Matches the seed default
+# in `_seed_initial_ranking` (seed_data.py) and the defensive INSERT
+# in `_update_rankings_after_resolution` below.
+_INITIAL_RATING = 1000.0
+
+
+def _get_or_create_ranking_row(conn, fighter_id, weight_class_id, promotion_id):
+    """Fetch the ratings row for a fighter, creating it if missing.
+
+    Defensive: if the seed missed creating a rankings row for a
+    fighter (e.g., a fighter was added by a future task without
+    calling _seed_initial_ranking), this creates one on the fly at
+    the default 1000.0 rating. Returns the existing row's
+    (ranking_id, rating, fights_count, wins, losses, draws, last_fight_date)
+    tuple, or None if the fighter doesn't exist at all (no row in
+    `fighters`).
+    """
+    # Bail out if the fighter doesn't exist (defensive — caller may
+    # pass a stale fighter_id from a partially-rolled-back transaction).
+    exists = conn.execute(
+        "SELECT 1 FROM fighters WHERE fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    if exists is None:
+        return None
+    # INSERT OR IGNORE ensures we don't crash on the UNIQUE constraint
+    # if the row already exists. Then SELECT picks up the row whether
+    # it was just inserted or already there.
+    conn.execute(
+        "INSERT OR IGNORE INTO rankings (fighter_id, weight_class_id, "
+        "promotion_id, rating, fights_count, wins, losses, draws) "
+        "VALUES (?, ?, ?, ?, 0, 0, 0, 0)",
+        (fighter_id, weight_class_id, promotion_id, _INITIAL_RATING),
+    )
+    return conn.execute(
+        "SELECT ranking_id, rating, fights_count, wins, losses, draws, "
+        "last_fight_date FROM rankings "
+        "WHERE fighter_id = ? AND weight_class_id = ? AND promotion_id = ?",
+        (fighter_id, weight_class_id, promotion_id),
+    ).fetchone()
+
+
+def _update_rankings_after_resolution(conn, winner_id, loser_id,
+                                      weight_class_id, promotion_id,
+                                      score_margin, was_draw=False,
+                                      fight_date=None):
+    """Update both fighters' ELO ratings after a fight resolution.
+
+    Called by `resolve_next_fight()` after the `fight_history` writes
+    (Task ID 4) and before the event status transition (Task ID 7).
+    The update is zero-sum (winner's gain = loser's loss, within
+    floating-point precision).
+
+    Args:
+        conn: sqlite3 connection (caller is responsible for commit).
+        winner_id: fighters.fighter_id of the winner. For draws, this
+            is one of the two participants (the brief says pass
+            `a_id` as winner_id for draws — the helper treats both
+            fighters symmetrically when was_draw=True).
+        loser_id: fighters.fighter_id of the loser (or the other
+            participant for draws).
+        weight_class_id: the weight class the fight was at. Used as
+            part of the rankings UNIQUE key.
+        promotion_id: the promotion whose rankings to update.
+        score_margin: int, the absolute margin of the fight (rounded
+            from the resolver's abs_margin). Stored for reference but
+            does not affect the ELO math (ELO only cares about
+            win/loss/draw, not the margin).
+        was_draw: if True, both fighters get a draw on their record
+            and the ELO update uses score_a=0.5, score_b=0.5. With
+            both fighters at the same rating, a draw produces zero
+            rating change (expected=0.5, score=0.5, delta=0).
+        fight_date: ISO date string 'YYYY-MM-DD' for last_fight_date.
+            If None, the column is left NULL (but the brief says to
+            pass event_date from resolve_next_fight, which is always
+            non-NULL in practice).
+
+    No-op if either fighter doesn't exist (defensive). The
+    `score_margin` parameter is currently stored on the fight_history
+    row (Task ID 4) but not on rankings — it's accepted here for
+    future use (e.g., Task 24 punditry might weigh recent fights by
+    margin) and to match the brief's signature.
+    """
+    row_a = _get_or_create_ranking_row(
+        conn, winner_id, weight_class_id, promotion_id
+    )
+    row_b = _get_or_create_ranking_row(
+        conn, loser_id, weight_class_id, promotion_id
+    )
+    if row_a is None or row_b is None:
+        # Defensive no-op: one or both fighters don't exist. Should
+        # not happen in normal gameplay, but tests or future tasks
+        # might pass stale fighter_ids.
+        return
+
+    # Unpack: (ranking_id, rating, fights_count, wins, losses, draws,
+    #          last_fight_date)
+    _, rating_a, fights_a, wins_a, losses_a, draws_a, _ = row_a
+    _, rating_b, fights_b, wins_b, losses_b, draws_b, _ = row_b
+
+    # ELO expected scores. Standard formula.
+    expected_a = 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
+    expected_b = 1.0 - expected_a
+
+    if was_draw:
+        score_a, score_b = 0.5, 0.5
+    else:
+        score_a, score_b = 1.0, 0.0
+
+    new_rating_a = rating_a + _ELO_K * (score_a - expected_a)
+    new_rating_b = rating_b + _ELO_K * (score_b - expected_b)
+
+    # Ratings can't go negative (CHECK constraint on the rankings
+    # table). Clamp at 0 to be safe — in practice ELO with K=32 and
+    # starting rating 1000 won't push anyone to 0 in a reasonable
+    # number of fights, but defensive coding is cheap.
+    new_rating_a = max(0.0, new_rating_a)
+    new_rating_b = max(0.0, new_rating_b)
+
+    # Update fights_count, wins/losses/draws, last_fight_date. For
+    # draws, both fighters get +1 draws and +1 fights_count. For
+    # non-draws, winner gets +1 wins and +1 fights_count; loser gets
+    # +1 losses and +1 fights_count.
+    if was_draw:
+        new_wins_a, new_losses_a, new_draws_a = wins_a, losses_a, draws_a + 1
+        new_wins_b, new_losses_b, new_draws_b = wins_b, losses_b, draws_b + 1
+    else:
+        new_wins_a, new_losses_a, new_draws_a = wins_a + 1, losses_a, draws_a
+        new_wins_b, new_losses_b, new_draws_b = wins_b, losses_b + 1, draws_b
+
+    # last_fight_date: use the passed fight_date if available,
+    # otherwise fall back to the existing value (keep NULL if it was
+    # NULL and no fight_date was passed). COALESCE in SQL handles this
+    # cleanly: COALESCE(?, last_fight_date) picks the new date if
+    # non-NULL, else keeps the old.
+    conn.execute(
+        "UPDATE rankings SET rating = ?, fights_count = ?, wins = ?, "
+        "losses = ?, draws = ?, last_fight_date = COALESCE(?, last_fight_date), "
+        "updated_at = CURRENT_TIMESTAMP "
+        "WHERE fighter_id = ? AND weight_class_id = ? AND promotion_id = ?",
+        (new_rating_a, fights_a + 1, new_wins_a, new_losses_a, new_draws_a,
+         fight_date, winner_id, weight_class_id, promotion_id),
+    )
+    conn.execute(
+        "UPDATE rankings SET rating = ?, fights_count = ?, wins = ?, "
+        "losses = ?, draws = ?, last_fight_date = COALESCE(?, last_fight_date), "
+        "updated_at = CURRENT_TIMESTAMP "
+        "WHERE fighter_id = ? AND weight_class_id = ? AND promotion_id = ?",
+        (new_rating_b, fights_b + 1, new_wins_b, new_losses_b, new_draws_b,
+         fight_date, loser_id, weight_class_id, promotion_id),
+    )
+
+
+# ----------------------------------------------------------------
 # Repeatable event generator (Task ID 8).
 #
 # After the last fight on a card resolves and the event transitions
@@ -723,6 +992,7 @@ def resolve_next_fight(conn):
       - UPDATE fight_participants SET is_winner=...
       - UPDATE fighter_career SET record_wins/losses/draws, streaks
       - INSERT INTO fight_history (2 rows, one per fighter)  [v1.3.0]
+      - UPDATE rankings SET rating/fights_count/wins/losses/draws (ELO)  [v1.5.0, Task ID 10]
       - UPDATE events SET status=in_progress/completed  [v1.3.0, Task ID 7]
       - INSERT INTO events + fights + fight_participants + event_cards
         (auto-scheduled next card, only if event just completed)  [v1.3.0, Task ID 8]
@@ -885,6 +1155,27 @@ def resolve_next_fight(conn):
     # exactly — only the headline / body / commentary strings change.
     write_news(conn, headline, body, "fight", event_id, fight_id, news_fighter_id, promo_id)
     write_commentary(conn, event_id, fight_id, commentary)
+
+    # ----------------------------------------------------------------
+    # Rankings ELO update (Task ID 10). Update both fighters' rating
+    # rows after the fight_history rows are written (Task ID 4) and
+    # BEFORE the event status transition (Task ID 7). The update is
+    # zero-sum — the winner's gain is the loser's loss. For draws,
+    # both fighters get +1 draws and the ELO delta uses score=0.5 for
+    # each, which produces zero rating change when both start at the
+    # same rating (expected=0.5, score=0.5, delta=0). K-factor is
+    # fixed at 32.0. See docs/STAGES.md Task ID 10 for the spec.
+    # ----------------------------------------------------------------
+    if result_type == "draw":
+        _update_rankings_after_resolution(
+            conn, a_id, b_id, weight_class_id, promo_id,
+            score_margin_int, was_draw=True, fight_date=event_date,
+        )
+    else:
+        _update_rankings_after_resolution(
+            conn, winner_id, loser_id, weight_class_id, promo_id,
+            score_margin_int, was_draw=False, fight_date=event_date,
+        )
 
     # ----------------------------------------------------------------
     # Event lifecycle (Task ID 7). Transition the parent event's status:
@@ -1050,6 +1341,29 @@ class App(tk.Tk):
             self.contracts.column(c, width=w, anchor='w')
         self.contracts.pack(fill='both', expand=True, pady=(6, 0))
 
+        # Tab 3: Rankings (new in Task ID 10). Read-only Treeview with
+        # columns: rank, fighter, weight_class, rating, fights, record,
+        # last_fight. Populated by refresh_all() via
+        # get_rankings_for_display. When current_promotion_filter is
+        # None ("All Promotions"), the rankings tab falls back to the
+        # first promotion's rankings — the helper requires a
+        # promotion_id and "all promotions' rankings combined" is not
+        # meaningful under ELO (ratings are per-promotion). This
+        # fallback is documented in refresh_all().
+        rankings_tab = ttk.Frame(right_notebook)
+        right_notebook.add(rankings_tab, text="Rankings")
+        ttk.Label(rankings_tab, text="Top 10 by ELO Rating", font=("Segoe UI", 11, "bold")).pack(anchor='w')
+        self.rankings = ttk.Treeview(
+            rankings_tab,
+            columns=('rank', 'fighter', 'weight_class', 'rating', 'fights', 'record', 'last_fight'),
+            show='headings', height=18
+        )
+        for c, w in [('rank', 50), ('fighter', 150), ('weight_class', 110),
+                     ('rating', 70), ('fights', 60), ('record', 80), ('last_fight', 90)]:
+            self.rankings.heading(c, text=c.title())
+            self.rankings.column(c, width=w, anchor='w')
+        self.rankings.pack(fill='both', expand=True, pady=(6, 0))
+
     def clear_tree(self, tree):
         for item in tree.get_children():
             tree.delete(item)
@@ -1093,6 +1407,7 @@ class App(tk.Tk):
         self.clear_tree(self.events)
         self.clear_tree(self.fights)
         self.clear_tree(self.contracts)
+        self.clear_tree(self.rankings)
         self.news.delete(0, tk.END)
         self.commentary.delete(0, tk.END)
 
@@ -1127,6 +1442,25 @@ class App(tk.Tk):
         # selected, show only that promotion's contracts; else show all.
         for r in get_contracts_for_display(self.conn, self.current_promotion_filter):
             self.contracts.insert('', 'end', values=r)
+
+        # Populate Rankings tab (Task ID 10). The helper requires a
+        # promotion_id — when current_promotion_filter is None ("All
+        # Promotions"), we fall back to the first promotion's
+        # rankings. Cross-promotion combined rankings are not
+        # meaningful under ELO (ratings are per-promotion); a future
+        # task could add a pound-for-pound view that normalizes
+        # across promotions, but that's out of scope for Task 10.
+        if self.current_promotion_filter is not None:
+            rankings_promo_id = self.current_promotion_filter
+        else:
+            # Fall back to the first promotion (lowest promotion_id).
+            first_promo = self.conn.execute(
+                "SELECT promotion_id FROM promotions ORDER BY promotion_id LIMIT 1"
+            ).fetchone()
+            rankings_promo_id = first_promo[0] if first_promo else None
+        if rankings_promo_id is not None:
+            for r in get_rankings_for_display(self.conn, rankings_promo_id):
+                self.rankings.insert('', 'end', values=r)
 
     def on_promo_filter_change(self, event=None):
         """Handle promotion filter dropdown change (Task ID 6).

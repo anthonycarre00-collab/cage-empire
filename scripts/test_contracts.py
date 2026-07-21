@@ -80,13 +80,19 @@ DB_BACKUP_PATH = PROJECT_DIR / "data" / "cage_empire.case_abc_backup.db"
 # headless contexts.
 sys.path.insert(0, str(SRC_DIR))
 import app  # noqa: E402
+import build_db  # noqa: E402
 
 # Seed for reproducibility — see module docstring.
 RANDOM_SEED = 42
 
-# Schema version produced by Task ID 9.
-EXPECTED_SCHEMA_VERSION = "1.4.0"
-EXPECTED_MIGRATION_NAME = "v1_4_0_add_contracts"
+# Schema version + migration name (dynamic — Task ID 10 supervisor fix).
+# Reading CODE_SCHEMA_VERSION from build_db means this test does not need
+# to be updated on every schema version bump. The migration name follows
+# the convention v{MAJOR}_{MINOR}_{PATCH}_{desc} - we use a LIKE prefix
+# so the test doesn't break when the description suffix changes per task
+# (e.g., _add_contracts, _add_rankings, _add_titles).
+EXPECTED_SCHEMA_VERSION = build_db.CODE_SCHEMA_VERSION
+EXPECTED_MIGRATION_PREFIX = f"v{EXPECTED_SCHEMA_VERSION.replace('.', '_')}_"
 
 # Expected contract defaults from seed_data.py.
 EXPECTED_START_DATE = "2026-07-20"
@@ -195,15 +201,17 @@ def main():
         f"got={sv[0] if sv else None}",
     ))
 
-    # schema_migrations contains 'v1_4_0_add_contracts'.
+    # schema_migrations contains a row for the current version's
+    # migration (e.g., v1_4_0_add_contracts, v1_5_0_add_rankings, etc.).
+    # Use a LIKE prefix so the test doesn't break on description changes.
     mig = conn.execute(
         "SELECT migration_name FROM schema_migrations "
-        "WHERE migration_name=?",
-        (EXPECTED_MIGRATION_NAME,),
+        "WHERE migration_name LIKE ?",
+        (EXPECTED_MIGRATION_PREFIX + "%",),
     ).fetchone()
     results.append((
         "A",
-        f"migration '{EXPECTED_MIGRATION_NAME}' recorded",
+        f"migration starting with '{EXPECTED_MIGRATION_PREFIX}' recorded",
         mig is not None,
         f"found={mig}",
     ))
