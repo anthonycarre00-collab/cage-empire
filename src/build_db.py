@@ -10,6 +10,88 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 CODE_SCHEMA_VERSION = "1.3.0"
 
+
+def _parse_version(v):
+    """Parse a semver string 'MAJOR.MINOR.PATCH' into a tuple of ints.
+
+    Each dotted component is parsed by extracting its leading digit
+    prefix as an int. This means '1.0.0-beta' parses as (1, 0, 0) —
+    the prerelease suffix '-beta' on the PATCH component is silently
+    dropped. This is a deliberate simplification: in practice, schema
+    versions are always plain MAJOR.MINOR.PATCH (no prereleases), and
+    the brief explicitly allows 'pad and compare ints' handling for
+    the '1.0.0-beta' edge case (see docs/STAGES.md Task ID 5 case 7,
+    option A). Trade-off: '1.0.0-beta' compares equal to '1.0.0'.
+    """
+    nums = []
+    for part in v.split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        nums.append(int(digits) if digits else 0)
+    return tuple(nums)
+
+
+def _compare_versions(a, b):
+    """Return -1 if a < b, 0 if a == b, +1 if a > b. Semver comparison.
+
+    Splits on '.', compares each component as an int. Pads shorter
+    tuples with zeros (so '1.3' == '1.3.0'). Correctly handles
+    '1.10.0' > '1.9.0' (string comparison would get this wrong, which
+    is the whole reason this helper exists).
+    """
+    ta, tb = _parse_version(a), _parse_version(b)
+    # Pad to equal length (in case one has more components than the other).
+    n = max(len(ta), len(tb))
+    ta += (0,) * (n - len(ta))
+    tb += (0,) * (n - len(tb))
+    return (ta > tb) - (ta < tb)
+
+
+def _read_on_disk_schema_version(db_path):
+    """Return the on-disk schema_version string, or None if it cannot be read.
+
+    Returns None when:
+      - the DB file does not exist, or
+      - the DB has no schema_meta table (prints a warning), or
+      - schema_meta exists but has no row for schema_name='cage_empire'
+        (prints a warning), or
+      - the DB file is corrupt / unreadable (silent — treated as no
+        version, allows rebuild).
+
+    Uses mode=ro URI to open the DB read-only, which avoids creating
+    WAL/journal files just for the version check and works cleanly on
+    Windows where file locking is stricter. See docs/CONVENTIONS.md
+    §1.4 (Task ID 5).
+    """
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            cur = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+            )
+            if cur.fetchone() is None:
+                print(f"Warning: no schema_meta table in {db_path} — "
+                      f"proceeding with rebuild (treating as pre-versioning DB).")
+                return None
+            row = conn.execute(
+                "SELECT schema_version FROM schema_meta WHERE schema_name=?",
+                ("cage_empire",),
+            ).fetchone()
+            if row is None:
+                print(f"Warning: schema_meta exists but no row for "
+                      f"schema_name='cage_empire' — proceeding with rebuild.")
+                return None
+            return row[0]
+    except sqlite3.DatabaseError:
+        # Corrupt or unreadable DB — treat as no version, allow rebuild.
+        return None
+
+
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -330,6 +412,30 @@ CREATE TABLE IF NOT EXISTS fight_history (
 
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ---- version-check gate (Task ID 5) ---------------------------
+    # See docs/CONVENTIONS.md §1.4. Prevents an older build_db.py
+    # from silently clobbering a newer schema. This is the gate that
+    # closes the 37 -> 24 table drift that already happened twice.
+    # The check happens BEFORE the DB_PATH.unlink() call so that
+    # refusing does not destroy the on-disk schema.
+    on_disk = _read_on_disk_schema_version(DB_PATH)
+    if on_disk is not None:
+        cmp = _compare_versions(on_disk, CODE_SCHEMA_VERSION)
+        if cmp > 0:
+            raise RuntimeError(
+                f"Refusing to rebuild: on-disk schema version {on_disk} is newer "
+                f"than code version {CODE_SCHEMA_VERSION}. This would silently "
+                f"destroy schema work. Either:\n"
+                f"  (a) upgrade build_db.py to support the newer schema, or\n"
+                f"  (b) delete {DB_PATH} manually if you really want to start fresh."
+            )
+        elif cmp < 0:
+            print(f"Upgrading schema: {on_disk} -> {CODE_SCHEMA_VERSION} (rebuilding).")
+        else:
+            print(f"Rebuilding same schema version {CODE_SCHEMA_VERSION}.")
+    # ---- end version-check gate -----------------------------------
+
     if DB_PATH.exists():
         DB_PATH.unlink()
     with sqlite3.connect(DB_PATH) as conn:

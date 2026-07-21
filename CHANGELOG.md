@@ -9,6 +9,18 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Schema version-check gate (Task ID 5) — `build_db.py` `main()` now
+  checks `schema_meta.schema_version` before unlinking the DB file and
+  refuses to run if the on-disk version is newer than the code's known
+  version. Closes the schema-drift prevention loop set up in Task ID 2.
+  See `docs/CONVENTIONS.md §1.4`.
+- `_parse_version` and `_compare_versions` helpers in `build_db.py`
+  (Task ID 5) — semver comparison so `"1.10.0"` correctly sorts after
+  `"1.9.0"`.
+- Acceptance test `scripts/test_schema_versioning.py` (Task ID 5) —
+  tests fresh DB, same-version rebuild, upgrade, refuse-newer, no-
+  schema_meta, corrupt DB, and unit tests for the version comparison
+  helpers.
 - `fight_history` table (Task ID 4) — separate per-fighter history table
   distinct from the mutable `fighter_career` counters. Populated by
   `resolve_next_fight()` with 2 rows per fight (one per fighter, from
