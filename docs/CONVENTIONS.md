@@ -1,7 +1,7 @@
 # CAGE EMPIRE — Conventions
 
 > **Status:** Authoritative. Violations will be rejected at code review.
-> **Last revised:** 2026-07-21 — Task ID 2.
+> **Last revised:** 2026-07-21 — Task ID 14 (Stage 2 complete, audit pass).
 
 This file defines the rules every agent (human or AI) must follow
 when touching the CAGE EMPIRE codebase. It exists because the project
@@ -61,7 +61,7 @@ The `migration_name` should describe what changed, e.g.
 `v1_3_0_add_fight_history_table`. On rebuild, `INSERT OR IGNORE` the
 migration name.
 
-### 1.4 The version-check gate (Task ID 5 will enforce this)
+### 1.4 The version-check gate (enforced since Task ID 5)
 
 `build_db.py` `main()` MUST check the on-disk `schema_meta.schema_version`
 before unlinking the DB file:
@@ -74,8 +74,9 @@ before unlinking the DB file:
   same version — allowed for dev reset).
 - If no `schema_meta` table exists (fresh DB): proceed.
 
-This gate is not enforced in v1.2.1 (the table is restored but not
-checked). Task ID 5 closes that gap.
+This gate has been enforced since Task ID 5 (v1.3.0). The
+`_compare_versions()` helper uses semver comparison (not string
+comparison) so `"1.10.0"` correctly sorts after `"1.9.0"`.
 
 ---
 
@@ -317,17 +318,148 @@ Skipping any of these will cause the agent to miss context and
 likely repeat past mistakes. The supervisor's first instruction to
 any subagent will be "read these 7 files, then start".
 
+**IMPORTANT for Stage 3+:** Also check `docs/SCHEMA_DRIFT_AUDIT.md §Z`
+for known issues and gaps. The §Z section documents critical gaps
+(e.g., fighter_attributes still at 4/24 stats) that may block
+downstream tasks.
+
 ---
 
 ## 9. Decision log
 
-Major design decisions get recorded in `docs/MASTER_PLAN.md` § 7.
+Major design decisions get recorded in `docs/MASTER_PLAN.md` §10.
 A decision is "major" if it changes the project's direction, kills
 a planned task, or introduces a new convention. Examples:
 
 - 2026-07-21 — Original Task 2 (big-bang v1.6 schema dump) killed.
 - 2026-07-21 — DB renamed to `cage_empire.db`.
 - 2026-07-21 — One table-group per task rule adopted.
+- 2026-07-21 (Task 9) — Dynamic-version pattern adopted for tests.
+- 2026-07-21 (Task 14) — 10 designed regen tables consolidated into 3.
 
 Minor decisions (which folder a module goes in, which variable name
 to use) do not need to be logged.
+
+---
+
+## 10. Dynamic-version pattern for acceptance tests (adopted Task ID 9)
+
+### 10.1 The rule
+
+Every acceptance test MUST read the schema version dynamically from
+`build_db.CODE_SCHEMA_VERSION` — do NOT hardcode version strings like
+`'1.5.0'` or `'1.9.0'`.
+
+### 10.2 The pattern
+
+```python
+import sys
+sys.path.insert(0, str(SRC_DIR))
+import build_db  # noqa: E402
+
+EXPECTED_CODE_VERSION = build_db.CODE_SCHEMA_VERSION
+EXPECTED_MIGRATION_PREFIX = f"v{EXPECTED_CODE_VERSION.replace('.', '_')}_"
+```
+
+Then use `EXPECTED_CODE_VERSION` in assertions:
+```python
+sv = conn.execute(
+    "SELECT schema_version FROM schema_meta WHERE schema_name='cage_empire'"
+).fetchone()
+assert sv[0] == EXPECTED_CODE_VERSION
+```
+
+And use `EXPECTED_MIGRATION_PREFIX` with a LIKE query for migration
+name checks (the description suffix changes per task: `_add_fight_history`,
+`_add_contracts`, `_add_rankings`, etc.):
+```python
+mig = conn.execute(
+    "SELECT migration_name FROM schema_migrations "
+    "WHERE migration_name LIKE ?",
+    (EXPECTED_MIGRATION_PREFIX + "%",),
+).fetchone()
+assert mig is not None
+```
+
+### 10.3 Why
+
+Before this pattern was adopted (Tasks 9-11), every schema version bump
+broke 2-3 existing tests that hardcoded the old version string. The
+supervisor had to apply fixes in every sign-off. Since adopting the
+dynamic pattern (Task 10+), the last 2 tasks (12, 13) needed no
+supervisor test fix. The pattern is now self-sustaining.
+
+### 10.4 Table-count assertions
+
+Do NOT hardcode table counts in acceptance tests (e.g.,
+`EXPECTED_TABLE_COUNT = 34`). Table counts change on every schema-
+adding task. The test's purpose is to verify behavior, not table count.
+If a test needs to verify that a specific table exists, use
+`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?` instead.
+
+(Task 14 supervisor fix: `test_free_agency.py` had
+`EXPECTED_TABLE_COUNT = 34` which broke when Task 14 added 3 tables.
+The assertion was removed entirely.)
+
+---
+
+## 11. "Don't modify existing tests" rule with supervisor escalation
+
+### 11.1 The rule
+
+Subagents MUST NOT modify existing acceptance tests. If a version bump
+or behavior change breaks an existing test's assertion, the subagent
+flags it and the supervisor applies the fix.
+
+### 11.2 The escalation protocol
+
+1. The subagent identifies the broken assertion and its cause (e.g.,
+   "test_fight_history.py line 364 asserts title_at_stake=0 but Task 11
+   changed it to 1").
+2. The subagent documents the issue as a **D-number decision** in its
+   worklog entry (e.g., "D6: test_fight_history.py title_at_stake=0
+   placeholder assertion is now stale. Flagged for supervisor. NOT
+   modified per the brief's rule.").
+3. The subagent returns the flag in its return message to the
+   supervisor.
+4. The supervisor applies the fix during the sign-off verification,
+   documenting it in the supervisor verification section of the
+   worklog.
+
+### 11.3 D-number decision pattern
+
+Every subagent worklog entry should document its decisions using
+D-numbers (D1, D2, D3, ...). D-numbers are referenced in the
+supervisor's sign-off (e.g., "D3 APPROVED", "D5 NOTED, not fixed").
+This creates a traceable audit trail of every decision made.
+
+### 11.4 History
+
+This pattern was established in Task 9 (first schema version bump that
+broke existing tests). It has been used in Tasks 9, 10, 11, 13, and 14.
+The most common fix is the dynamic-version pattern (§10). Other fixes
+include updating stale assertions (Task 11: title_at_stake [0,0] →
+[1,1]) and removing obsolete table-count checks (Task 14).
+
+---
+
+## 12. Test location
+
+Acceptance tests live in `scripts/` (not `tests/` as originally
+planned in the STAGES.md cross-cutting work section). This is a minor
+convention deviation — the tests are alongside the generation scripts.
+The `scripts/` directory contains:
+- `test_fight_resolver.py` (Task 3)
+- `test_fight_history.py` (Task 4)
+- `test_schema_versioning.py` (Task 5)
+- `test_promotion_filter.py` (Task 6)
+- `test_event_lifecycle.py` (Task 7)
+- `test_event_scheduler.py` (Task 8)
+- `test_contracts.py` (Task 9)
+- `test_rankings.py` (Task 10)
+- `test_titles.py` (Task 11)
+- `test_retirement.py` (Task 12)
+- `test_free_agency.py` (Task 13)
+- `test_regen.py` (Task 14)
+
+12 tests, 500+ sub-checks, all passing.

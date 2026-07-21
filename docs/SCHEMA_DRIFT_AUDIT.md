@@ -3,13 +3,14 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-21 — Task ID 2.
+> **Last revised:** 2026-07-21 — Task ID 14 (Stage 2 complete).
+> **Current schema version:** 1.9.0 (37 tables).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
   for.
-- **Built (v1.2.0)** — what exists in commit `986d438`.
-- **Built (v1.2.1)** — what exists after Task ID 2 (this commit).
+- **Built (v1.2.0)** — what existed in the initial commit `986d438`.
+- **Built (v1.9.0)** — what exists now, after Tasks 2-14.
 - **Status** — `OK` / `THIN` / `MISSING` / `WRONG` / `DROPPED`.
 
 Legend:
@@ -19,33 +20,36 @@ Legend:
 - `WRONG` — built but shape does not match design.
 - `DROPPED` — existed in an earlier draft and was removed without
   being recorded.
+- `CONSOLIDATED` — designed as multiple tables, built as fewer tables
+  by design decision (documented in notes).
 
 ---
 
 ## A. Schema meta & versioning
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `schema_meta` | yes | no | yes | `DROPPED` → restored in v1.2.1 |
-| `schema_migrations` | yes | no | yes | `DROPPED` → restored in v1.2.1 |
+| `schema_meta` | yes | no | yes | `OK` (restored Task 2, enforced Task 5) |
+| `schema_migrations` | yes | no | yes | `OK` (restored Task 2) |
 
 **Notes.** Both tables existed in earlier "reset bundle" drafts and
-were dropped during the error → shrink cycle. Restored in Task ID 2
-as cheap insurance against further silent drift.
+were dropped during the error → shrink cycle. Restored in Task ID 2.
+Task ID 5 added the version-check gate: `build_db.py` refuses to run
+if the on-disk schema is newer than the code's known version.
 
 ---
 
 ## B. Simulation & geography
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `simulation_clock` | yes | yes | yes | `OK` |
-| `nations` | yes (rich: language, combat_culture, market_maturity, travel_difficulty, regulatory_profile, talent_pool_strength, fan_style_preference) | yes (thin: name, language) | yes (thin) | `THIN` |
+| `simulation_clock` | yes | yes | yes | `OK` (but has pre-existing `current_date` quirk — see §Z) |
+| `nations` | yes (rich: language, combat_culture, market_maturity, travel_difficulty, regulatory_profile, talent_pool_strength, fan_style_preference) | yes (thin: name, language) | yes (thin) | `THIN` — missing ~6 columns |
 | `regions` | yes (rich: style_preferences, fan_preferences, market_growth) | yes (matches spec) | yes | `OK` |
 | `weight_classes` | yes | yes | yes | `OK` |
-| `cities` | yes (rich: population, affluence, combat_sports_interest, media_reach, local_bias, venue_capacity_bias) | yes (thin: name, population) | yes (thin) | `THIN` |
-| `markets` | yes (rich: market_type, heat_level, fan_taste_profile, ticket_demand, local_star_bonus, touring_penalty) | yes (thin: market_type, heat_level) | yes (thin) | `THIN` |
-| `venues` | yes (rich: capacity, prestige, cost, atmosphere, media_suitability, walkout_quality, lighting_quality) | yes (thin: name, capacity) | yes (thin) | `THIN` |
+| `cities` | yes (rich: population, affluence, combat_sports_interest, media_reach, local_bias, venue_capacity_bias) | yes (thin: name, population) | yes (thin) | `THIN` — missing ~5 columns |
+| `markets` | yes (rich: market_type, heat_level, fan_taste_profile, ticket_demand, local_star_bonus, touring_penalty) | yes (thin: market_type, heat_level) | yes (thin) | `THIN` — missing ~4 columns |
+| `venues` | yes (rich: capacity, prestige, cost, atmosphere, media_suitability, walkout_quality, lighting_quality) | yes (thin: name, capacity) | yes (thin) | `THIN` — missing ~5 columns |
 
 **Notes.** The geography layer is the right shape but missing the
 rich attribute columns. Task ID 27 (Stage 5) will fold these in
@@ -55,164 +59,186 @@ when venues/markets become load-bearing for show rating and finance.
 
 ## C. Promotions, gyms, archetypes
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `promotions` | yes (rich: brand_tone, size_tier, starting_budget, current_cash, reputation, fan_trust, broadcast_tier, ownership_type, ai_aggression, ai_spending_style) | yes (thin: name, size_tier, current_cash, reputation, fan_trust) | yes (thin) + 1 extra row (Rival Fight League seeded) | `THIN` |
-| `gyms` | yes (rich: reputation, membership_cost, facility_quality, medical_support, sparring_depth, development_focus, culture_tone, weight_cut_support, elite_camp_bonus) | yes (thin: name, location FKs only) | yes (thin) | `THIN` |
-| `style_archetypes` | yes (name, description, attribute_bias) | yes (thin: missing attribute_bias) | yes (thin) | `THIN` |
-| `personality_archetypes` | yes (name, description, trait_bias) | yes (thin: missing trait_bias) | yes (thin) | `THIN` |
+| `promotions` | yes (rich: brand_tone, size_tier, starting_budget, current_cash, reputation, fan_trust, broadcast_tier, ownership_type, ai_aggression, ai_spending_style) | yes (thin: name, size_tier, current_cash, reputation, fan_trust) | yes (thin) + 2 rows (AC + RFL) | `THIN` — missing ~6 columns (ai_aggression + ai_spending_style needed for Task 25) |
+| `gyms` | yes (rich: reputation, membership_cost, facility_quality, medical_support, sparring_depth, development_focus, culture_tone, weight_cut_support, elite_camp_bonus) | yes (thin: name, location FKs only) | yes (thin) | `THIN` — missing ~8 columns (needed for Task 16 training camps) |
+| `style_archetypes` | yes (name, description, attribute_bias) | yes (thin: missing attribute_bias) | yes (thin) | `THIN` — missing attribute_bias column |
+| `personality_archetypes` | yes (name, description, trait_bias) | yes (thin: missing trait_bias) | yes (thin) | `THIN` — missing trait_bias column |
 
-**Notes.** Rival promotion seeded in v1.2.1 per the advisor AI's
-recommendation. RFL is inert — no AI behaviour until Task ID 25.
+**Notes.** Rival promotion seeded in v1.2.1 (Task 2). RFL is inert —
+no AI behaviour until Task ID 25. The `promotions` table is missing
+`ai_aggression` and `ai_spending_style` columns that Task 25 needs —
+these must be added as a migration before or during Task 25.
 
 ---
 
 ## D. Fighters
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `fighters` | yes (rich: identity + injury_proneness, weight_cut_difficulty, consistency, clutch_factor, marketability, fan_friendliness, promo_boost, preferred_gameplans, bad_matchup_tags, is_active, is_retired, is_deceased) | yes (thin: identity + is_active only) | yes (thin) | `THIN` |
-| `fighter_attributes` | yes (24 combat stats) | `WRONG` (only 4: punch_power, cardio, fight_iq, chin) | `WRONG` (4) | `WRONG` — critical |
-| `fighter_personality` | yes (17 traits + morale + focus + fatigue_tolerance) | `WRONG` (only 3: aggression, composure, morale) | `WRONG` (3) | `WRONG` — critical |
-| `fighter_career` | yes (rich: record_*, streaks, current_ranking, title_reigns, title_defenses, legacy_score, market_popularity_local/regional/global, contract_status, career_stage, injury_status, retirement_status, death_flag, peak_rating, career_health, hall_of_fame_flag, legacy_tier) | yes (thin: record_*, streaks, career_health) | yes (thin) | `THIN` |
-| `fighter_history` | yes (separate from mutable career counters) | no | no | `MISSING` — added in Task ID 4 |
+| `fighters` | yes (rich: identity + height_cm, reach_cm, stance, handedness, injury_proneness, weight_cut_difficulty, consistency, clutch_factor, marketability, fan_friendliness, promo_boost, preferred_gameplans, bad_matchup_tags, is_active, is_retired, is_deceased) | yes (thin: identity + is_active only) | yes (thin + is_retired) | `THIN` — missing ~14 columns (is_retired added Task 12; is_deceased + injury_proneness + weight_cut_difficulty + physical attrs + marketability attrs all still missing) |
+| `fighter_attributes` | yes (24 combat stats) | `WRONG` (only 4: punch_power, cardio, fight_iq, chin) | `WRONG` (still 4) | `WRONG` — **critical gap**. Task 3 was supposed to extend these to 24 but only replaced the resolver. The resolver works with just 4 but the full 24 are needed for Task 16 (training camps), Task 18 (scouting), Task 19 (voice layer), Task 24 (matchup analysis). |
+| `fighter_personality` | yes (17 traits + morale + focus + fatigue_tolerance) | `WRONG` (only 3: aggression, composure, morale) | `WRONG` (still 3) | `WRONG` — **critical gap**. Same issue as fighter_attributes. 14 personality traits missing (discipline, volatility, ego, loyalty, ambition, professionalism, trash_talk, media_friendliness, resilience, confidence, heart, respectfulness, temper, attention_seeking, coachability, focus, fatigue_tolerance). |
+| `fighter_career` | yes (rich: record_*, streaks, current_ranking, title_reigns, title_defenses, legacy_score, market_popularity_local/regional/global, contract_status, career_stage, injury_status, retirement_status, death_flag, peak_rating, career_health, hall_of_fame_flag, legacy_tier) | yes (thin: record_*, streaks, career_health) | yes (thin) | `THIN` — missing ~14 columns |
+| `fight_history` | yes (separate from mutable career counters) | no | yes (Task 4) | `OK` — added in Task 4, 14 columns, title_at_stake populated (Task 11) |
 
 **Notes.** `fighter_attributes` and `fighter_personality` are the
-most critical gap — the v1.6 spec calls for 24 combat stats and 17
-personality traits, the v1.2.0 build only has 4 and 3. **Task ID 3
-will extend these to spec** in the same commit that ships the real
-fight resolver, because the resolver needs the full attribute set to
-work properly.
+**most critical gap remaining**. The v1.6 spec calls for 24 combat
+stats and 17+ personality traits; the v1.9.0 build only has 4 and 3.
+The fight resolver (Task 3) works with just these 4+3, but every
+downstream system (training camps, scouting, voice layer, matchup
+analysis, show rating) needs the full attribute set. **A new task
+(Task ID 14.5) is needed to extend these to spec.** See §Z for
+details.
 
 ---
 
 ## E. Staff & broadcast
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `staff` | yes (rich: name, age, nationality, role_type, specialty, skill_level, reputation, loyalty, salary, contract_start/end, fatigue, retirement_status, death_flag, promotion_id) | yes (thin: name, age, role_type, specialty, promotion_id) | yes (thin) | `THIN` |
-| `broadcast_staff` | yes (rich: staff_id, on_air_role, mic_skill, analysis_skill, chemistry_rating, bias, credibility, knowledge_depth, commentary_style, catchphrase_level) | yes (thin: staff_id, on_air_role) | yes (thin) | `THIN` |
+| `staff` | yes (rich: name, age, nationality, role_type, specialty, skill_level, reputation, loyalty, salary, contract_start/end, fatigue, retirement_status, death_flag, promotion_id) | yes (thin: name, age, role_type, specialty, promotion_id) | yes (thin) | `THIN` — missing ~9 columns |
+| `broadcast_staff` | yes (rich: staff_id, on_air_role, mic_skill, analysis_skill, chemistry_rating, bias, credibility, knowledge_depth, commentary_style, catchphrase_level) | yes (thin: staff_id, on_air_role) | yes (thin) | `THIN` — missing ~8 columns |
 
 **Notes.** UI does not show staff at all yet, even though the table
-is seeded. Task ID 6 will add a Staff tab as a side-effect of the
-multi-promotion UI work.
+is seeded (Nina Cross, commentator). Task ID 2's worklog mentioned
+"Task ID 6 will add a Staff tab" but Task 6's brief explicitly scoped
+it out. **A new task (Task ID 6.5) is needed for a Staff tab.** The
+Contracts tab (Task 9) does show staff contracts, but there's no
+dedicated staff management view.
 
 ---
 
-## F. Contracts (entire group MISSING)
+## F. Contracts
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `contracts` | yes | no | no | `MISSING` — Task ID 9 |
-| `fighter_contracts` | yes | no | no | `MISSING` — Task ID 9 |
-| `staff_contracts` | yes | no | no | `MISSING` — Task ID 9 |
-| `broadcast_contracts` | yes | no | no | `MISSING` — Task ID 9 |
+| `contracts` | yes | no | yes (Task 9) | `OK` — polymorphic base, 12 columns, CHECK constraints |
+| `fighter_contracts` | yes | no | yes (Task 9) | `OK` — UNIQUE contract_id FK |
+| `staff_contracts` | yes | no | yes (Task 9) | `OK` — UNIQUE contract_id FK |
+| `broadcast_contracts` | yes | no | yes (Task 9) | `OK` — UNIQUE contract_id FK, 0 rows seeded |
 
-**Notes.** Today fighters are tied to promotions only by a
-`current_promotion_id` FK on the fighters table — no terms, no
-expiry, no free agency. This is the single biggest career-system
-gap.
+**Notes.** All 4 tables added in Task 9. Contract expiry logic added
+in Task 13 (`_check_contract_expiry` in tick_processor.py). Signing
+logic added in Task 13 (`sign_free_agent` in app.py). UI Contracts
+tab added in Task 9.
 
 ---
 
 ## G. Events & fights
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `events` | yes (rich: + prestige, glamour_score) | yes (thin: missing prestige, glamour_score) | yes (thin) | `THIN` |
-| `fights` | yes | yes | yes | `OK` |
-| `fight_participants` | yes (rich: + official_result, score_total) | yes (thin: missing these) | yes (thin) | `THIN` |
-| `event_cards` | yes (rich: + is_co_main, notes) | yes (thin: missing these) | yes (thin) | `THIN` |
-| `fight_rounds` | yes (round_number, fighter_a/b_damage, control_time, knockdowns, takedowns, strikes_landed, momentum_state, round_winner_fighter_id) | no | no | `MISSING` — Task ID 3 or 4 |
+| `events` | yes (rich: + prestige, glamour_score) | yes (thin: missing prestige, glamour_score) | yes (thin) | `THIN` — missing ~2 columns. Event lifecycle (scheduled → in_progress → completed) added Task 7. |
+| `fights` | yes | yes | yes | `OK` — bout_type now includes 'title_fight' (Task 11) |
+| `fight_participants` | yes (rich: + official_result, score_total) | yes (thin: missing these) | yes (thin) | `THIN` — missing 2 columns |
+| `event_cards` | yes (rich: + is_co_main, notes) | yes (thin: missing these) | yes (thin) | `THIN` — missing 2 columns |
+| `fight_rounds` | yes (round_number, fighter_a/b_damage, control_time, knockdowns, takedowns, strikes_landed, momentum_state, round_winner_fighter_id) | no | no | `MISSING` — **still missing**. The audit originally said "Task ID 3 or 4" would add it. Neither did. The resolver produces a finish_round but doesn't store per-round stats. Needed for Task 23 (commentary beats), Task 24 (punditry), Task 26 (show rating). **A new task is needed.** |
 
-**Notes.** `fight_rounds` is needed by the real fight resolver to
-produce round-by-round output. Will likely be added in Task ID 3
-or 4 alongside the resolver work.
+**Notes.** `fight_rounds` is the most significant missing table in
+this group. The fight resolver (Task 3) produces round-level outcomes
+(finish_round 1-3) but discards the per-round detail. Adding this
+table later would require re-running the resolver or accepting that
+historical fights have no round data.
 
 ---
 
 ## H. Career & medical
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `injuries` | yes (fighter_id, event_id, injury_type, severity, body_area, start_date, projected_return_date, actual_return_date, long_term_damage, career_risk) | no | no | `MISSING` — Task ID 15 |
-| `training_camps` | yes (fighter_id, gym_id, event_id, dates, camp_focus, camp_morale, camp_fatigue, camp_injury_risk, camp_weight_cut_pressure, camp_result_summary) | no | no | `MISSING` — Task ID 16 |
+| `injuries` | yes (fighter_id, event_id, injury_type, severity, body_area, start_date, projected_return_date, actual_return_date, long_term_damage, career_risk) | no | no | `MISSING` — Task ID 15 (Stage 3) |
+| `training_camps` | yes (fighter_id, gym_id, event_id, dates, camp_focus, camp_morale, camp_fatigue, camp_injury_risk, camp_weight_cut_pressure, camp_result_summary) | no | no | `MISSING` — Task ID 16 (Stage 3) |
 
 ---
 
-## I. Scouting & analysis (entire group MISSING)
+## I. Scouting & analysis
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `scouting_reports` | yes | no | no | `MISSING` — Task ID 18 |
-| `betting_odds` | yes | no | no | `MISSING` — Task ID 24 |
-| `matchup_analysis` | yes | no | no | `MISSING` — Task ID 24 |
+| `scouting_reports` | yes | no | no | `MISSING` — Task ID 18 (Stage 3) |
+| `betting_odds` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
+| `matchup_analysis` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
 
 ---
 
 ## J. News & commentary
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
 | `news_sources` | yes (rich: credibility, sensationalism, bias, regional_reach, reliability, frequency) | yes (matches spec) | yes | `OK` |
-| `news_items` | yes (rich: + region_id) | yes (thin: missing region_id) | yes (thin) | `THIN` |
-| `commentary_segments` | yes | yes | yes | `OK` |
-| `pundit_segments` | yes | no | no | `MISSING` — Task ID 24 |
+| `news_items` | yes (rich: + region_id) | yes (thin: missing region_id) | yes (thin) | `THIN` — missing region_id column. News items now written by: fight resolution (Task 3), title changes (Task 11), retirement (Task 12), title vacation (Task 12), contract expiry (Task 13), free agent signing (Task 13), new prospect (Task 14). |
+| `commentary_segments` | yes | yes | yes | `OK` — enriched with title-change suffix (Task 11) |
+| `pundit_segments` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
 
 ---
 
-## K. Rankings & titles (entire group MISSING)
+## K. Rankings & titles
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `rankings` | yes | no | no | `MISSING` — Task ID 10 |
-| `titles` | yes | no | no | `MISSING` — Task ID 11 |
+| `rankings` | yes | no | yes (Task 10) | `OK` — ELO-style, 12 columns, auto-update on fight resolution, UI tab |
+| `titles` | yes | no | yes (Task 11) | `OK` — 10 columns, 5-case resolution logic, vacated on retirement (Task 12) |
 
 ---
 
-## L. Social & rivalries (entire group MISSING)
+## L. Social & rivalries
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `social_posts` | yes | no | no | `MISSING` — Task ID 21 |
-| `social_accounts` | yes | no | no | `MISSING` — Task ID 21 |
-| `rivalries` | yes | no | no | `MISSING` — Task ID 22 |
+| `social_posts` | yes | no | no | `MISSING` — Task ID 21 (Stage 4) |
+| `social_accounts` | yes | no | no | `MISSING` — Task ID 21 (Stage 4) |
+| `rivalries` | yes | no | no | `MISSING` — Task ID 22 (Stage 4) |
 
 ---
 
-## M. Regen & name pools (entire group MISSING)
+## M. Regen & name pools
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `name_first_male` | yes | no | no | `MISSING` — Task ID 14 |
-| `name_first_female` | yes | no | no | `MISSING` — Task ID 14 |
-| `name_last` | yes | no | no | `MISSING` — Task ID 14 |
-| `nickname_pool` | yes | no | no | `MISSING` — Task ID 14 |
-| `region_pool` | yes | no | no | `MISSING` — Task ID 14 |
-| `regen_templates` | yes | no | no | `MISSING` — Task ID 14 |
-| `fighter_lineage` | yes | no | no | `MISSING` — Task ID 14 |
-| `fighter_generation_history` | yes | no | no | `MISSING` — Task ID 14 |
-| `used_names` | yes | no | no | `MISSING` — Task ID 14 |
-| `fighter_memory_links` | yes | no | no | `MISSING` — Task ID 14 |
+| `name_first_male` | yes | no | no | `CONSOLIDATED` → merged into `name_pools` (Task 14) |
+| `name_first_female` | yes | no | no | `CONSOLIDATED` → merged into `name_pools` (Task 14) |
+| `name_last` | yes | no | no | `CONSOLIDATED` → merged into `name_pools` (Task 14) |
+| `nickname_pool` | yes | no | no | `CONSOLIDATED` → merged into `name_pools` (Task 14) |
+| `region_pool` | yes | no | no | `MISSING` — not implemented. Regions use the existing `regions` table. |
+| `regen_templates` | yes | no | no | `MISSING` — not implemented. Style DNA is inherited directly via `fight_style_archetype_id`. |
+| `fighter_lineage` | yes | no | yes (as `regen_lineage`) | `CONSOLIDATED` → renamed to `regen_lineage` (Task 14) |
+| `fighter_generation_history` | yes | no | no | `MISSING` — not implemented. `regen_lineage` tracks retiring→replacement links, which is sufficient for now. |
+| `used_names` | yes | no | no | `MISSING` — by design. Name uniqueness checked against the `fighters` table directly (simpler, avoids redundant table). |
+| `fighter_memory_links` | yes | no | yes (Task 14) | `OK` — table exists but NOT populated (memory resurfacing is a future enhancement) |
+
+**Design deviation notes.** Task 14 consolidated the 10 designed
+regen tables into 3:
+- `name_pools` (one table with a `name_type` column: first_male,
+  first_female, last, nickname — replaces 4 separate tables)
+- `regen_lineage` (tracks retiring→replacement links — replaces
+  `fighter_lineage` + `fighter_generation_history`)
+- `fighter_memory_links` (kept as designed, but not populated)
+
+This simplification was a deliberate decision (documented in Task 14's
+worklog D1): fewer tables, same functionality, easier to maintain.
+The `used_names` table was dropped in favor of checking uniqueness
+against the `fighters` table directly.
 
 ---
 
-## N. Voice & templates (entire group MISSING)
+## N. Voice & templates
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `voice_descriptors` | yes | no | no | `MISSING` — Task ID 19 |
-| `commentary_templates` | yes | no | no | `MISSING` — Task ID 23 |
-| `news_templates` | yes | no | no | `MISSING` — Task ID 23 |
-| `bio_templates` | yes | no | no | `MISSING` — Task ID 19 |
+| `voice_descriptors` | yes | no | no | `MISSING` — Task ID 19 (Stage 3) |
+| `commentary_templates` | yes | no | no | `MISSING` — Task ID 23 (Stage 4) |
+| `news_templates` | yes | no | no | `MISSING` — Task ID 23 (Stage 4) |
+| `bio_templates` | yes | no | no | `MISSING` — Task ID 19 (Stage 3) |
 
 ---
 
-## O. Legacy & history (entire group MISSING)
+## O. Legacy & history
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `fighter_history` | yes (separate from mutable career counters — advisor's point #3) | no | no | `MISSING` — Task ID 4 |
+| `fighter_history` | yes | no | yes (Task 4, as `fight_history`) | `OK` — renamed to `fight_history` (more descriptive) |
 | `staff_history` | yes | no | no | `MISSING` |
 | `company_history` | yes | no | no | `MISSING` |
 | `hall_of_fame` | yes | no | no | `MISSING` |
@@ -220,63 +246,207 @@ or 4 alongside the resolver work.
 
 ---
 
-## P. Portraits & art (entire group MISSING)
+## P. Portraits & art
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `portrait_assets` | yes | no | no | `MISSING` — Task ID 29 |
-| `portrait_templates` | yes | no | no | `MISSING` — Task ID 29 |
+| `portrait_assets` | yes | no | no | `MISSING` — Task ID 29 (Stage 5) |
+| `portrait_templates` | yes | no | no | `MISSING` — Task ID 29 (Stage 5) |
 
 ---
 
-## Q. Finances (entire group MISSING)
+## Q. Finances
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `finances` | yes (per-event P&L, weekly burn rate, forecast) | no (only `promotions.current_cash` column) | no | `MISSING` — Task ID 20 |
+| `finances` | yes (per-event P&L, weekly burn rate, forecast) | no (only `promotions.current_cash` column) | no (still only `current_cash`) | `MISSING` — Task ID 20 (Stage 4) |
 
 ---
 
-## R. Modding (entire group MISSING)
+## R. Modding
 
-| Table | Designed | Built v1.2.0 | Built v1.2.1 | Status |
+| Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `mod_metadata` | yes | no | no | `MISSING` — Task ID 29 |
+| `mod_metadata` | yes | no | no | `MISSING` — Task ID 29 (Stage 5) |
+
+---
+
+## Z. Known issues & gaps (not table-specific)
+
+### Z.1 fighter_attributes and fighter_personality still at 4/3 stats (CRITICAL)
+
+The v1.6 spec calls for 24 combat attributes and 17+ personality
+traits. The v1.9.0 build still has only 4 (`punch_power`, `cardio`,
+`fight_iq`, `chin`) and 3 (`aggression`, `composure`, `morale`).
+
+The fight resolver (Task 3) works with just these 4+3, but every
+downstream system needs the full set:
+- Task 16 (training camps) needs to modify attributes like
+  `takedown_offense`, `submission_defense`, `footwork` — can't
+  modify columns that don't exist.
+- Task 18 (scouting) needs to report on `accuracy`, `clinch_offense`,
+  `cage_wrestling` — can't report on columns that don't exist.
+- Task 19 (voice layer) needs to describe `ringcraft`,
+  `finish_instinct`, `risk_tolerance` — can't describe columns that
+  don't exist.
+- Task 24 (matchup analysis) needs `head_movement`,
+  `submission_offense`, `top_control` for style-edge analysis.
+
+**A new task (Task ID 14.5) is needed** to extend `fighter_attributes`
+from 4 to 24 columns and `fighter_personality` from 3 to 17+ columns.
+This is a schema migration (MINOR bump to 1.9.1 or 1.10.0). The
+resolver's `_power_score()` function and `_resolve_outcome()` must be
+updated to use the full attribute set. The seed must populate the new
+columns with default values (50).
+
+### Z.2 fight_rounds table still missing
+
+The resolver produces a `finish_round` (1-3) but doesn't store
+per-round stats (damage, strikes, takedowns, knockdowns, control
+time, momentum). This table is needed for:
+- Commentary beats (Task 23 — "round 2 was all Vale, he landed 15
+  significant strikes")
+- Punditry (Task 24 — round-by-round analysis)
+- Show rating (Task 26 — round-by-round drama is a key input)
+- Fighter profile depth (future — career stats per round)
+
+**A new task is needed** to add `fight_rounds` and wire the resolver
+to populate it. This should probably happen before or during Task 23
+(commentary engine), since commentary needs round-level data to be
+believable.
+
+### Z.3 fighters table missing ~14 spec columns
+
+Missing: `height_cm`, `reach_cm`, `stance`, `handedness`,
+`injury_proneness`, `weight_cut_difficulty`, `consistency`,
+`clutch_factor`, `marketability`, `fan_friendliness`, `promo_boost`,
+`preferred_gameplans`, `bad_matchup_tags`, `is_deceased`.
+
+- `injury_proneness` is needed for Task 15 (injuries).
+- `weight_cut_difficulty` is needed for Task 17 (weight cuts).
+- `is_deceased` is needed for the death flag (spec mentions death as
+  a career outcome, though it's optional).
+- Physical attributes (`height_cm`, `reach_cm`, `stance`,
+  `handedness`) are needed for fighter profiles and matchup analysis.
+- Marketability attributes are needed for Task 20 (finances) and
+  Task 26 (show rating).
+
+**These should be added** in a migration task, possibly alongside
+Z.1 (attribute extension) since both touch the fighter schema.
+
+### Z.4 promotions table missing AI columns
+
+Missing: `ai_aggression`, `ai_spending_style`, `brand_tone`,
+`starting_budget`, `broadcast_tier`, `ownership_type`.
+
+- `ai_aggression` and `ai_spending_style` are needed for Task 25
+  (rival promotion AI).
+- `broadcast_tier` is needed for Task 20 (finances) and Task 26
+  (show rating).
+- `brand_tone` is needed for Task 23 (news engine — promotion voice).
+
+**These should be added** in a migration task before or during
+Task 25.
+
+### Z.5 No Staff UI tab
+
+Task 2's worklog mentioned "Task ID 6 will add a Staff tab" but
+Task 6's brief explicitly scoped it out. The `staff` and
+`broadcast_staff` tables exist and are seeded (Nina Cross), but the
+UI has no dedicated staff management view. The Contracts tab (Task 9)
+shows staff contracts, but there's no way to hire/fire staff, view
+their skills, or assign them to roles.
+
+**A new task (Task ID 6.5) is needed** for a Staff tab.
+
+### Z.6 Pre-existing `current_date` SQLite quirk (D5)
+
+**Flagged in Tasks 12, 13, 14 but never fixed.** In `app.py`
+`get_clock()` (line 17) and `tick_processor.py` `run_tick()` (line 337),
+bare `current_date` in SELECTs resolves to SQLite's built-in date
+function (today's real date) instead of the `simulation_clock.current_date`
+column. This means the clock can jump unpredictably on the first tick
+after a fresh build.
+
+All existing tests pass despite this quirk because none assert
+specific clock values (tests use `tick_counter` instead). The
+retirement, contract expiry, and regen logic are robust because they
+use the passed `current_date` parameter, not a bare SELECT.
+
+**Fix:** qualify the column as `simulation_clock.current_date` in
+both `app.py` and `tick_processor.py`. This is a small, low-risk
+fix that should be done as a housekeeping task.
+
+### Z.7 Stale comments in test_fight_history.py (D6)
+
+The docstring and code comments in `test_fight_history.py` still
+mention "placeholder for Task 11" and `'1.3.0'`, but the actual
+assertion was updated to `[1, 1]` in Task 11's supervisor sign-off.
+The test passes 21/21. **Clean up the stale comments** in a future
+housekeeping task.
+
+### Z.8 No `tests/` folder — tests live in `scripts/`
+
+The STAGES.md cross-cutting work section says "A `tests/` folder
+lands with Task 3". In practice, tests were placed in `scripts/`
+alongside the generation scripts, not in a separate `tests/` folder.
+This is a minor convention deviation. The tests are:
+`scripts/test_fight_resolver.py`, `scripts/test_fight_history.py`,
+`scripts/test_schema_versioning.py`, `scripts/test_promotion_filter.py`,
+`scripts/test_event_lifecycle.py`, `scripts/test_event_scheduler.py`,
+`scripts/test_contracts.py`, `scripts/test_rankings.py`,
+`scripts/test_titles.py`, `scripts/test_retirement.py`,
+`scripts/test_free_agency.py`, `scripts/test_regen.py`.
+
+12 acceptance tests, 500+ sub-checks, all passing.
 
 ---
 
 ## Summary counts
 
-| Category | Designed | Built v1.2.0 | Built v1.2.1 | Gap |
+| Category | Designed | Built v1.2.0 | Built v1.9.0 | Gap |
 |---|---|---|---|---|
 | Schema meta | 2 | 0 | 2 | 0 |
 | Geography | 7 | 7 (thin) | 7 (thin) | 0 tables, ~20 columns thin |
-| Promotions/gyms/archetypes | 4 | 4 (thin) | 4 (thin) | 0 tables, ~15 columns thin |
-| Fighters | 5 | 4 (`fighter_history` missing, `attributes`/`personality` wrong) | 4 | 1 table + 20 attribute columns + 14 personality columns |
-| Staff & broadcast | 2 | 2 (thin) | 2 (thin) | 0 tables, ~15 columns thin |
-| Contracts | 4 | 0 | 0 | 4 tables |
-| Events & fights | 5 | 4 (`fight_rounds` missing) | 4 | 1 table |
-| Career & medical | 2 | 0 | 0 | 2 tables |
-| Scouting & analysis | 3 | 0 | 0 | 3 tables |
-| News & commentary | 4 | 3 (`pundit_segments` missing) | 3 | 1 table |
-| Rankings & titles | 2 | 0 | 0 | 2 tables |
-| Social & rivalries | 3 | 0 | 0 | 3 tables |
-| Regen & name pools | 10 | 0 | 0 | 10 tables |
-| Voice & templates | 4 | 0 | 0 | 4 tables |
-| Legacy & history | 5 | 0 | 0 | 5 tables |
-| Portraits & art | 2 | 0 | 0 | 2 tables |
-| Finances | 1 | 0 | 0 | 1 table |
-| Modding | 1 | 0 | 0 | 1 table |
-| **TOTAL TABLES** | **~60** | **24** | **26** | **~34 tables** |
-| **TOTAL THIN COLUMNS** | — | — | — | **~70 columns** |
+| Promotions/gyms/archetypes | 4 | 4 (thin) | 4 (thin) | 0 tables, ~16 columns thin |
+| Fighters | 5 | 4 | 5 (fight_history added) | 0 tables, but fighter_attributes WRONG (4/24), fighter_personality WRONG (3/17), fighters THIN (missing ~14 columns) |
+| Staff & broadcast | 2 | 2 (thin) | 2 (thin) | 0 tables, ~17 columns thin, no UI tab |
+| Contracts | 4 | 0 | 4 | 0 |
+| Events & fights | 5 | 4 | 4 | 1 table (fight_rounds still missing) |
+| Career & medical | 2 | 0 | 0 | 2 tables (Task 15-16) |
+| Scouting & analysis | 3 | 0 | 0 | 3 tables (Task 18, 24) |
+| News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, Task 24) |
+| Rankings & titles | 2 | 0 | 2 | 0 |
+| Social & rivalries | 3 | 0 | 0 | 3 tables (Task 21-22) |
+| Regen & name pools | 10 | 0 | 3 (consolidated) | 0 tables (7 consolidated/dropped by design — see §M) |
+| Voice & templates | 4 | 0 | 0 | 4 tables (Task 19, 23) |
+| Legacy & history | 5 | 0 | 1 (fight_history) | 4 tables |
+| Portraits & art | 2 | 0 | 0 | 2 tables (Task 29) |
+| Finances | 1 | 0 | 0 | 1 table (Task 20) |
+| Modding | 1 | 0 | 0 | 1 table (Task 29) |
+| **TOTAL TABLES** | **~60** | **24** | **37** | **~23 tables** (down from ~34 because 7 regen tables were consolidated into 3) |
+| **TOTAL THIN COLUMNS** | — | — | — | **~67 columns** (geography 20 + promotions/gyms 16 + fighters 14 + staff 17) |
+| **WRONG (critical)** | — | — | — | **fighter_attributes (4/24) + fighter_personality (3/17)** — 34 columns missing |
 
 **Headline numbers.**
-- Designed: ~60 tables (the "83+" figure in the advisor's analysis
-  counts every FK and lookup table separately; the logical table
-  count is ~60).
+- Designed: ~60 logical tables (the "83+" figure in the advisor's
+  analysis counts every FK and lookup table separately; the logical
+  table count is ~60).
 - Built v1.2.0: 24 tables.
-- Built v1.2.1: 26 tables (restored `schema_meta` + `schema_migrations`).
-- Gap: ~34 tables and ~70 thin columns.
+- Built v1.9.0: 37 tables (+13 from Tasks 2-14).
+- Gap: ~23 tables and ~67 thin columns + 34 WRONG (critical) columns
+  in fighter_attributes + fighter_personality.
+- 12 acceptance tests, 500+ sub-checks, all passing.
 
-This audit is the source of truth for what work remains. Every
-schema-change task must update this file in the same commit.
+**Most critical gaps (priority order):**
+1. **fighter_attributes + fighter_personality extension** (Z.1) —
+   blocks Tasks 16, 18, 19, 24. Should be the first task in Stage 3.
+2. **fight_rounds table** (Z.2) — blocks Tasks 23, 24, 26. Should
+   be added before or during Task 23.
+3. **fighters table column extension** (Z.3) — blocks Tasks 15, 17,
+   20, 26. Should be added alongside Z.1.
+4. **promotions table AI columns** (Z.4) — blocks Task 25. Should
+   be added before or during Task 25.
+5. **Staff UI tab** (Z.5) — quality of life. Can be done anytime.
+6. **`current_date` quirk fix** (Z.6) — pre-existing bug. Should be
+   fixed as a housekeeping task before Stage 3.
