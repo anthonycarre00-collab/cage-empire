@@ -888,6 +888,146 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
 
 
 # ----------------------------------------------------------------
+# Title vacation on retirement (Task ID 12).
+#
+# When a fighter retires (handled by _check_retirements in
+# tick_processor.py), any title they currently hold is vacated.
+# This helper does the vacation + writes a news item about it. It
+# lives here in app.py (next to _resolve_title_after_fight) so all
+# title-mutation logic is in one place — tick_processor.py imports
+# it via `from app import _vacate_title_on_retirement`. There is no
+# circular-import risk because app.py does NOT import tick_processor.
+#
+# Vacation rules:
+#   - current_champion_fighter_id  -> NULL
+#   - champion_since_date          -> NULL
+#   - is_vacant                    -> 1
+#   - title_reigns_count and title_defenses_count are PRESERVED
+#     (they're historical counters — a vacated belt still represents
+#     a completed reign, and the count of past reigns is meaningful
+#     for legacy/Hall-of-Fame work in later tasks).
+#   - A news item is written: "<fighter> vacates the <promo> <wc>
+#     title" with topic='retirement', promotion_id set, fighter_id
+#     set, published_at=current_date.
+#
+# Returns the list of vacated title_ids (empty list if the fighter
+# held no titles). Caller commits.
+# ----------------------------------------------------------------
+
+def _vacate_title_on_retirement(conn, fighter_id, current_date):
+    """Vacate any title held by a retiring fighter.
+
+    Called by _check_retirements() in tick_processor.py when a fighter
+    retires. If the retiring fighter is a current champion, the title
+    is vacated (current_champion_fighter_id = NULL, is_vacant = 1,
+    champion_since_date = NULL). title_reigns_count and
+    title_defenses_count are NOT reset (they're historical counters
+    that should survive across reigns for legacy/Hall-of-Fame work).
+
+    Also writes a news item about each title vacation (INSERT directly
+    into news_items rather than going through app.write_news — see
+    decision D2 in the worklog). The news item carries the fighter_id
+    and promotion_id so future UIs can filter "retirement" news per
+    promotion or per fighter.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the retiring fighter's fighter_id.
+        current_date: ISO date string 'YYYY-MM-DD' for the news item
+            published_at column.
+
+    Returns:
+        List of title_ids that were vacated (empty list if the fighter
+        held no titles).
+    """
+    vacated = []
+    # Find every title the retiring fighter currently holds. In
+    # practice a fighter holds at most 1 title (one per weight class
+    # per promotion, and a fighter is in one weight class), but the
+    # code is defensive — if a future task adds multi-division
+    # champions, this loop handles it correctly.
+    rows = conn.execute(
+        "SELECT title_id, promotion_id, weight_class_id "
+        "FROM titles WHERE current_champion_fighter_id = ?",
+        (fighter_id,),
+    ).fetchall()
+    if not rows:
+        return vacated
+
+    # Look up the fighter's name once (used in every news item).
+    fighter_name_row = conn.execute(
+        "SELECT first_name || ' ' || last_name FROM fighters WHERE fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    fighter_name = fighter_name_row[0] if fighter_name_row else f"Fighter {fighter_id}"
+
+    # Get or create the "System Feed" news source (same pattern as
+    # app.write_news). In the seeded DB this source already exists.
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    for title_id, promo_id, wc_id in rows:
+        # Vacate the title. Preserve reigns + defenses counts (they
+        # are historical — a future champion will start a NEW reign
+        # with title_reigns_count incremented, but the historical
+        # count of past reigns stays).
+        conn.execute(
+            "UPDATE titles SET current_champion_fighter_id = NULL, "
+            "champion_since_date = NULL, is_vacant = 1, "
+            "updated_at = CURRENT_TIMESTAMP WHERE title_id = ?",
+            (title_id,),
+        )
+        vacated.append(title_id)
+
+        # Look up promotion + weight class names for the news headline.
+        promo_row = conn.execute(
+            "SELECT name FROM promotions WHERE promotion_id = ?",
+            (promo_id,),
+        ).fetchone()
+        promo_name = promo_row[0] if promo_row else f"Promotion {promo_id}"
+        wc_row = conn.execute(
+            "SELECT name FROM weight_classes WHERE weight_class_id = ?",
+            (wc_id,),
+        ).fetchone()
+        wc_name = wc_row[0] if wc_row else f"Weight Class {wc_id}"
+
+        # Write the vacation news item. topic='retirement' so future
+        # UI filters can group retirement-related news together.
+        # published_at is set to current_date (the sim date the
+        # retirement happened on), NOT CURRENT_TIMESTAMP (which is
+        # the wall-clock time the row was inserted).
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, promotion_id, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                src_id,
+                f"{fighter_name} vacates the {promo_name} {wc_name} title",
+                f"{fighter_name} has retired, vacating the {promo_name} "
+                f"{wc_name} championship. A new champion will be crowned "
+                f"at the next title fight.",
+                "neutral",
+                "retirement",
+                fighter_id,
+                promo_id,
+                current_date,
+            ),
+        )
+
+    return vacated
+
+
+# ----------------------------------------------------------------
 # Repeatable event generator (Task ID 8).
 #
 # After the last fight on a card resolves and the event transitions

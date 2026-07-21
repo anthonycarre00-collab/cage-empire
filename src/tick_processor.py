@@ -1,10 +1,175 @@
 import sqlite3
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+
+# Make src/ importable so we can call _vacate_title_on_retirement from
+# app.py. app.py imports tkinter, but importing the module itself does
+# NOT require a display (only tk.Tk() does), so this is safe in
+# headless contexts. There is no circular-import risk because app.py
+# does NOT import tick_processor.
+sys.path.insert(0, str(BASE_DIR))
+from app import _vacate_title_on_retirement  # noqa: E402
+
+
+# ----------------------------------------------------------------
+# Retirement checking (Task ID 12).
+#
+# Fighters age. When a fighter crosses age 40 with declining
+# career_health, they retire. Age 45 is mandatory retirement
+# (regardless of health). Retiring champions vacate their titles
+# (delegated to app._vacate_title_on_retirement). A news item is
+# written per retirement.
+#
+# This function runs on every tick (called from run_tick after the
+# clock advance). It does NOT commit — the caller commits. This
+# matches the existing pattern in app.py where every helper leaves
+# the commit to the outermost caller.
+#
+# Foundation for:
+#   - Task 14 (regen) — retiring fighters need to be replaced by new
+#     generated fighters.
+#   - Task 11 (titles) — retiring champions vacate the belt (handled
+#     by _vacate_title_on_retirement in app.py).
+#   - The "playable forever" loop — without retirement, the roster is
+#     static and no room exists for regen fighters.
+# ----------------------------------------------------------------
+
+def _check_retirements(conn, current_date):
+    """Check all active fighters for retirement eligibility and retire them.
+
+    Retirement rules (Task ID 12):
+      - A fighter is retirement-eligible if:
+        (a) age >= 40 (computed from date_of_birth and current_date), AND
+        (b) career_health < 60 (declining health — a healthy 40-year-old
+            can keep fighting, but a worn-down one should hang it up).
+      - OR age >= 45 (mandatory retirement — no one fights past 45 in
+        this sim, regardless of health).
+      - When a fighter retires:
+        (a) Set fighters.is_active = 0, fighters.is_retired = 1,
+            fighters.updated_at = CURRENT_TIMESTAMP.
+        (b) Vacate any title they hold (call
+            _vacate_title_on_retirement from app.py).
+        (c) Write a news item announcing the retirement.
+      - Returns the list of retired fighter_ids (for logging/testing).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        current_date: ISO date string 'YYYY-MM-DD' (the current sim date).
+
+    Returns:
+        List of fighter_ids that were retired on this tick.
+    """
+    try:
+        current_dt = datetime.strptime(current_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        # Defensive: if current_date is somehow malformed, skip the
+        # retirement check entirely (return empty list). The clock
+        # advance in run_tick will still commit; the next tick will
+        # try again.
+        return []
+
+    # Fetch all active, non-retired fighters with their DOB + career
+    # health. LEFT JOIN fighter_career so a fighter without a career
+    # row (defensive — shouldn't happen with the seed) is treated as
+    # career_health=100 (healthy, won't retire on the health rule).
+    rows = conn.execute(
+        "SELECT f.fighter_id, f.first_name, f.last_name, f.date_of_birth, "
+        "COALESCE(fc.career_health, 100) AS career_health "
+        "FROM fighters f "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+        "WHERE f.is_active = 1 AND f.is_retired = 0"
+    ).fetchall()
+
+    # Get or create the "System Feed" news source (same pattern as
+    # app.write_news). The seeded DB already has this source.
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    retired = []
+    for fighter_id, first_name, last_name, dob, career_health in rows:
+        # Compute age: years between dob and current_date, adjusted
+        # down by 1 if the birthday hasn't happened yet this year.
+        # Comparing (month, day) tuples handles leap-year babies
+        # correctly (Feb 29 vs Feb 28 in non-leap years).
+        try:
+            dob_dt = datetime.strptime(dob, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            # Defensive: skip fighters with malformed DOB. (Shouldn't
+            # happen with the seed, but a future regen engine or mod
+            # tool could produce one.)
+            continue
+        age = current_dt.year - dob_dt.year
+        if (current_dt.month, current_dt.day) < (dob_dt.month, dob_dt.day):
+            age -= 1
+
+        # Eligibility: age >= 45 (mandatory) OR (age >= 40 AND
+        # career_health < 60). The brief specifies `< 60` for the
+        # health threshold — a fighter with career_health exactly 60
+        # does NOT retire (boundary case tested in test_retirement.py
+        # case D).
+        eligible = (age >= 45) or (age >= 40 and career_health < 60)
+        if not eligible:
+            continue
+
+        # Retire the fighter. is_active=0 means _pick_matchup (Task 8)
+        # and any future "available fighters" queries will skip them.
+        # is_retired=1 distinguishes "retired" from "inactive for
+        # another reason" (e.g., injury in Task 15, suspension in a
+        # future task). Both flags are set together here.
+        conn.execute(
+            "UPDATE fighters SET is_active = 0, is_retired = 1, "
+            "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+            (fighter_id,),
+        )
+
+        # Vacate any title the retiring fighter holds. Returns the
+        # list of vacated title_ids (empty list if they held none).
+        # The helper writes its own news item per vacation, so we
+        # don't write a duplicate one here.
+        _vacate_title_on_retirement(conn, fighter_id, current_date)
+
+        # Write the retirement news item. topic='retirement' so the
+        # future news engine (Task 23) can filter retirement-themed
+        # items. fighter_id is set so future UIs can filter "this
+        # fighter's news". promotion_id is left NULL (the news is
+        # about the fighter, not a specific promotion — a fighter can
+        # retire from one promotion and sign with another in Task 13).
+        full_name = f"{first_name} {last_name}"
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                src_id,
+                f"{full_name} announces retirement at age {age}",
+                f"After a long career, {full_name} has announced retirement "
+                f"from professional MMA competition at age {age}.",
+                "neutral",
+                "retirement",
+                fighter_id,
+                current_date,
+            ),
+        )
+
+        retired.append(fighter_id)
+
+    return retired
+
 
 def run_tick(conn, tick_type="day", steps=1):
     for _ in range(steps):
@@ -16,6 +181,19 @@ def run_tick(conn, tick_type="day", steps=1):
             "UPDATE simulation_clock SET current_date=?, current_day=?, current_week=?, current_month=?, current_year=?, current_tick_type=?, tick_counter=tick_counter+1, updated_at=CURRENT_TIMESTAMP WHERE clock_id=1",
             (dt.strftime("%Y-%m-%d"), day, week, dt.month, dt.year, tick_type),
         )
+        # Task ID 12: check for retirements on every tick. Runs AFTER
+        # the clock advance so the retirement check uses the NEW sim
+        # date (a fighter who turns 40 on this tick's new date becomes
+        # eligible today, not yesterday). The function does NOT commit
+        # — the conn.commit() below covers both the clock UPDATE and
+        # any retirement side effects (fighters UPDATE, titles UPDATE,
+        # news_items INSERTs). Prints a one-line log per tick if any
+        # fighters were retired, mirroring the pattern in
+        # resolve_next_fight's auto-schedule warning.
+        retired = _check_retirements(conn, dt.strftime("%Y-%m-%d"))
+        if retired:
+            print(f"  Retired {len(retired)} fighter(s) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {retired}")
         conn.commit()
 
 def main():

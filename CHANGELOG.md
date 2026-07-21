@@ -9,6 +9,79 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `is_retired` column on `fighters` table (Task ID 12) — INTEGER NOT
+  NULL DEFAULT 0 CHECK (is_retired IN (0,1)). Distinguishes "retired"
+  (is_retired=1) from "inactive for another reason" (injury in Task
+  15, suspension in a future task). When a fighter retires, both
+  is_active and is_retired are set: is_active=0 (excludes them from
+  _pick_matchup's `is_active = 1` filter, so they won't be picked for
+  new matchups), is_retired=1 (marks the reason). The column lives
+  right after `is_active` in the table definition. Foundation for
+  Task 14 (regen — retiring fighters trigger replacement fighter
+  generation) and the "playable forever" loop (without retirement,
+  the roster never turns over).
+- `_check_retirements(conn, current_date)` function in
+  `tick_processor.py` (Task ID 12) — runs on every tick (called from
+  `run_tick()` after the clock advance). Retirement rules: a fighter
+  is eligible if (age >= 45) OR (age >= 40 AND career_health < 60).
+  Age 45 is mandatory retirement (no one fights past 45 in this sim,
+  regardless of health). Age 40-44 is conditional on declining health
+  (a healthy 40-year-old can keep fighting; a worn-down one should
+  hang it up). The boundary is `< 60` (career_health=60 does NOT
+  retire). For each eligible fighter: sets is_active=0, is_retired=1,
+  calls `_vacate_title_on_retirement`, writes a retirement news item
+  (topic='retirement', fighter_id set, published_at=current_date).
+  Returns the list of retired fighter_ids (empty list if none). The
+  function does NOT commit — the caller (run_tick) commits.
+- `_vacate_title_on_retirement(conn, fighter_id, current_date)`
+  helper in `app.py` (Task ID 12) — vacates any title held by a
+  retiring fighter. Sets current_champion_fighter_id=NULL,
+  champion_since_date=NULL, is_vacant=1. `title_reigns_count` and
+  `title_defenses_count` are PRESERVED (historical counters that
+  survive across reigns for legacy/Hall-of-Fame work). Writes a
+  vacation news item per title (topic='retirement', promotion_id
+  set, fighter_id set, published_at=current_date). Returns the list
+  of vacated title_ids (empty list if the fighter held no titles).
+  Lives in app.py next to `_resolve_title_after_fight` so all title-
+  mutation logic is in one place. tick_processor imports it via
+  `from app import _vacate_title_on_retirement` (no circular import
+  — app.py does not import tick_processor).
+- Retirement news items (Task ID 12) — written by
+  `_check_retirements` when a fighter retires. Headline:
+  "<fighter> announces retirement at age <age>". Body: a brief
+  retirement announcement. topic='retirement', fighter_id set,
+  published_at=current_date (the sim date the retirement happened
+  on, NOT CURRENT_TIMESTAMP which is wall-clock time).
+- Title vacation news items (Task ID 12) — written by
+  `_vacate_title_on_retirement` when a retiring fighter was a
+  champion. Headline: "<fighter> vacates the <promotion>
+  <weight_class> title". Body: announces the retirement + vacation
+  + that a new champion will be crowned at the next title fight.
+  topic='retirement', fighter_id set, promotion_id set,
+  published_at=current_date.
+- Acceptance test `scripts/test_retirement.py` (Task ID 12) — tests
+  schema (is_retired column, DEFAULT 0, CHECK IN (0,1), all seeded
+  fighters is_retired=0), age computation (age 46 retires, age 36
+  doesn't), age 40-44 with declining career_health (age 41 +
+  career_health=50 retires, age 41 + career_health=70 doesn't),
+  career_health=60 boundary (does NOT retire), career_health=59
+  boundary (retires), mandatory age 45 (retires even with
+  career_health=100), title vacation on champion retirement
+  (is_vacant=1, current_champion_fighter_id=NULL, reigns/defenses
+  preserved), retirement news item (topic='retirement', headline
+  contains name + 'retirement', fighter_id matches), title vacation
+  news item (headline contains 'vacates' + title name), retired
+  fighter excluded from new matchups (schedule_next_event returns
+  None when only 1 active fighter remains), multiple retirements on
+  one tick, no retirements when none eligible, regression
+  (fight_history + rankings + titles + event lifecycle + scheduler
+  still work), and `_check_retirements` callable directly with no
+  eligible fighters. 13 cases A-M. Uses
+  build_db.CODE_SCHEMA_VERSION dynamically (no hardcoded version
+  string — same pattern as test_rankings.py, test_contracts.py,
+  test_titles.py). Uses random.seed(42) for reproducibility where
+  relevant. Prints PASS/FAIL summary. Exit 0 = all PASS, 1 = any
+  FAIL.
 - `titles` table (Task ID 11) — one row per belt per promotion per
   weight class. Tracks the current champion, when they won it
   (`champion_since_date`), how many reigns they've had
@@ -226,6 +299,35 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.6.0 → 1.7.0 (Task ID 12) — fourth MINOR bump
+  in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0, Task ID 10's 1.4.0 →
+  1.5.0, Task ID 11's 1.5.0 → 1.6.0). Adds the `is_retired` column to
+  the existing `fighters` table (no new tables — the column addition
+  is the whole schema change).
+- `build_db.py` migration name updated from `v1_6_0_add_titles` to
+  `v1_7_0_add_retirement` (Task ID 12). Note: build_db.py records only
+  the latest migration name on each rebuild (it drops + recreates the
+  DB file before recording), so the schema_migrations table contains
+  only the current task's migration after a rebuild — this is a known
+  quirk of the build_db.py design and is unchanged by Task 12.
+- `tick_processor.run_tick()` now checks for retirements after
+  advancing the clock (Task ID 12). The new order inside the for loop
+  is: clock UPDATE → `_check_retirements(conn, new_date_str)` →
+  conn.commit(). The retirement check uses the NEW sim date (so a
+  fighter who turns 40 on this tick's new date becomes eligible today,
+  not yesterday). If any fighters were retired, a one-line log message
+  is printed ("Retired N fighter(s) on YYYY-MM-DD: [...]"), mirroring
+  the pattern in `resolve_next_fight`'s auto-schedule warning. The
+  commit covers both the clock UPDATE and any retirement side effects
+  (fighters UPDATE, titles UPDATE, news_items INSERTs).
+- `_pick_matchup()` in `app.py` already filters on `is_active = 1`
+  (since Task ID 8), so retired fighters (is_active=0) are
+  automatically excluded from new matchups (Task ID 12). No change to
+  `_pick_matchup` itself was needed — the is_active=0 set by
+  `_check_retirements` is what makes the exclusion work. The
+  acceptance test (case I) verifies this end-to-end: when a fighter
+  retires and `schedule_next_event` is called, it returns None if
+  fewer than 2 active fighters remain in the promotion.
 - Schema version bumped 1.5.0 → 1.6.0 (Task ID 11) — third MINOR bump
   in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0 and Task ID 10's
   1.4.0 → 1.5.0). Adds the `titles` table.
