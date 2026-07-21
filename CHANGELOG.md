@@ -9,6 +9,13 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `fight_history` table (Task ID 4) — separate per-fighter history table
+  distinct from the mutable `fighter_career` counters. Populated by
+  `resolve_next_fight()` with 2 rows per fight (one per fighter, from
+  their perspective). Schema version bumped 1.2.1 → 1.3.0.
+- Acceptance test `scripts/test_fight_history.py` (Task ID 4) — builds
+  a fresh DB, resolves 5 fights, asserts `fight_history` row count and
+  win/loss/draw correspondence with `fighter_career`.
 - Real attribute-based fight resolver (Task ID 3) — replaces coin flip
   with probabilistic model reading `fighter_attributes` +
   `fighter_personality`.
@@ -38,6 +45,9 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version: `1.2.1` → `1.3.0`. First MINOR bump since the
+  versioning system was restored in Task ID 2. Adds the `fight_history`
+  table (Task ID 4).
 - DB filename: `mma_booking_sim_v1_2.db` → `cage_empire.db`. Applied
   across all four `src/*.py` files. Branding consistency; cleanest
   moment is during the schema-versioning restoration (Task ID 2).

@@ -294,18 +294,20 @@ def resolve_next_fight(conn):
       - UPDATE fights SET winner/loser/result_type/finish_round/...
       - UPDATE fight_participants SET is_winner=...
       - UPDATE fighter_career SET record_wins/losses/draws, streaks
+      - INSERT INTO fight_history (2 rows, one per fighter)  [v1.3.0]
       - write_news(...)  (enriched headline + body, same signature)
       - write_commentary(...)  (enriched text, same signature)
     """
     fight = conn.execute(
-        "SELECT f.fight_id, f.event_id, f.scheduled_rounds, e.promotion_id "
+        "SELECT f.fight_id, f.event_id, f.scheduled_rounds, e.promotion_id, "
+        "f.weight_class_id, e.event_date "
         "FROM fights f JOIN events e ON e.event_id=f.event_id "
         "WHERE f.winner_fighter_id IS NULL AND f.result_type IS NULL "
         "ORDER BY f.fight_id LIMIT 1"
     ).fetchone()
     if not fight:
         return None
-    fight_id, event_id, scheduled_rounds, promo_id = fight
+    fight_id, event_id, scheduled_rounds, promo_id, weight_class_id, event_date = fight
     parts = conn.execute(
         "SELECT fighter_id FROM fight_participants WHERE fight_id=? ORDER BY corner",
         (fight_id,),
@@ -384,6 +386,69 @@ def resolve_next_fight(conn):
         headline, body = _format_fight_news(winner_name, loser_name, result_type, finish_round)
         commentary = _format_fight_commentary(winner_name, loser_name, result_type, finish_round)
         news_fighter_id = winner_id
+
+    # ----------------------------------------------------------------
+    # Write two rows to `fight_history` (one per fighter, from their
+    # perspective). New in v1.3.0 (Task ID 4) — separate from the
+    # mutable `fighter_career` counters. The UNIQUE (fight_id, fighter_id)
+    # constraint enforces one row per fighter per fight. `title_at_stake`
+    # is hardcoded to 0 for now; Task ID 11 (titles) will populate it.
+    # `score_margin` is the rounded absolute margin from the resolver.
+    # Read by upcoming rankings, legacy, and stats-based commentary
+    # work (Tasks 10, 11, 14, 19, 23) — see docs/STAGES.md Task ID 4.
+    #
+    # Defensive DELETE: in normal gameplay each fight is resolved exactly
+    # once, so there are no prior fight_history rows to conflict with.
+    # But tests (and any future "re-resolve" feature) may reset the
+    # fights row and call resolve_next_fight() again on the same
+    # fight_id. Without this DELETE, the INSERT below would crash on
+    # the UNIQUE constraint. Clearing prior rows makes the resolver
+    # idempotent for re-resolution — the latest result wins, which is
+    # the sensible behaviour. (This is what keeps
+    # scripts/test_fight_resolver.py passing after Task ID 4.)
+    # ----------------------------------------------------------------
+    conn.execute(
+        "DELETE FROM fight_history WHERE fight_id=?",
+        (fight_id,),
+    )
+    score_margin_int = int(round(outcome["abs_margin"]))
+    if result_type == "draw":
+        # Both fighters get a 'draw' row, opponent_id = the other fighter.
+        conn.execute(
+            "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
+            "outcome, result_type, finish_round, finish_time, score_margin, "
+            "event_id, event_date, weight_class_id, title_at_stake) "
+            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, 0)",
+            (fight_id, a_id, b_id, result_type, finish_round, finish_time,
+             score_margin_int, event_id, event_date, weight_class_id),
+        )
+        conn.execute(
+            "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
+            "outcome, result_type, finish_round, finish_time, score_margin, "
+            "event_id, event_date, weight_class_id, title_at_stake) "
+            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, 0)",
+            (fight_id, b_id, a_id, result_type, finish_round, finish_time,
+             score_margin_int, event_id, event_date, weight_class_id),
+        )
+    else:
+        # Winner row: outcome='win', opponent_id = loser.
+        conn.execute(
+            "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
+            "outcome, result_type, finish_round, finish_time, score_margin, "
+            "event_id, event_date, weight_class_id, title_at_stake) "
+            "VALUES (?, ?, ?, 'win', ?, ?, ?, ?, ?, ?, ?, 0)",
+            (fight_id, winner_id, loser_id, result_type, finish_round, finish_time,
+             score_margin_int, event_id, event_date, weight_class_id),
+        )
+        # Loser row: outcome='loss', opponent_id = winner.
+        conn.execute(
+            "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
+            "outcome, result_type, finish_round, finish_time, score_margin, "
+            "event_id, event_date, weight_class_id, title_at_stake) "
+            "VALUES (?, ?, ?, 'loss', ?, ?, ?, ?, ?, ?, ?, 0)",
+            (fight_id, loser_id, winner_id, result_type, finish_round, finish_time,
+             score_margin_int, event_id, event_date, weight_class_id),
+        )
 
     # The write_news / write_commentary calls themselves are preserved
     # exactly — only the headline / body / commentary strings change.

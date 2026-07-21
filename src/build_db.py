@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.2.1"
+CODE_SCHEMA_VERSION = "1.3.0"
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -299,6 +299,33 @@ CREATE TABLE IF NOT EXISTS commentary_segments (
     importance INTEGER NOT NULL DEFAULT 50,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- fight_history (added in v1.3.0, Task ID 4).
+-- Per-fighter, per-fight history row — separate from the mutable
+-- `fighter_career` counters. Two rows are written per resolved fight
+-- (one per fighter, from their perspective). Required by upcoming
+-- rankings, legacy, and stats-based commentary work (Tasks 10, 11,
+-- 14, 19, 23) — reconstructing it later from `record_wins` would be
+-- impossible. See docs/STAGES.md Task ID 4 for the brief.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fight_history (
+    fight_history_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    fight_id           INTEGER NOT NULL REFERENCES fights(fight_id) ON DELETE CASCADE,
+    fighter_id         INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    opponent_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    outcome            TEXT NOT NULL CHECK (outcome IN ('win','loss','draw','nc')),
+    result_type        TEXT,
+    finish_round       INTEGER,
+    finish_time        TEXT,
+    score_margin       INTEGER,
+    event_id           INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    event_date         TEXT,
+    weight_class_id    INTEGER REFERENCES weight_classes(weight_class_id) ON DELETE SET NULL,
+    title_at_stake     INTEGER NOT NULL DEFAULT 0 CHECK (title_at_stake IN (0,1)),
+    created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fight_id, fighter_id)
+);
 """
 
 def main():
@@ -315,7 +342,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_initial",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_fight_history",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
