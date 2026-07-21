@@ -36,6 +36,59 @@ def write_commentary(conn, event_id=None, fight_id=None, text=""):
     speaker_id = speaker[0] if speaker else None
     conn.execute("INSERT INTO commentary_segments (event_id, fight_id, segment_type, speaker_staff_id, text, importance) VALUES (?, ?, ?, ?, ?, ?)", (event_id, fight_id, "play_by_play", speaker_id, text, 70))
 
+
+# ----------------------------------------------------------------
+# Fighter roster display helper (Task ID 6).
+#
+# Extracted from the inline query that used to live in
+# `App.refresh_all()` so the multi-promotion filter logic is
+# testable without a Tkinter display. The test script
+# `scripts/test_promotion_filter.py` imports this helper directly.
+#
+# Returns the same 4-tuple shape the Fighters Treeview was already
+# rendering: (name, weight_class, promotion_name, record) — so
+# `refresh_all()`'s `insert('', 'end', values=r)` call is unchanged.
+#
+# Schema version is unchanged (still 1.3.0) — no new tables, no new
+# columns. RFL stays inert (no AI behaviour); this helper just makes
+# the UI aware that multiple promotions exist.
+# ----------------------------------------------------------------
+
+def get_fighters_for_display(conn, promotion_filter=None):
+    """Return fighter rows for the UI Fighters tree.
+
+    Args:
+        conn: sqlite3 connection.
+        promotion_filter: None (all fighters, including free agents
+            with current_promotion_id = NULL), or a promotion_id int
+            (only fighters whose current_promotion_id matches).
+
+    Returns:
+        List of 4-tuples: (name, weight_class, promotion_name, record).
+        - name:            fighters.first_name || ' ' || fighters.last_name
+        - weight_class:    weight_classes.name, or 'Unknown' if no WC
+        - promotion_name:  promotions.name, or 'Unassigned' if no
+                           current promotion (i.e. a free agent)
+        - record:          'W-L-D' string from fighter_career counters,
+                           defaulting to '0-0-0' if no career row yet
+    """
+    sql = (
+        "SELECT f.first_name || ' ' || f.last_name, "
+        "COALESCE(w.name, 'Unknown'), "
+        "COALESCE(p.name, 'Unassigned'), "
+        "COALESCE(fc.record_wins, 0) || '-' || COALESCE(fc.record_losses, 0) || '-' || COALESCE(fc.record_draws, 0) "
+        "FROM fighters f "
+        "LEFT JOIN weight_classes w ON w.weight_class_id = f.weight_class_id "
+        "LEFT JOIN promotions p ON p.promotion_id = f.current_promotion_id "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id"
+    )
+    if promotion_filter is not None:
+        sql += " WHERE f.current_promotion_id = ?"
+        sql += " ORDER BY f.fighter_id"
+        return conn.execute(sql, (promotion_filter,)).fetchall()
+    sql += " ORDER BY f.fighter_id"
+    return conn.execute(sql).fetchall()
+
 # ----------------------------------------------------------------
 # Real attribute-based fight resolver (Task ID 3).
 #
@@ -463,6 +516,16 @@ class App(tk.Tk):
         self.geometry("1280x760")
         self.conn = sqlite3.connect(DB_PATH)
         self.conn.execute("PRAGMA foreign_keys = ON;")
+        # Promotion filter state (Task ID 6). None = all promotions
+        # (including free agents with current_promotion_id = NULL);
+        # an int = restrict the Fighters tree to that promotion_id.
+        # Default is "All Promotions" so the UI opens showing every
+        # fighter across every promotion.
+        self.current_promotion_filter = None
+        # Parallel list mapping the combobox's selected index to a
+        # promotion_id (or None for the "All Promotions" sentinel).
+        # Populated by refresh_all() alongside the combobox values.
+        self._promo_filter_ids = [None]
         self.build_ui()
         self.refresh_all()
 
@@ -472,6 +535,30 @@ class App(tk.Tk):
         ttk.Button(top, text="Advance Day", command=self.on_advance_day).pack(side='left', padx=4)
         ttk.Button(top, text="Resolve Fight", command=self.on_resolve_fight).pack(side='left', padx=4)
         ttk.Button(top, text="Refresh", command=self.refresh_all).pack(side='left', padx=4)
+
+        # Promotion filter (Task ID 6) — lets the player focus the
+        # Fighters tree on one promotion's roster. None = all
+        # promotions. Defaults to "All Promotions". The dropdown
+        # values are refreshed from the DB on every refresh_all() call
+        # so promotions added by future tasks (or removed via free-
+        # agency, Task ID 13) are reflected automatically. The
+        # current selection is preserved across refreshes if the
+        # promotion still exists; otherwise it resets to "All".
+        ttk.Label(top, text="Filter:").pack(side='left', padx=(12, 4))
+        self.promo_filter_var = tk.StringVar()
+        self.promo_filter_combo = ttk.Combobox(
+            top, textvariable=self.promo_filter_var, state='readonly',
+            width=22, values=["All Promotions"]
+        )
+        self.promo_filter_combo.current(0)
+        # <<ComboboxSelected>> only fires on user interaction, not on
+        # programmatic .set()/.current() calls — so calling refresh_all()
+        # from inside the handler (which re-populates the combobox)
+        # does NOT cause infinite recursion. Verified empirically by
+        # the smoke test.
+        self.promo_filter_combo.bind("<<ComboboxSelected>>", self.on_promo_filter_change)
+        self.promo_filter_combo.pack(side='left', padx=4)
+
         self.clock_var = tk.StringVar()
         ttk.Label(top, textvariable=self.clock_var, font=("Segoe UI", 11, "bold")).pack(side='right')
 
@@ -521,21 +608,45 @@ class App(tk.Tk):
     def refresh_all(self):
         row = get_clock(self.conn)
         self.clock_var.set(f"{row[0]} | Day {row[1]} | Week {row[2]} | Month {row[3]} | Year {row[4]} | Ticks {row[5]}")
+
+        # ----------------------------------------------------------------
+        # Refresh promotion filter dropdown from DB (Task ID 6).
+        # Promotions may be added by future tasks (e.g. scout-driven
+        # expansion) or removed (fighters become free agents, Task ID
+        # 13). The dropdown is rebuilt on every refresh so it always
+        # reflects the current DB state. The user's current selection
+        # is preserved if the promotion still exists; otherwise the
+        # filter resets to "All Promotions" so the UI never ends up
+        # pointing at a deleted promotion_id.
+        # ----------------------------------------------------------------
+        current_selection = self.promo_filter_var.get() or "All Promotions"
+        promo_names = ["All Promotions"]
+        promo_ids = [None]  # parallel list: None for "All", else promotion_id
+        for pid, pname in self.conn.execute(
+            "SELECT promotion_id, name FROM promotions ORDER BY promotion_id"
+        ):
+            promo_names.append(pname)
+            promo_ids.append(pid)
+        self.promo_filter_combo['values'] = promo_names
+        if current_selection in promo_names:
+            # Re-select the same promotion the user had picked.
+            # .set() does NOT fire <<ComboboxSelected>> (Tkinter only
+            # fires that on user interaction), so no recursion here.
+            self.promo_filter_combo.set(current_selection)
+        else:
+            self.promo_filter_combo.current(0)
+            self.current_promotion_filter = None
+        # Store the parallel id list so on_promo_filter_change can map
+        # the combobox's selected index -> promotion_id.
+        self._promo_filter_ids = promo_ids
+
         self.clear_tree(self.fighters)
         self.clear_tree(self.events)
         self.clear_tree(self.fights)
         self.news.delete(0, tk.END)
         self.commentary.delete(0, tk.END)
 
-        for r in self.conn.execute("""
-            SELECT f.first_name || ' ' || f.last_name, COALESCE(w.name,'Unknown'), COALESCE(p.name,'Unassigned'),
-                   COALESCE(fc.record_wins,0) || '-' || COALESCE(fc.record_losses,0) || '-' || COALESCE(fc.record_draws,0)
-            FROM fighters f
-            LEFT JOIN weight_classes w ON w.weight_class_id=f.weight_class_id
-            LEFT JOIN promotions p ON p.promotion_id=f.current_promotion_id
-            LEFT JOIN fighter_career fc ON fc.fighter_id=f.fighter_id
-            ORDER BY f.fighter_id
-        """):
+        for r in get_fighters_for_display(self.conn, self.current_promotion_filter):
             self.fighters.insert('', 'end', values=r)
 
         for r in self.conn.execute("SELECT event_date, event_name, status FROM events ORDER BY event_date"):
@@ -560,6 +671,37 @@ class App(tk.Tk):
             self.news.insert(tk.END, r[0])
         for r in self.conn.execute("SELECT text FROM commentary_segments ORDER BY commentary_segment_id DESC LIMIT 10"):
             self.commentary.insert(tk.END, r[0])
+
+    def on_promo_filter_change(self, event=None):
+        """Handle promotion filter dropdown change (Task ID 6).
+
+        Reads the combobox's currently selected index, looks up the
+        corresponding promotion_id in the parallel `_promo_filter_ids`
+        list (set by `refresh_all()` when the dropdown was last
+        populated), stores it in `current_promotion_filter`, and
+        triggers a full refresh — which re-runs the fighter query
+        through `get_fighters_for_display` with the new filter applied.
+
+        Index 0 is always "All Promotions" -> filter = None. Any
+        other index maps to a promotion_id int.
+
+        Note: `refresh_all()` re-populates the combobox as a side
+        effect, but `<<ComboboxSelected>>` only fires on user
+        interaction (not on programmatic `.set()`), so there is no
+        infinite recursion here.
+        """
+        idx = self.promo_filter_combo.current()
+        if idx <= 0:
+            self.current_promotion_filter = None
+        else:
+            # Defensive: bounds-check against the parallel list. If
+            # the combobox is somehow out of sync with the list (e.g.
+            # refresh hasn't run yet), fall back to "All Promotions".
+            if 0 <= idx < len(self._promo_filter_ids):
+                self.current_promotion_filter = self._promo_filter_ids[idx]
+            else:
+                self.current_promotion_filter = None
+        self.refresh_all()
 
     def on_advance_day(self):
         try:

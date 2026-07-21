@@ -9,6 +9,19 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Promotion filter dropdown in the UI (Task ID 6) — adds a "Filter:"
+  combobox to the top bar that lets the player focus the Fighters
+  tree on one promotion. Defaults to "All Promotions". Wires the
+  multi-promotion data shape (landed in Task ID 2 as inert Rival
+  Fight League seed) into the UI.
+- `get_fighters_for_display(conn, promotion_filter)` helper in
+  `app.py` (Task ID 6) — extracted from the inline query in
+  `refresh_all()` so the filter logic is testable without a Tkinter
+  display.
+- Acceptance test `scripts/test_promotion_filter.py` (Task ID 6) —
+  tests the filter helper with all promotions, single promotion,
+  invalid promotion, and free agent (NULL promotion) cases. Optional
+  UI smoke test that skips cleanly in headless environments.
 - Schema version-check gate (Task ID 5) — `build_db.py` `main()` now
   checks `schema_meta.schema_version` before unlinking the DB file and
   refuses to run if the on-disk version is newer than the code's known
