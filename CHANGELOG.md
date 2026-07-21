@@ -9,6 +9,20 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Event lifecycle transitions (Task ID 7) — `resolve_next_fight()` now
+  updates the parent event's status: `scheduled` → `in_progress` when
+  the first fight on the card resolves, `in_progress` → `completed`
+  when the last unresolved fight resolves. An event with only 1 fight
+  goes `scheduled` → `completed` in one step. Previously events stayed
+  `'scheduled'` forever, which made the Events tree meaningless and
+  blocked Task ID 8 (repeatable event generator).
+- `_update_event_status_after_resolution(conn, event_id)` helper in
+  `app.py` (Task ID 7) — counts unresolved fights remaining on the
+  event and transitions the status accordingly. Defensive against
+  already-completed events and non-existent event_ids.
+- Acceptance test `scripts/test_event_lifecycle.py` (Task ID 7) —
+  tests single-fight, multi-fight, already-completed, and non-existent
+  event_id cases. Also verifies fight_history regression.
 - Promotion filter dropdown in the UI (Task ID 6) — adds a "Filter:"
   combobox to the top bar that lets the player focus the Fighters
   tree on one promotion. Defaults to "All Promotions". Wires the

@@ -332,6 +332,76 @@ def _format_fight_commentary(winner_name, loser_name, result_type, finish_round)
     return f"{winner_name} has just defeated {loser_name}."
 
 
+# ----------------------------------------------------------------
+# Event lifecycle (Task ID 7).
+#
+# `events.status` is set to 'scheduled' on creation and — prior to
+# this task — never transitioned. That made the Events tree in the UI
+# meaningless (every event showed 'scheduled' forever, even after all
+# its fights had been resolved) and blocked Task ID 8 (repeatable
+# event generator), which depends on knowing when an event is
+# complete so it can schedule the next card.
+#
+# The valid transitions are:
+#   scheduled  -> in_progress   (when the first fight on the card resolves)
+#   in_progress -> completed    (when the last unresolved fight resolves)
+# An event with only 1 fight goes scheduled -> completed in one step
+# (the first fight IS the last fight). An event already 'completed'
+# is never touched again (defensive — see the UPDATE's WHERE clause).
+#
+# Schema version is unchanged (still 1.3.0) — the `events.status`
+# column already existed since v1.2.0 with TEXT NOT NULL DEFAULT
+# 'scheduled'. No new tables, no new columns.
+# ----------------------------------------------------------------
+
+def _update_event_status_after_resolution(conn, event_id):
+    """Transition an event's status based on its fights' resolution state.
+
+    Rules (Task ID 7):
+      - If the event has unresolved fights remaining (winner_fighter_id
+        IS NULL AND result_type IS NULL), status -> 'in_progress'
+        (or stays 'scheduled' if no fights have been resolved yet —
+        but this function is only called AFTER a fight resolves, so
+        'in_progress' is always correct here).
+      - If the event has NO unresolved fights remaining, status ->
+        'completed'.
+      - If the event is already 'completed', no change (defensive).
+
+    This is a no-op if the event_id doesn't exist (defensive) — the
+    UPDATE simply matches 0 rows and returns.
+
+    Args:
+        conn: sqlite3 connection (caller is responsible for commit).
+        event_id: the events.event_id to transition.
+    """
+    # Count unresolved fights remaining on this event. A fight is
+    # unresolved iff BOTH winner_fighter_id IS NULL AND result_type
+    # IS NULL — matches the pick-query in resolve_next_fight().
+    unresolved = conn.execute(
+        "SELECT COUNT(*) FROM fights "
+        "WHERE event_id = ? AND winner_fighter_id IS NULL AND result_type IS NULL",
+        (event_id,),
+    ).fetchone()[0]
+
+    if unresolved > 0:
+        new_status = "in_progress"
+    else:
+        new_status = "completed"
+
+    # The `WHERE status != 'completed'` clause is defensive: if the
+    # event is somehow already 'completed' (e.g., this function got
+    # called twice on the same event after the last fight), we don't
+    # overwrite it. We could overwrite it with the same value, but
+    # the defensive clause makes the intent explicit and protects
+    # against future bugs. It also makes this function a no-op for
+    # non-existent event_ids (UPDATE matches 0 rows, no error).
+    conn.execute(
+        "UPDATE events SET status = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE event_id = ? AND status != 'completed'",
+        (new_status, event_id),
+    )
+
+
 def resolve_next_fight(conn):
     """Resolve the next scheduled fight using the attribute-based model.
 
@@ -348,6 +418,7 @@ def resolve_next_fight(conn):
       - UPDATE fight_participants SET is_winner=...
       - UPDATE fighter_career SET record_wins/losses/draws, streaks
       - INSERT INTO fight_history (2 rows, one per fighter)  [v1.3.0]
+      - UPDATE events SET status=in_progress/completed  [v1.3.0, Task ID 7]
       - write_news(...)  (enriched headline + body, same signature)
       - write_commentary(...)  (enriched text, same signature)
     """
@@ -507,6 +578,14 @@ def resolve_next_fight(conn):
     # exactly — only the headline / body / commentary strings change.
     write_news(conn, headline, body, "fight", event_id, fight_id, news_fighter_id, promo_id)
     write_commentary(conn, event_id, fight_id, commentary)
+
+    # ----------------------------------------------------------------
+    # Event lifecycle (Task ID 7). Transition the parent event's status:
+    #   scheduled  -> in_progress  (when the first fight on the card resolves)
+    #   in_progress -> completed   (when the last unresolved fight resolves)
+    # An event with only 1 fight goes scheduled -> completed in one step.
+    # ----------------------------------------------------------------
+    _update_event_status_after_resolution(conn, event_id)
     return fight_id
 
 class App(tk.Tk):
