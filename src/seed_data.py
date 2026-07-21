@@ -3,7 +3,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-DB_PATH = PROJECT_DIR / "data" / "mma_booking_sim_v1_2.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 
 def one(conn, sql, params=()):
     return conn.execute(sql, params).lastrowid
@@ -56,8 +56,40 @@ def main():
         conn.execute("INSERT INTO fight_participants (fight_id, fighter_id, corner) VALUES (?, ?, ?)", (fight_id, fighter_ids[1], "blue"))
         conn.execute("INSERT INTO event_cards (event_id, fight_id, card_position, card_tier, is_main_event) VALUES (?, ?, ?, ?, ?)", (event_id, fight_id, 1, "main_event", 1))
 
+        # ----------------------------------------------------------------
+        # Second promotion (Rival Fight League) — inert for now, no AI
+        # behaviour. Wired in per the advisor's recommendation: getting
+        # the multi-promotion data shape in early is cheap; retrofitting
+        # it after more systems are built is expensive. AI behaviour
+        # comes in Task ID 25.
+        # ----------------------------------------------------------------
+        rfl_promo_id = one(conn, "INSERT INTO promotions (name, size_tier, nation_id, region_id) VALUES (?, ?, ?, ?)", ("Rival Fight League", "mid", nation_id, region_id))
+        rfl_gym_id = one(conn, "INSERT INTO gyms (name, city_id, nation_id, region_id) VALUES (?, ?, ?, ?)", ("Steelcrest Gym", city_id, nation_id, region_id))
+
+        rfl_fighters = [
+            ("Dario", "Knox", "The Drill", "male", "1993-11-22"),
+            ("Eli", "Storm", "Whisper", "male", "1995-02-08"),
+            ("Cole", "Briggs", "Anvil", "male", "1991-07-30"),
+        ]
+        rfl_fighter_ids = []
+        for first, last, nick, gender, dob in rfl_fighters:
+            fid = one(conn, """
+                INSERT INTO fighters (
+                    first_name, last_name, nickname, gender, date_of_birth,
+                    birth_city_id, birth_nation_id, residence_city_id, residence_nation_id,
+                    weight_class_id, current_gym_id, current_promotion_id,
+                    fight_style_archetype_id, personality_archetype_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (first, last, nick, gender, dob, city_id, nation_id, city_id, nation_id, wc_id, rfl_gym_id, rfl_promo_id, style_id, pers_id))
+            rfl_fighter_ids.append(fid)
+            conn.execute("INSERT INTO fighter_attributes (fighter_id) VALUES (?)", (fid,))
+            conn.execute("INSERT INTO fighter_personality (fighter_id) VALUES (?)", (fid,))
+            conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
+
         conn.commit()
         print("Seeded database.")
+        print(f"  Alpha Combat: {len(fighter_ids)} fighters, 1 event, 1 fight scheduled")
+        print(f"  Rival Fight League: {len(rfl_fighter_ids)} fighters (inert, no events)")
 
 if __name__ == "__main__":
     main()

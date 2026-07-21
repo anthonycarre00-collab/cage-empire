@@ -7,7 +7,7 @@ from tkinter import ttk, messagebox
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-DB_PATH = PROJECT_DIR / "data" / "mma_booking_sim_v1_2.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 
 def fighter_name(conn, fighter_id):
     row = conn.execute("SELECT first_name || ' ' || last_name FROM fighters WHERE fighter_id=?", (fighter_id,)).fetchone()

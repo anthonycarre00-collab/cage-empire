@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-DB_PATH = PROJECT_DIR / "data" / "mma_booking_sim_v1_2.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 
 def run_tick(conn, tick_type="day", steps=1):
     for _ in range(steps):

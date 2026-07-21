@@ -4,10 +4,29 @@ import sqlite3
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "mma_booking_sim_v1_2.db"
+DB_PATH = DATA_DIR / "cage_empire.db"
+
+# Schema version — see docs/CONVENTIONS.md for the versioning rules.
+# Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
+CODE_SCHEMA_VERSION = "1.2.1"
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
+
+-- ----------------------------------------------------------------
+-- Schema meta & versioning (restored in v1.2.1, see
+-- docs/CONVENTIONS.md §1 for the rules).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS schema_meta (
+    schema_name    TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    migration_name TEXT PRIMARY KEY,
+    applied_at     TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 
 CREATE TABLE IF NOT EXISTS simulation_clock (
     clock_id INTEGER PRIMARY KEY CHECK (clock_id = 1),
@@ -289,9 +308,19 @@ def main():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.executescript(SCHEMA_SQL)
+        # Record the schema version + migration (see docs/CONVENTIONS.md §1).
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) VALUES (?, ?)",
+            ("cage_empire", CODE_SCHEMA_VERSION),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_initial",),
+        )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
     print(f"Rebuilt database at {DB_PATH}")
+    print(f"Schema version: {CODE_SCHEMA_VERSION}")
 
 if __name__ == "__main__":
     main()
