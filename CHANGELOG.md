@@ -9,6 +9,31 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Repeatable event generator (Task ID 8) — `resolve_next_fight()`
+  now auto-schedules a new event ~4 weeks out when an event just
+  transitions to 'completed'. The new event reuses the same promotion,
+  venue, market, and weight class as the just-completed event, with
+  at least 1 fight between 2 randomly-picked active fighters from the
+  promotion's roster. This is the last task in Stage 1 close-out —
+  after it, the skeleton actually simulates end-to-end (real resolver
+  + event lifecycle + repeatable events) and we can move to Stage 2
+  (career systems).
+- `schedule_next_event(conn, promotion_id, from_event_date=None,
+  weeks_out=4)` function in `app.py` (Task ID 8) — module-scope,
+  callable directly for testing or for "schedule now" UI actions.
+  Returns the new event_id on success, or None with a printed warning
+  if scheduling fails (e.g., not enough available fighters).
+- `_pick_matchup(conn, promotion_id, weight_class_id,
+  exclude_fighter_ids=())` private helper in `app.py` (Task ID 8) —
+  picks 2 distinct active fighters from the promotion's roster in the
+  given weight class, excluding any fighters in `exclude_fighter_ids`.
+  Random selection for now; Task 10 will add ranking proximity, Task
+  22 will add rivalry logic.
+- Acceptance test `scripts/test_event_scheduler.py` (Task ID 8) —
+  tests single-fight scheduling trigger, multi-fight trigger-only-on-
+  last-fight, no-infinite-loop, 3-cycle loop continuation,
+  not-enough-fighters edge case, direct callability, and fight_history
+  regression.
 - Event lifecycle transitions (Task ID 7) — `resolve_next_fight()` now
   updates the parent event's status: `scheduled` → `in_progress` when
   the first fight on the card resolves, `in_progress` → `completed`

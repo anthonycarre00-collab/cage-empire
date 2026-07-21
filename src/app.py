@@ -402,6 +402,263 @@ def _update_event_status_after_resolution(conn, event_id):
     )
 
 
+# ----------------------------------------------------------------
+# Repeatable event generator (Task ID 8).
+#
+# After the last fight on a card resolves and the event transitions
+# to 'completed' (Task ID 7), the world is dead — nothing schedules
+# the next card. This breaks "played forever" on the very first
+# playthrough. This block adds:
+#
+#   _pick_matchup(conn, promotion_id, weight_class_id,
+#                 exclude_fighter_ids=())
+#     Picks 2 distinct active fighters from the promotion's roster in
+#     the given weight class. Random selection for now — Task ID 10
+#     will add ranking proximity, Task ID 22 will add rivalry logic.
+#
+#   schedule_next_event(conn, promotion_id, from_event_date=None,
+#                       weeks_out=4)
+#     Auto-schedules a new event ~weeks_out weeks after a reference
+#     date. Called as a side effect by resolve_next_fight() when an
+#     event just transitioned to 'completed'. Also callable directly
+#     for testing or for "I want to schedule an event now" UI actions.
+#
+# The new event:
+#   - Same promotion_id as the just-completed event.
+#   - Same venue and market (the seeded Metro Arena / Metro City
+#     market). Task ID 27 will add venue/market depth.
+#   - event_date = from_event_date + weeks_out*7 days. If
+#     from_event_date is None, uses today's sim date from
+#     simulation_clock.
+#   - At least 1 fight with 2 participants from the promotion's
+#     roster (random matchup for now).
+#
+# Schema version is unchanged (still 1.3.0) — no new tables, no new
+# columns. RFL stays inert; only the promotion that just had an event
+# complete gets a new auto-scheduled event (Task ID 25 adds RFL AI).
+# ----------------------------------------------------------------
+
+def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
+    """Pick 2 distinct active fighters from a promotion's roster.
+
+    Args:
+        conn: sqlite3 connection (read-only — no writes here).
+        promotion_id: the promotion whose roster to draw from.
+        weight_class_id: the weight class the fight is at.
+        exclude_fighter_ids: iterable of fighter_ids to skip (e.g.,
+            fighters who just fought on the just-completed event, to
+            avoid immediate rematches). Empty by default.
+
+    Returns:
+        (fighter_a_id, fighter_b_id) tuple on success, or None if
+        fewer than 2 eligible fighters are available.
+
+    For now: pure random selection (random.sample, distinct). Task
+    ID 10 will add ranking-proximity matchmaking; Task ID 22 will
+    add rivalry logic. The signature already accepts
+    exclude_fighter_ids so those future enhancements can pass a
+    fighter set without changing the call sites.
+    """
+    sql = (
+        "SELECT fighter_id FROM fighters "
+        "WHERE current_promotion_id = ? AND is_active = 1 "
+        "AND weight_class_id = ?"
+    )
+    params = [promotion_id, weight_class_id]
+    if exclude_fighter_ids:
+        # Parameterized NOT IN clause. Never string-format fighter_ids
+        # into SQL — always use placeholders.
+        placeholders = ",".join("?" * len(exclude_fighter_ids))
+        sql += f" AND fighter_id NOT IN ({placeholders})"
+        params.extend(exclude_fighter_ids)
+    rows = conn.execute(sql, params).fetchall()
+    if len(rows) < 2:
+        return None
+    # random.sample pulls 2 distinct rows without replacement.
+    picks = random.sample(rows, 2)
+    return (picks[0][0], picks[1][0])
+
+
+def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
+    """Auto-schedule the next event for a promotion, ~weeks_out weeks
+    after a reference date.
+
+    Called by resolve_next_fight() as a side effect when an event just
+    transitioned to 'completed' (Task ID 8). Can also be called directly
+    for testing or for "I want to schedule an event now" UI actions.
+
+    The new event:
+      - Has the same promotion_id as the just-completed event.
+      - Is scheduled at the same venue and market as the promotion's
+        most recent completed event (the seeded Metro Arena / Metro
+        City market). Task ID 27 will add venue/market depth; for now
+        we reuse.
+      - Has event_date = from_event_date + weeks_out*7 days. If
+        from_event_date is None, uses today's sim date from
+        simulation_clock.
+      - Has at least 1 fight with 2 participants from the promotion's
+        roster (active fighters, same weight class as the original
+        event). Matchmaking is random for now (Task 10 will add
+        ranking-proximity matchmaking; Task 22 will add rivalry logic).
+      - Returns the new event_id, or None if scheduling failed (e.g.,
+        not enough available fighters).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        promotion_id: the promotion to schedule for.
+        from_event_date: ISO date string 'YYYY-MM-DD' to count weeks_out
+            from. If None, uses simulation_clock.current_date.
+        weeks_out: how many weeks ahead to schedule. Default 4.
+
+    Returns:
+        New event_id (int) on success, or None on failure (with a
+        printed warning explaining why).
+    """
+    # 1. Resolve the reference date.
+    if from_event_date is None:
+        clock_row = conn.execute(
+            "SELECT current_date FROM simulation_clock WHERE clock_id = 1"
+        ).fetchone()
+        if not clock_row or not clock_row[0]:
+            print("Warning: could not auto-schedule next event — no "
+                  "from_event_date given and simulation_clock has no "
+                  "current_date.")
+            return None
+        from_event_date = clock_row[0]
+    try:
+        ref_date = datetime.strptime(from_event_date, "%Y-%m-%d")
+    except (ValueError, TypeError) as e:
+        print(f"Warning: could not auto-schedule next event — invalid "
+              f"from_event_date {from_event_date!r}: {e}")
+        return None
+
+    # 2. Compute the new event_date.
+    new_date = ref_date + timedelta(weeks=weeks_out)
+    new_date_str = new_date.strftime("%Y-%m-%d")
+
+    # 3. Find venue + market + weight_class for the new event. Reuse
+    # the values from the promotion's most recent completed event.
+    # events has no weight_class_id column — join through fights to
+    # get it. ORDER BY e.event_date DESC so the most recent completed
+    # event wins (defensive: in normal gameplay only 1 completed event
+    # exists at this point, but multi-event histories are possible).
+    completed = conn.execute(
+        "SELECT e.venue_id, e.market_id, f.weight_class_id "
+        "FROM events e JOIN fights f ON f.event_id = e.event_id "
+        "WHERE e.promotion_id = ? AND e.status = 'completed' "
+        "ORDER BY e.event_date DESC LIMIT 1",
+        (promotion_id,),
+    ).fetchone()
+    if completed:
+        venue_id, market_id, weight_class_id = completed
+    else:
+        # Degenerate fallback: no completed event yet for this
+        # promotion. This can happen when schedule_next_event() is
+        # called directly (test case F) before any event has been
+        # resolved. Fall back to any venue in any city whose nation
+        # matches the promotion's nation. If that also fails, give up.
+        promo_row = conn.execute(
+            "SELECT nation_id FROM promotions WHERE promotion_id = ?",
+            (promotion_id,),
+        ).fetchone()
+        nation_id = promo_row[0] if promo_row else None
+        if nation_id is None:
+            print(f"Warning: could not auto-schedule next event — "
+                  f"promotion_id={promotion_id} not found and no "
+                  f"completed event to reuse.")
+            return None
+        fallback = conn.execute(
+            "SELECT v.venue_id, m.market_id "
+            "FROM venues v "
+            "JOIN cities c ON c.city_id = v.city_id "
+            "JOIN markets m ON m.city_id = c.city_id "
+            "WHERE c.nation_id = ? "
+            "ORDER BY v.venue_id LIMIT 1",
+            (nation_id,),
+        ).fetchone()
+        if not fallback:
+            print(f"Warning: could not auto-schedule next event — no "
+                  f"venue/market found for nation_id={nation_id} "
+                  f"(promotion_id={promotion_id}).")
+            return None
+        venue_id, market_id = fallback
+        # Need a weight_class_id too — use any weight class. In the
+        # seeded DB there's exactly one (Lightweight, id=1).
+        wc_row = conn.execute(
+            "SELECT weight_class_id FROM weight_classes "
+            "ORDER BY weight_class_id LIMIT 1"
+        ).fetchone()
+        if not wc_row:
+            print(f"Warning: could not auto-schedule next event — no "
+                  f"weight_classes exist (promotion_id={promotion_id}).")
+            return None
+        weight_class_id = wc_row[0]
+
+    # 4. Pick 2 distinct fighters from the promotion's roster in this
+    # weight class. For now: random. exclude_fighter_ids is left empty
+    # because the just-completed event's fighters can fight again on
+    # the next card (4 weeks out is enough rest in this thin sim).
+    matchup = _pick_matchup(conn, promotion_id, weight_class_id)
+    if matchup is None:
+        print(f"Warning: could not auto-schedule next event — not "
+              f"enough active fighters in promotion_id={promotion_id}, "
+              f"weight_class_id={weight_class_id} (need 2).")
+        return None
+    fighter_a_id, fighter_b_id = matchup
+
+    # 5. Build the event_name. Use a counter: count existing events
+    # for this promotion + 1. Format chosen: "{promo_name}: Card {N}"
+    # to foreshadow the "card" terminology from the v1.6 spec. See
+    # worklog decision D1.
+    event_count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchone()[0]
+    promo_name_row = conn.execute(
+        "SELECT name FROM promotions WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchone()
+    promo_name = promo_name_row[0] if promo_name_row else f"Promotion {promotion_id}"
+    event_name = f"{promo_name}: Card {event_count + 1}"
+
+    # 6. Insert the new event (status='scheduled', event_type='fight_night').
+    new_event_id = conn.execute(
+        "INSERT INTO events (promotion_id, venue_id, market_id, event_name, "
+        "event_date, event_type, status) VALUES (?, ?, ?, ?, ?, ?, 'scheduled')",
+        (promotion_id, venue_id, market_id, event_name,
+         new_date_str, "fight_night"),
+    ).lastrowid
+
+    # 7. Insert the fight + 2 participants + 1 event_cards row. Mirror
+    # the seed pattern (main_event, 3 rounds, red/blue corners, card
+    # position 1 / card_tier 'main_event' / is_main_event 1).
+    new_fight_id = conn.execute(
+        "INSERT INTO fights (event_id, weight_class_id, bout_type, "
+        "round_limit, scheduled_rounds) VALUES (?, ?, 'main_event', 3, 3)",
+        (new_event_id, weight_class_id),
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
+        "VALUES (?, ?, 'red')",
+        (new_fight_id, fighter_a_id),
+    )
+    conn.execute(
+        "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
+        "VALUES (?, ?, 'blue')",
+        (new_fight_id, fighter_b_id),
+    )
+    conn.execute(
+        "INSERT INTO event_cards (event_id, fight_id, card_position, "
+        "card_tier, is_main_event) VALUES (?, ?, 1, 'main_event', 1)",
+        (new_event_id, new_fight_id),
+    )
+
+    # 8. Return the new event_id. Do NOT commit — the caller commits,
+    # matching the existing pattern (resolve_next_fight, advance_day,
+    # etc.).
+    return new_event_id
+
+
 def resolve_next_fight(conn):
     """Resolve the next scheduled fight using the attribute-based model.
 
@@ -419,6 +676,8 @@ def resolve_next_fight(conn):
       - UPDATE fighter_career SET record_wins/losses/draws, streaks
       - INSERT INTO fight_history (2 rows, one per fighter)  [v1.3.0]
       - UPDATE events SET status=in_progress/completed  [v1.3.0, Task ID 7]
+      - INSERT INTO events + fights + fight_participants + event_cards
+        (auto-scheduled next card, only if event just completed)  [v1.3.0, Task ID 8]
       - write_news(...)  (enriched headline + body, same signature)
       - write_commentary(...)  (enriched text, same signature)
     """
@@ -586,6 +845,34 @@ def resolve_next_fight(conn):
     # An event with only 1 fight goes scheduled -> completed in one step.
     # ----------------------------------------------------------------
     _update_event_status_after_resolution(conn, event_id)
+
+    # ----------------------------------------------------------------
+    # Auto-schedule next event (Task ID 8). If the event just transitioned
+    # to 'completed', schedule a new event ~4 weeks out for the same
+    # promotion. This is what makes the world "playable forever" - after
+    # the last fight on a card resolves, the next card is auto-scheduled.
+    # schedule_next_event() returns None if it can't find a matchup (e.g.,
+    # not enough fighters) - in that case we print a warning but don't
+    # crash. The user can still click "Resolve Fight" later when more
+    # fighters are available (e.g., after regen, Task ID 14).
+    # ----------------------------------------------------------------
+    post_status = conn.execute(
+        "SELECT status FROM events WHERE event_id = ?",
+        (event_id,),
+    ).fetchone()[0]
+    if post_status == "completed":
+        scheduled = schedule_next_event(
+            conn,
+            promotion_id=promo_id,
+            from_event_date=event_date,
+            weeks_out=4,
+        )
+        if scheduled is None:
+            print(f"Warning: could not auto-schedule next event for "
+                  f"promotion_id={promo_id} (not enough available fighters?).")
+        # else: scheduled is the new event_id. No print - the UI's
+        # refresh_all() will display the new event in the Events tree.
+
     return fight_id
 
 class App(tk.Tk):
