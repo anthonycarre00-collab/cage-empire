@@ -9,6 +9,13 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Real attribute-based fight resolver (Task ID 3) — replaces coin flip
+  with probabilistic model reading `fighter_attributes` +
+  `fighter_personality`.
+- Acceptance test `scripts/test_fight_resolver.py` (Task ID 3) — builds
+  a fresh DB, jacks one fighter to all-90 stats and another to all-30,
+  resolves the fight 100 times, asserts the all-90 fighter wins >= 80
+  and no single `result_type` accounts for > 60 / 100.
 - `docs/MASTER_PLAN.md` — revised incremental build plan, gap
   analysis, and the rationale for killing the original big-bang
   v1.6 schema dump (Task ID 2).

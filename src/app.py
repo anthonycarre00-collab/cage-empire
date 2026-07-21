@@ -36,28 +36,359 @@ def write_commentary(conn, event_id=None, fight_id=None, text=""):
     speaker_id = speaker[0] if speaker else None
     conn.execute("INSERT INTO commentary_segments (event_id, fight_id, segment_type, speaker_staff_id, text, importance) VALUES (?, ?, ?, ?, ?, ?)", (event_id, fight_id, "play_by_play", speaker_id, text, 70))
 
+# ----------------------------------------------------------------
+# Real attribute-based fight resolver (Task ID 3).
+#
+# Replaces the original coin-flip resolve_next_fight() with a
+# probabilistic model that reads fighter_attributes (punch_power,
+# cardio, fight_iq, chin) and fighter_personality (aggression,
+# composure, morale) for both fighters, computes a noisy power
+# score per fighter, and derives winner / result_type / finish_round
+# / finish_time / performance_rating / fan_reaction_rating from the
+# margin. See docs/STAGES.md Task ID 3 for the spec. Schema version
+# is unchanged (still 1.2.1) — no new tables, no new columns.
+# ----------------------------------------------------------------
+
+# Defensive defaults used only if a fighter_attributes or
+# fighter_personality row is somehow missing. The seed always
+# inserts both, so these are belt-and-braces.
+_DEFAULT_ATTRS = (50, 50, 50, 50)  # punch_power, cardio, fight_iq, chin
+_DEFAULT_PERS = (50, 50, 50)       # aggression, composure, morale
+
+# Base Gaussian noise sigma applied to each fighter's adjusted power
+# score. Spec says "sigma ~= 15". Per-fighter sigma is then narrowed
+# or widened by the consistency modifier (see _consistency_sigma).
+_BASE_SIGMA = 15.0
+
+
+def _load_fighter_stats(conn, fighter_id):
+    """Load one fighter's combat attributes + personality for the resolver.
+
+    Returns a flat dict with all 7 fields. Falls back to defaults (50s)
+    if either row is missing — defensive, the seed always inserts both.
+    """
+    attrs = conn.execute(
+        "SELECT punch_power, cardio, fight_iq, chin FROM fighter_attributes WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    pers = conn.execute(
+        "SELECT aggression, composure, morale FROM fighter_personality WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    a = attrs if attrs else _DEFAULT_ATTRS
+    p = pers if pers else _DEFAULT_PERS
+    return {
+        "punch_power": a[0], "cardio": a[1], "fight_iq": a[2], "chin": a[3],
+        "aggression": p[0], "composure": p[1], "morale": p[2],
+    }
+
+
+def _power_score(stats):
+    """Weighted blend of the 4 combat attributes. Range ~0-100.
+
+    punch_power * 0.4 + cardio * 0.3 + fight_iq * 0.2 + chin * 0.1
+    (per the Task ID 3 spec).
+    """
+    return (
+        stats["punch_power"] * 0.4
+        + stats["cardio"] * 0.3
+        + stats["fight_iq"] * 0.2
+        + stats["chin"] * 0.1
+    )
+
+
+def _consistency_sigma(stats):
+    """Composure narrows variance. Returns adjusted sigma in [7.5, 22.5].
+
+    Spec: multiply base sigma by `1 - (composure - 50) / 200`, clamped
+    to [0.5, 1.5]. So composure=90 -> sigma * 0.8, composure=10 ->
+    sigma * 1.2.
+    """
+    mod = 1.0 - (stats["composure"] - 50) / 200.0
+    mod = max(0.5, min(1.5, mod))
+    return _BASE_SIGMA * mod
+
+
+def _morale_multiplier(stats):
+    """Morale scales power up/down. Range [0.85, 1.15] for morale in [0, 100].
+
+    Spec: `0.85 + (morale / 100) * 0.30`. So morale=50 -> x1.00,
+    morale=0 -> x0.85, morale=100 -> x1.15.
+    """
+    return 0.85 + (stats["morale"] / 100.0) * 0.30
+
+
+def _pick_finish_type(winner_stats, loser_stats):
+    """Pick `ko_tko` vs `submission` for a finish outcome.
+
+    Weighted by the winner's punch_power (KO bias) vs fight_iq
+    (submission bias). The loser's chin affects the *probability of a
+    finish* (captured by the margin), not the split between finish
+    types, so it is intentionally not used here. This keeps the
+    result_type distribution varied across fighter styles — a pure
+    puncher KOs, a tactician submits — which is needed to satisfy the
+    acceptance test's "no single result_type > 60%" assertion in the
+    symmetric all-90-vs-all-30 matchup. See worklog D1.
+    """
+    ko_weight = max(1, winner_stats["punch_power"])
+    sub_weight = max(1, winner_stats["fight_iq"])
+    return "ko_tko" if random.random() < ko_weight / (ko_weight + sub_weight) else "submission"
+
+
+def _format_finish_time():
+    """Random finish time within a 5-minute round. Returns 'M:SS' in [0:01, 4:59]."""
+    total = random.randint(1, 299)
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _resolve_outcome(stats_a, stats_b, scheduled_rounds):
+    """Resolve the probabilistic outcome of a fight between two fighters.
+
+    Pure function (no DB writes, no I/O) so the test script can call it
+    directly to verify distribution properties without going through the
+    database. Returns a dict with: winner ('a' or 'b'), abs_margin,
+    result_type, finish_round, finish_time, performance_rating,
+    fan_reaction_rating, winner_base, loser_base.
+    """
+    base_a = _power_score(stats_a)
+    base_b = _power_score(stats_b)
+
+    # Morale scales power up/down. Composure scales noise sigma.
+    adj_a = base_a * _morale_multiplier(stats_a)
+    adj_b = base_b * _morale_multiplier(stats_b)
+
+    sigma_a = _consistency_sigma(stats_a)
+    sigma_b = _consistency_sigma(stats_b)
+
+    # Sample a noisy score per fighter. random.gauss(mu, sigma) — here
+    # mu=0 and we add the noise to the adjusted score. random.gauss is
+    # used (not random.randint) per the spec and the acceptance checklist.
+    noisy_a = adj_a + random.gauss(0, sigma_a)
+    noisy_b = adj_b + random.gauss(0, sigma_b)
+
+    signed_margin = noisy_a - noisy_b
+    if signed_margin >= 0:
+        winner = "a"
+        winner_stats, loser_stats = stats_a, stats_b
+        winner_base, loser_base = base_a, base_b
+    else:
+        winner = "b"
+        winner_stats, loser_stats = stats_b, stats_a
+        winner_base, loser_base = base_b, base_a
+    abs_margin = abs(signed_margin)
+
+    # Decide result_type from margin per the Task ID 3 spec.
+    #   margin > 30  -> finish (early, round 1-2)
+    #   margin 15-30 -> finish (mid, round 2-3)
+    #   margin 5-15  -> unanimous_decision
+    #   margin < 5   -> coin flip split_decision / draw
+    # The spec maps margin > 30 definitively to ko_tko. We deviate
+    # slightly (see worklog D1): at any finish margin we let both
+    # ko_tko and submission be possible, weighted by the winner's
+    # style. This is required to pass the acceptance test's
+    # "no single result_type > 60%" assertion in the all-90-vs-all-30
+    # matchup (where abs_margin > 30 occurs ~99% of the time).
+    if abs_margin >= 15:
+        result_type = _pick_finish_type(winner_stats, loser_stats)
+        if abs_margin > 30:
+            # Early finish — rounds 1-2.
+            finish_round = random.randint(1, 2)
+        else:
+            # Mid finish — rounds 2-3.
+            finish_round = random.randint(2, 3)
+        # Aggression differential shifts the finish round (spec §6).
+        # More aggressive winner finishes earlier; less aggressive
+        # winner lets the loser survive a round longer.
+        aggr_diff = winner_stats["aggression"] - loser_stats["aggression"]
+        if aggr_diff >= 20:
+            finish_round = max(1, finish_round - 1)
+        elif aggr_diff <= -20:
+            finish_round = min(scheduled_rounds, finish_round + 1)
+        finish_time = _format_finish_time()
+    elif abs_margin >= 5:
+        result_type = "unanimous_decision"
+        finish_round = scheduled_rounds
+        finish_time = "5:00"
+    else:
+        # Coin flip per spec for the sub-5 case.
+        result_type = random.choice(["split_decision", "draw"])
+        finish_round = scheduled_rounds
+        finish_time = "5:00"
+
+    # Performance rating: bigger margin -> higher. Clamp 60-95.
+    performance_rating = max(60, min(95, int(round(60 + abs_margin))))
+
+    # Fan reaction: lower base, KO bonus, upset bonus. Clamp 60-95.
+    # KO/TKO is +10 vs decision (more exciting). Upset (loser had a
+    # higher base power score than winner) is +5 (fans love an upset).
+    fan = 65 + int(abs_margin * 0.5)
+    if result_type == "ko_tko":
+        fan += 10
+    if loser_base > winner_base:
+        fan += 5
+    fan_reaction_rating = max(60, min(95, fan))
+
+    return {
+        "winner": winner,
+        "abs_margin": abs_margin,
+        "result_type": result_type,
+        "finish_round": finish_round,
+        "finish_time": finish_time,
+        "performance_rating": performance_rating,
+        "fan_reaction_rating": fan_reaction_rating,
+        "winner_base": winner_base,
+        "loser_base": loser_base,
+    }
+
+
+def _format_fight_news(winner_name, loser_name, result_type, finish_round):
+    """Build (headline, body) for a non-draw fight result.
+
+    Enriches the original "X defeats Y" template with the result type
+    and finish round. The write_news() call itself is unchanged.
+    """
+    pretty = result_type.replace("_", " ")
+    if result_type == "ko_tko":
+        headline = f"{winner_name} KO's {loser_name} in round {finish_round}"
+        body = f"{winner_name} stopped {loser_name} by {pretty} in round {finish_round}."
+    elif result_type == "submission":
+        headline = f"{winner_name} submits {loser_name} in round {finish_round}"
+        body = f"{winner_name} tapped out {loser_name} by submission in round {finish_round}."
+    elif result_type == "unanimous_decision":
+        headline = f"{winner_name} beats {loser_name} by unanimous decision"
+        body = f"{winner_name} defeated {loser_name} by unanimous decision after {finish_round} rounds."
+    elif result_type == "split_decision":
+        headline = f"{winner_name} edges {loser_name} by split decision"
+        body = f"{winner_name} took a split decision over {loser_name} after {finish_round} rounds."
+    else:
+        headline = f"{winner_name} defeats {loser_name}"
+        body = f"{winner_name} beat {loser_name} by {pretty}."
+    return headline, body
+
+
+def _format_fight_commentary(winner_name, loser_name, result_type, finish_round):
+    """Build a short commentary line for a non-draw fight result."""
+    if result_type == "ko_tko":
+        return f"{winner_name} puts {loser_name} away by KO/TKO in round {finish_round}."
+    if result_type == "submission":
+        return f"{winner_name} forces the tap from {loser_name} in round {finish_round}."
+    if result_type == "unanimous_decision":
+        return f"All three judges score it for {winner_name} over {loser_name}."
+    if result_type == "split_decision":
+        return f"Split scorecards — {winner_name} takes the nod over {loser_name}."
+    return f"{winner_name} has just defeated {loser_name}."
+
+
 def resolve_next_fight(conn):
-    fight = conn.execute("SELECT f.fight_id, f.event_id, e.promotion_id FROM fights f JOIN events e ON e.event_id=f.event_id WHERE f.winner_fighter_id IS NULL ORDER BY f.fight_id LIMIT 1").fetchone()
+    """Resolve the next scheduled fight using the attribute-based model.
+
+    Picks the lowest-fight_id unresolved fight, loads both fighters'
+    stats, runs the probabilistic resolver, persists the result, updates
+    career counters, and writes a news item + commentary segment.
+    Returns the resolved fight_id (or None if no unresolved fight was
+    found). The function does not call conn.commit() itself — the caller
+    commits, matching the original signature and the UI's on_resolve_fight
+    callsite.
+
+    Side effects (preserved from the original coin-flip version):
+      - UPDATE fights SET winner/loser/result_type/finish_round/...
+      - UPDATE fight_participants SET is_winner=...
+      - UPDATE fighter_career SET record_wins/losses/draws, streaks
+      - write_news(...)  (enriched headline + body, same signature)
+      - write_commentary(...)  (enriched text, same signature)
+    """
+    fight = conn.execute(
+        "SELECT f.fight_id, f.event_id, f.scheduled_rounds, e.promotion_id "
+        "FROM fights f JOIN events e ON e.event_id=f.event_id "
+        "WHERE f.winner_fighter_id IS NULL AND f.result_type IS NULL "
+        "ORDER BY f.fight_id LIMIT 1"
+    ).fetchone()
     if not fight:
         return None
-    fight_id, event_id, promo_id = fight
-    parts = conn.execute("SELECT fighter_id FROM fight_participants WHERE fight_id=? ORDER BY corner", (fight_id,)).fetchall()
+    fight_id, event_id, scheduled_rounds, promo_id = fight
+    parts = conn.execute(
+        "SELECT fighter_id FROM fight_participants WHERE fight_id=? ORDER BY corner",
+        (fight_id,),
+    ).fetchall()
     if len(parts) < 2:
         return None
     a_id, b_id = parts[0][0], parts[1][0]
-    winner_id, loser_id = (a_id, b_id) if random.randint(1, 100) > 50 else (b_id, a_id)
-    result_type = random.choice(["unanimous_decision", "ko_tko", "submission"])
-    conn.execute(
-        "UPDATE fights SET winner_fighter_id=?, loser_fighter_id=?, result_type=?, finish_round=?, finish_time=?, performance_rating=?, fan_reaction_rating=?, updated_at=CURRENT_TIMESTAMP WHERE fight_id=?",
-        (winner_id, loser_id, result_type, random.randint(1, 3), "5:00", random.randint(60, 95), random.randint(60, 95), fight_id),
-    )
-    conn.execute("UPDATE fight_participants SET is_winner=CASE WHEN fighter_id=? THEN 1 ELSE 0 END WHERE fight_id=?", (winner_id, fight_id))
-    conn.execute("UPDATE fighter_career SET record_wins=record_wins+1, win_streak=win_streak+1, loss_streak=0, updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?", (winner_id,))
-    conn.execute("UPDATE fighter_career SET record_losses=record_losses+1, loss_streak=loss_streak+1, win_streak=0, updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?", (loser_id,))
-    wn = fighter_name(conn, winner_id)
-    ln = fighter_name(conn, loser_id)
-    write_news(conn, f"{wn} defeats {ln}", f"{wn} beat {ln} by {result_type.replace('_', ' ')}.", "fight", event_id, fight_id, winner_id, promo_id)
-    write_commentary(conn, event_id, fight_id, f"{wn} has just defeated {ln}.")
+
+    stats_a = _load_fighter_stats(conn, a_id)
+    stats_b = _load_fighter_stats(conn, b_id)
+    outcome = _resolve_outcome(stats_a, stats_b, scheduled_rounds)
+
+    result_type = outcome["result_type"]
+    finish_round = outcome["finish_round"]
+    finish_time = outcome["finish_time"]
+    performance_rating = outcome["performance_rating"]
+    fan_reaction_rating = outcome["fan_reaction_rating"]
+
+    a_name = fighter_name(conn, a_id)
+    b_name = fighter_name(conn, b_id)
+
+    if result_type == "draw":
+        # Draw: no winner/loser. Both participants get a draw on their
+        # record. Streaks are unchanged (a draw neither extends nor
+        # breaks a streak in most MMA rulesets).
+        conn.execute(
+            "UPDATE fights SET winner_fighter_id=NULL, loser_fighter_id=NULL, "
+            "result_type=?, finish_round=?, finish_time=?, "
+            "performance_rating=?, fan_reaction_rating=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE fight_id=?",
+            (result_type, finish_round, finish_time,
+             performance_rating, fan_reaction_rating, fight_id),
+        )
+        conn.execute(
+            "UPDATE fight_participants SET is_winner=0 WHERE fight_id=?",
+            (fight_id,),
+        )
+        conn.execute(
+            "UPDATE fighter_career SET record_draws=record_draws+1, "
+            "updated_at=CURRENT_TIMESTAMP WHERE fighter_id IN (?, ?)",
+            (a_id, b_id),
+        )
+        headline = f"{a_name} and {b_name} fight to a draw"
+        body = f"{a_name} and {b_name} fought to a draw after {finish_round} rounds."
+        commentary = f"The judges cannot split {a_name} and {b_name} — it's a draw."
+        news_fighter_id = None
+    else:
+        if outcome["winner"] == "a":
+            winner_id, loser_id = a_id, b_id
+            winner_name, loser_name = a_name, b_name
+        else:
+            winner_id, loser_id = b_id, a_id
+            winner_name, loser_name = b_name, a_name
+        conn.execute(
+            "UPDATE fights SET winner_fighter_id=?, loser_fighter_id=?, result_type=?, "
+            "finish_round=?, finish_time=?, performance_rating=?, fan_reaction_rating=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE fight_id=?",
+            (winner_id, loser_id, result_type, finish_round, finish_time,
+             performance_rating, fan_reaction_rating, fight_id),
+        )
+        conn.execute(
+            "UPDATE fight_participants SET is_winner=CASE WHEN fighter_id=? THEN 1 ELSE 0 END "
+            "WHERE fight_id=?",
+            (winner_id, fight_id),
+        )
+        conn.execute(
+            "UPDATE fighter_career SET record_wins=record_wins+1, win_streak=win_streak+1, "
+            "loss_streak=0, updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+            (winner_id,),
+        )
+        conn.execute(
+            "UPDATE fighter_career SET record_losses=record_losses+1, loss_streak=loss_streak+1, "
+            "win_streak=0, updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+            (loser_id,),
+        )
+        headline, body = _format_fight_news(winner_name, loser_name, result_type, finish_round)
+        commentary = _format_fight_commentary(winner_name, loser_name, result_type, finish_round)
+        news_fighter_id = winner_id
+
+    # The write_news / write_commentary calls themselves are preserved
+    # exactly — only the headline / body / commentary strings change.
+    write_news(conn, headline, body, "fight", event_id, fight_id, news_fighter_id, promo_id)
+    write_commentary(conn, event_id, fight_id, commentary)
     return fight_id
 
 class App(tk.Tk):
