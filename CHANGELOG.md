@@ -9,6 +9,33 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Contracts group (Task ID 9) — 4 new tables: `contracts` (polymorphic
+  base with contract_target_type CHECK constraint), `fighter_contracts`,
+  `staff_contracts`, `broadcast_contracts` (subtype tables with UNIQUE
+  contract_id FKs). Each fighter is now tied to their promotion via a
+  real contract row with start_date, end_date, salary, exclusive_flag,
+  and status — not just a `current_promotion_id` FK. Foundation for
+  Task 13 (free agency + signings) and Task 25 (rival promotion AI
+  poaching).
+- `_seed_default_fighter_contract()` and `_seed_default_staff_contract()`
+  helpers in `seed_data.py` (Task ID 9) — create a default 12-month
+  exclusive contract for each fighter and staff member. Salary
+  defaults to 50000.0; contract_type defaults to 'standard'.
+- Contracts tab in the UI (Task ID 9) — adds a ttk.Notebook to the
+  right pane with two tabs: "News & Commentary" (existing widgets
+  moved) and "Contracts" (new Treeview showing contractor name, type,
+  start/end dates, salary, exclusive flag, status). Respects the
+  promotion filter from Task 6.
+- `get_contracts_for_display(conn, promotion_id=None)` helper in
+  `app.py` (Task ID 9) — extracted for testability, same pattern as
+  `get_fighters_for_display()` from Task 6. Joins contracts to
+  fighter_contracts/fighters and staff_contracts/broadcast_contracts/
+  staff via LEFT JOINs with COALESCE for the contractor name.
+- Acceptance test `scripts/test_contracts.py` (Task ID 9) — tests
+  schema (CHECK constraints), seed (5 fighter + 1 staff contract with
+  correct defaults), helper (filter by promotion, invalid promotion),
+  UI smoke test (skips in headless), and regression (fight_history +
+  event lifecycle + event scheduler still work).
 - Repeatable event generator (Task ID 8) — `resolve_next_fight()`
   now auto-schedules a new event ~4 weeks out when an event just
   transitions to 'completed'. The new event reuses the same promotion,
@@ -109,6 +136,12 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.3.0 → 1.4.0 (Task ID 9) — first MINOR bump
+  since Task ID 4 (1.2.1 → 1.3.0). First schema change in Stage 2.
+- `build_db.py` migration name updated to `v1_4_0_add_contracts`.
+- `seed_data.py` now creates default contracts for every fighter and
+  the seeded commentator. Seed summary printout updated to include
+  contract count.
 - Schema version: `1.2.1` → `1.3.0`. First MINOR bump since the
   versioning system was restored in Task ID 2. Adds the `fight_history`
   table (Task ID 4).

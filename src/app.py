@@ -89,6 +89,54 @@ def get_fighters_for_display(conn, promotion_filter=None):
     sql += " ORDER BY f.fighter_id"
     return conn.execute(sql).fetchall()
 
+
+def get_contracts_for_display(conn, promotion_id=None):
+    """Return contract rows for the UI Contracts tab (Task ID 9).
+
+    Joins contracts -> fighter_contracts -> fighters and (for non-
+    fighter contracts) staff_contracts -> staff and broadcast_contracts
+    -> staff. Uses COALESCE across three LEFT JOINs to pick whichever
+    contractor name is non-NULL based on contract_target_type.
+
+    Args:
+        conn: sqlite3 connection.
+        promotion_id: if None, return all contracts; else return only
+            contracts for the given promotion.
+
+    Returns:
+        List of 7-tuples: (contractor_name, contract_target_type,
+        start_date, end_date, salary, exclusive_flag, status).
+    """
+    # Polymorphic JOIN: the base contracts table has contract_target_type
+    # in ('fighter', 'staff', 'broadcast'). Each subtype table
+    # (fighter_contracts / staff_contracts / broadcast_contracts) holds
+    # the FK to the contracted entity. We LEFT JOIN all three subtype
+    # tables + their name sources, then COALESCE the contractor name.
+    # Two staff aliases (s_sc, s_bc) avoid an OR-join on staff_id which
+    # could produce cartesian products. See worklog decision D2.
+    sql = (
+        "SELECT "
+        "  COALESCE(f.first_name || ' ' || f.last_name, "
+        "           s_sc.first_name || ' ' || s_sc.last_name, "
+        "           s_bc.first_name || ' ' || s_bc.last_name, "
+        "           'Unknown') AS contractor_name, "
+        "  c.contract_target_type, c.start_date, c.end_date, "
+        "  c.salary, c.exclusive_flag, c.status "
+        "FROM contracts c "
+        "LEFT JOIN fighter_contracts fc ON fc.contract_id = c.contract_id "
+        "LEFT JOIN fighters f ON f.fighter_id = fc.fighter_id "
+        "LEFT JOIN staff_contracts sc ON sc.contract_id = c.contract_id "
+        "LEFT JOIN staff s_sc ON s_sc.staff_id = sc.staff_id "
+        "LEFT JOIN broadcast_contracts bc ON bc.contract_id = c.contract_id "
+        "LEFT JOIN staff s_bc ON s_bc.staff_id = bc.staff_id"
+    )
+    if promotion_id is not None:
+        sql += " WHERE c.promotion_id = ?"
+        sql += " ORDER BY c.end_date"
+        return conn.execute(sql, (promotion_id,)).fetchall()
+    sql += " ORDER BY c.end_date"
+    return conn.execute(sql).fetchall()
+
 # ----------------------------------------------------------------
 # Real attribute-based fight resolver (Task ID 3).
 #
@@ -959,13 +1007,48 @@ class App(tk.Tk):
             self.fights.column(c, width=w, anchor='w')
         self.fights.pack(fill='both', expand=True, pady=(6,0))
 
-        ttk.Label(right, text="News", font=("Segoe UI", 11, "bold")).pack(anchor='w')
-        self.news = tk.Listbox(right, height=18)
-        self.news.pack(fill='both', expand=True, pady=(6,0))
+        # ----------------------------------------------------------------
+        # Right pane: ttk.Notebook with two tabs (Task ID 9).
+        #
+        # Layout choice (worklog decision D1): the existing News + Commentary
+        # Listboxes are moved into a "News & Commentary" tab, and a new
+        # "Contracts" tab holds a read-only Treeview of the player's
+        # promotion's active contracts. This preserves the 3-pane layout
+        # (left=fighters / center=events+fights / right=notebook) while
+        # adding the Contracts surface without taking screen real estate
+        # away from News + Commentary. The Contracts tab respects the
+        # same current_promotion_filter as the Fighters tree (Task ID 6)
+        # so the player can scope the contracts list to a single promotion.
+        # ----------------------------------------------------------------
+        right_notebook = ttk.Notebook(right)
+        right_notebook.pack(fill='both', expand=True)
 
-        ttk.Label(right, text="Commentary", font=("Segoe UI", 11, "bold")).pack(anchor='w', pady=(10,0))
-        self.commentary = tk.Listbox(right, height=8)
-        self.commentary.pack(fill='both', expand=True, pady=(6,0))
+        # Tab 1: News & Commentary (existing widgets, moved into the tab).
+        news_tab = ttk.Frame(right_notebook)
+        right_notebook.add(news_tab, text="News & Commentary")
+        ttk.Label(news_tab, text="News", font=("Segoe UI", 11, "bold")).pack(anchor='w')
+        self.news = tk.Listbox(news_tab, height=14)
+        self.news.pack(fill='both', expand=True, pady=(6, 0))
+        ttk.Label(news_tab, text="Commentary", font=("Segoe UI", 11, "bold")).pack(anchor='w', pady=(10, 0))
+        self.commentary = tk.Listbox(news_tab, height=6)
+        self.commentary.pack(fill='both', expand=True, pady=(6, 0))
+
+        # Tab 2: Contracts (new in Task ID 9). Read-only Treeview with
+        # columns: contractor, type, start, end, salary, exclusive,
+        # status. Populated by refresh_all() via get_contracts_for_display.
+        contracts_tab = ttk.Frame(right_notebook)
+        right_notebook.add(contracts_tab, text="Contracts")
+        ttk.Label(contracts_tab, text="Active Contracts", font=("Segoe UI", 11, "bold")).pack(anchor='w')
+        self.contracts = ttk.Treeview(
+            contracts_tab,
+            columns=('contractor', 'type', 'start', 'end', 'salary', 'exclusive', 'status'),
+            show='headings', height=18
+        )
+        for c, w in [('contractor', 150), ('type', 80), ('start', 90), ('end', 90),
+                     ('salary', 80), ('exclusive', 70), ('status', 90)]:
+            self.contracts.heading(c, text=c.title())
+            self.contracts.column(c, width=w, anchor='w')
+        self.contracts.pack(fill='both', expand=True, pady=(6, 0))
 
     def clear_tree(self, tree):
         for item in tree.get_children():
@@ -1009,6 +1092,7 @@ class App(tk.Tk):
         self.clear_tree(self.fighters)
         self.clear_tree(self.events)
         self.clear_tree(self.fights)
+        self.clear_tree(self.contracts)
         self.news.delete(0, tk.END)
         self.commentary.delete(0, tk.END)
 
@@ -1037,6 +1121,12 @@ class App(tk.Tk):
             self.news.insert(tk.END, r[0])
         for r in self.conn.execute("SELECT text FROM commentary_segments ORDER BY commentary_segment_id DESC LIMIT 10"):
             self.commentary.insert(tk.END, r[0])
+
+        # Populate Contracts tab (Task ID 9). Uses the same promotion
+        # filter as the Fighters tree - if a specific promotion is
+        # selected, show only that promotion's contracts; else show all.
+        for r in get_contracts_for_display(self.conn, self.current_promotion_filter):
+            self.contracts.insert('', 'end', values=r)
 
     def on_promo_filter_change(self, event=None):
         """Handle promotion filter dropdown change (Task ID 6).

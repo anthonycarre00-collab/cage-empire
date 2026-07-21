@@ -45,13 +45,18 @@ SRC_DIR = PROJECT_DIR / "src"
 DATA_DIR = PROJECT_DIR / "data"
 DB_PATH = DATA_DIR / "cage_empire.db"
 
-EXPECTED_CODE_VERSION = "1.3.0"
+EXPECTED_CODE_VERSION = None  # set after build_db import below
 
 # Make src/ importable so we can call _parse_version / _compare_versions
 # directly for case 7. Importing build_db does NOT execute main() (it's
 # guarded by `if __name__ == "__main__"`), so this is safe.
 sys.path.insert(0, str(SRC_DIR))
 import build_db  # noqa: E402
+
+# Dynamic schema version (Task ID 9 supervisor fix). Reading this from
+# build_db means this test does not need to be updated on every schema
+# version bump.
+EXPECTED_CODE_VERSION = build_db.CODE_SCHEMA_VERSION
 
 
 # --------------------------------------------------------------------
@@ -175,7 +180,7 @@ def case_3_upgrade_rebuild():
     # Sanity check: version is now 1.2.1.
     assert read_schema_version() == "1.2.1", "setup failed: version not 1.2.1"
     rc, out, err = run_build_db()
-    expected_text = "Upgrading schema: 1.2.1 -> 1.3.0"
+    expected_text = f"Upgrading schema: 1.2.1 -> {EXPECTED_CODE_VERSION}"
     actual_version = read_schema_version()
     passed = (rc == 0) and (expected_text in out) and (actual_version == EXPECTED_CODE_VERSION)
     return passed, {
@@ -220,15 +225,15 @@ def case_4_refuse_newer_version():
     passed = (
         rc != 0
         and "9.9.9" in combined_output
-        and "1.3.0" in combined_output
+        and EXPECTED_CODE_VERSION in combined_output
         and actual_version == "9.9.9"
         and mtime_after == mtime_before
         and size_after == size_before
     )
     return passed, {
-        "case": "4. Refuse newer version (9.9.9 > 1.3.0)",
+        "case": f"4. Refuse newer version (9.9.9 > {EXPECTED_CODE_VERSION})",
         "expected": (
-            "rc!=0, output contains '9.9.9' and '1.3.0', "
+            f"rc!=0, output contains '9.9.9' and '{EXPECTED_CODE_VERSION}', "
             "DB untouched (schema_version still 9.9.9, "
             "mtime + size unchanged)"
         ),

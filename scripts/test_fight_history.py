@@ -72,6 +72,15 @@ sys.path.insert(0, str(SRC_DIR))
 # Importing app.py pulls in tkinter. The import itself does not require
 # a display (only tk.Tk() does), so this is safe in headless contexts.
 import app  # noqa: E402
+import build_db  # noqa: E402
+
+# Dynamic schema version + migration name (Task ID 9 supervisor fix).
+# Reading these from build_db means this test does not need to be
+# updated on every schema version bump. The migration name follows
+# the convention v{MAJOR}_{MINOR}_{PATCH}_{desc} - we only check
+# that the current version's migration is recorded, not the specific
+# description string.
+EXPECTED_CODE_VERSION = build_db.CODE_SCHEMA_VERSION
 
 # Seed for reproducibility — see module docstring.
 RANDOM_SEED = 42
@@ -195,25 +204,31 @@ def main():
     ))
 
     # ----------------------------------------------------------------
-    # Step 3: verify schema_meta.schema_version == '1.3.0'.
+    # Step 3: verify schema_meta.schema_version matches the code's
+    # current CODE_SCHEMA_VERSION (dynamic, Task ID 9 supervisor fix).
     # ----------------------------------------------------------------
     sv = conn.execute(
         "SELECT schema_version FROM schema_meta WHERE schema_name='cage_empire'"
     ).fetchone()
-    sv_ok = sv is not None and sv[0] == "1.3.0"
+    sv_ok = sv is not None and sv[0] == EXPECTED_CODE_VERSION
     fatal_results.append((
-        "schema_meta.schema_version == '1.3.0'",
+        f"schema_meta.schema_version == '{EXPECTED_CODE_VERSION}'",
         sv_ok,
         f"got={sv[0] if sv else None}",
     ))
 
-    # Also verify the migration name is recorded.
+    # Also verify the migration name is recorded. We check that SOME
+    # migration is recorded (the current version's), without hardcoding
+    # the description suffix (which changes per task: _add_fight_history,
+    # _add_contracts, etc.).
+    expected_migration_prefix = f"v{EXPECTED_CODE_VERSION.replace('.', '_')}_"
     mig = conn.execute(
         "SELECT migration_name FROM schema_migrations "
-        "WHERE migration_name='v1_3_0_add_fight_history'"
+        "WHERE migration_name LIKE ?",
+        (expected_migration_prefix + "%",),
     ).fetchone()
     fatal_results.append((
-        "migration 'v1_3_0_add_fight_history' recorded",
+        f"migration starting with '{expected_migration_prefix}' recorded",
         mig is not None,
         f"found={mig}",
     ))

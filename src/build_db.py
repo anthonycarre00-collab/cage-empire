@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.3.0"
+CODE_SCHEMA_VERSION = "1.4.0"
 
 
 def _parse_version(v):
@@ -408,6 +408,61 @@ CREATE TABLE IF NOT EXISTS fight_history (
     created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fight_id, fighter_id)
 );
+
+-- ----------------------------------------------------------------
+-- Contracts (added in v1.4.0, Task ID 9).
+-- 4 tables: contracts (polymorphic base) + fighter_contracts +
+-- staff_contracts + broadcast_contracts (subtype tables). The base
+-- table holds the common fields (promotion_id, dates, salary,
+-- exclusivity, status); the subtype tables hold the FK to the
+-- contracted entity (fighter / staff / broadcast_staff).
+-- Polymorphic-association pattern: contracts.contract_target_type
+-- is 'fighter' / 'staff' / 'broadcast', and the corresponding
+-- subtype table has the FK. This avoids a single nullable FK column
+-- on the base table (which would have no FK constraint).
+-- See docs/SCHEMA_DRIFT_AUDIT.md §F and docs/STAGES.md Task ID 9.
+-- Foundation for Task ID 13 (free agency + signings) and Task ID 25
+-- (rival promotion AI poaching).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS contracts (
+    contract_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_target_type TEXT NOT NULL CHECK (contract_target_type IN ('fighter', 'staff', 'broadcast')),
+    promotion_id         INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    start_date           TEXT NOT NULL,
+    end_date             TEXT NOT NULL,
+    salary               REAL NOT NULL DEFAULT 0 CHECK (salary >= 0),
+    bonus_structure      TEXT,
+    buyout_clause        REAL,
+    exclusive_flag       INTEGER NOT NULL DEFAULT 1 CHECK (exclusive_flag IN (0, 1)),
+    status               TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'terminated', 'renegotiating')),
+    created_at           TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at           TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    CHECK (end_date >= start_date)
+);
+
+CREATE TABLE IF NOT EXISTS fighter_contracts (
+    fighter_contract_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id         INTEGER NOT NULL UNIQUE REFERENCES contracts(contract_id) ON DELETE CASCADE,
+    fighter_id          INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    contract_type       TEXT NOT NULL DEFAULT 'standard' CHECK (contract_type IN ('standard', 'champion', 'prospect', 'veteran')),
+    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+CREATE TABLE IF NOT EXISTS staff_contracts (
+    staff_contract_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id       INTEGER NOT NULL UNIQUE REFERENCES contracts(contract_id) ON DELETE CASCADE,
+    staff_id          INTEGER NOT NULL REFERENCES staff(staff_id) ON DELETE CASCADE,
+    contract_role     TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+CREATE TABLE IF NOT EXISTS broadcast_contracts (
+    broadcast_contract_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id           INTEGER NOT NULL UNIQUE REFERENCES contracts(contract_id) ON DELETE CASCADE,
+    staff_id              INTEGER NOT NULL REFERENCES staff(staff_id) ON DELETE CASCADE,
+    network_name          TEXT NOT NULL,
+    created_at            TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def main():
@@ -448,7 +503,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_fight_history",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_contracts",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
