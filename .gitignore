@@ -1,0 +1,60 @@
+# =============================================================
+#  CAGE EMPIRE - .gitignore
+# =============================================================
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Project: database (NEVER commit save games) ----
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/saves/
+data/backups/
+
+# ---- Project: but DO keep data/.gitkeep so the folder exists ----
+!data/.gitkeep
+
+# ---- Logs / runtime ----
+logs/
+*.log
+
+# ---- Mod / user content (keep folders, ignore user data) ----
+mods/user/*
+!mods/user/.gitkeep
+saves/*
+!saves/.gitkeep
+
+# ---- Build / dist ----
+build/
+dist/
+*.spec
+
+# ---- Secrets ----
+.env
+.env.local
+*.secret
+secrets/

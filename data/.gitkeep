@@ -1,0 +1,2 @@
+# This file ensures the data/ folder is tracked by git
+# even when the .db file is gitignored.

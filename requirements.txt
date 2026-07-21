@@ -1,0 +1,12 @@
+# CAGE EMPIRE - Python dependencies
+# Install with:  pip install -r requirements.txt
+#
+# MVP needs only the Python standard library (sqlite3, tkinter, pathlib,
+# datetime, random). No third-party packages required.
+
+# Optional - enable when those features land:
+# customtkinter>=5.2.0     # polished dark UI widgets (replaces ttk)
+# pillow>=10.0.0           # portrait / image handling
+# rich>=13.0.0             # terminal pretty-print for debug / CLI mode
+# pyyaml>=6.0              # mod / template loading
+# openpyxl>=3.1            # CSV/XLSX mod import-export
