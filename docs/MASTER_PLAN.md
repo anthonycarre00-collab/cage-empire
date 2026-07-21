@@ -192,83 +192,52 @@ agency → signing → contracts (repeat forever). 6 acceptance tests,
 
 ---
 
-## 8. New tasks identified during audit (before Stage 3)
+## 8. New tasks identified during audit (before Stage 3) — RESOLVED
 
 The audit (see `SCHEMA_DRIFT_AUDIT.md §Z`) identified gaps that must
-be addressed before or during Stage 3:
+be addressed before or during Stage 3. The 6 open questions from
+`STAGE3_EXPANSION_PLAN.md §8` have been resolved by the supervisor
+(see `STAGES.md` Stage 2.5 for the full decisions).
 
-### Task ID 14.5 — Extend fighter_attributes + fighter_personality to spec (CRITICAL)
+### Resolved decisions
 
-**Why.** The v1.6 spec calls for 24 combat stats and 17+ personality
-traits. The v1.9.0 build has 4 and 3. This blocks Tasks 16 (training
-camps), 18 (scouting), 19 (voice layer), and 24 (matchup analysis).
+1. **Task 14.5+14.6+14.7 combined** — YES, one commit, schema 2.0.0
+   (MAJOR). 68 new columns across 6 tables + `current_date` quirk fix
+   + `src/fighter_gen.py` module + 12 archetype seeds.
+2. **Beat engine split** — B1 (basic beat loop + decision scoring,
+   schema 2.1.0) and B2 (fatigue + momentum + finishes + commentary,
+   schema 2.2.0).
+3. **Archetype seed data** — 7 style + 5 personality archetypes with
+   bias JSON, seeded in Task 14.5.
+4. **Anticipation Feed** — Task 31 (Stage 5), depends on many systems.
+5. **Design Law enforcement** — Added to CONVENTIONS.md §13. Enforced
+   at every task review.
+6. **Execution order** — 14.5+14.6+14.7 → B1 → B2 → 15 → 16 → 17 →
+   19 → 18.
 
-**Scope.** Add 20 columns to `fighter_attributes` (punch_speed,
-kick_power, kick_speed, accuracy, defense, footwork, head_movement,
-clinch_offense, clinch_defense, takedown_offense, takedown_defense,
-top_control, bottom_game, submission_offense, submission_defense,
-toughness, recovery, adaptability, pace, cage_wrestling, ringcraft,
-damage_output, finish_instinct, risk_tolerance). Add 14+ columns to
-`fighter_personality`. Update `_power_score()` and `_resolve_outcome()`
-to use the full set. Update seed defaults. Schema version bump to
-1.10.0 (or 1.9.1 if PATCH).
+### Stage 2.5 task list (resolved)
 
-**Priority.** HIGHEST — blocks 4 downstream tasks.
+| Task | What | Schema | Pillars |
+|---|---|---|---|
+| 14.5+14.6+14.7 | Fighter schema expansion (68 columns, fighter_gen.py, quirk fix, archetype seeds) | 2.0.0 | Growth, Discovery |
+| B1 | Beat-level engine (tables + basic loop + decision scoring) | 2.1.0 | Conflict, Watch Rise |
+| B2 | Engine depth (fatigue + momentum + finishes + commentary) | 2.2.0 | Conflict, Watch Rise |
+| B-regen-update | Update generate_fighter to use fighter_gen.py | 2.2.0 | Discovery |
 
-### Task ID 14.6 — Add missing fighters table columns
+### Stage 3a — Fighter Welfare (after Stage 2.5)
 
-**Why.** The `fighters` table is missing ~14 spec columns: `height_cm`,
-`reach_cm`, `stance`, `handedness`, `injury_proneness`,
-`weight_cut_difficulty`, `consistency`, `clutch_factor`,
-`marketability`, `fan_friendliness`, `promo_boost`,
-`preferred_gameplans`, `bad_matchup_tags`, `is_deceased`.
+| Task | What | Schema | Pillars |
+|---|---|---|---|
+| 15 | Injuries + medical recovery | 2.3.0 | Investment, Conflict |
+| 16 | Training camps | 2.4.0 | Growth, Investment |
+| 17 | Weight cuts | 2.5.0 | Conflict, Investment |
 
-**Scope.** Add these columns as a migration. `injury_proneness` is
-needed for Task 15 (injuries). `weight_cut_difficulty` is needed for
-Task 17 (weight cuts). Physical attributes are needed for fighter
-profiles and matchup analysis. Marketability attributes are needed for
-Tasks 20 and 26.
+### Stage 3b — Presentation (after Stage 3a)
 
-**Priority.** HIGH — should be done alongside Task 14.5 (both touch
-the fighter schema).
-
-### Task ID 14.7 — Fix pre-existing `current_date` SQLite quirk (D5)
-
-**Why.** Bare `current_date` in SELECTs resolves to SQLite's built-in
-date function (today's real date) instead of the `simulation_clock.current_date`
-column. This causes the clock to jump unpredictably on the first tick
-after a fresh build. Flagged in Tasks 12, 13, 14 but never fixed.
-
-**Scope.** Qualify the column as `simulation_clock.current_date` in
-`app.py` `get_clock()` (line 17) and `tick_processor.py` `run_tick()`
-(line 337). Small, low-risk fix.
-
-**Priority.** MEDIUM — should be done before Stage 3 to avoid clock-
-related test fragility.
-
-### Task ID 14.8 — Add `fight_rounds` table
-
-**Why.** The resolver produces a `finish_round` but doesn't store
-per-round stats (damage, strikes, takedowns, knockdowns, control time,
-momentum). Needed for Tasks 23 (commentary beats), 24 (punditry),
-26 (show rating).
-
-**Scope.** Add `fight_rounds` table. Update `resolve_next_fight()` to
-populate it. Schema version bump.
-
-**Priority.** MEDIUM — can be deferred until Task 23 but should not
-be forgotten.
-
-### Task ID 6.5 — Staff UI tab
-
-**Why.** The `staff` and `broadcast_staff` tables exist and are seeded
-but the UI has no dedicated staff management view.
-
-**Scope.** Add a Staff tab showing all staff with their roles, skills,
-contracts. No hire/fire yet — just a read-only view (like the Contracts
-tab).
-
-**Priority.** LOW — quality of life, not blocking.
+| Task | What | Schema | Pillars |
+|---|---|---|---|
+| 19 | Voice / interpretation layer | 2.6.0 | ALL 5 (translates simulation into emotion) |
+| 18 | Scouting system | 2.7.0 | Discovery (Fantasy 1: Talent Hunter) |
 
 ---
 
@@ -312,3 +281,11 @@ expanded briefs are reviewed and approved.
 | 2026-07-21 (Task 14) | `fighter_memory_links` created but NOT populated | Memory resurfacing is a future enhancement. Table exists so future tasks can populate without schema change. |
 | 2026-07-21 (audit) | Tasks 14.5, 14.6, 14.7, 14.8, 6.5 identified as new tasks | Audit of Stages 1-2 revealed critical gaps: fighter_attributes/personality still at 4/3 (not 24/17), fight_rounds still missing, fighters table missing ~14 columns, pre-existing current_date quirk, no Staff UI tab |
 | 2026-07-21 (audit) | Stage 3-5 briefs need expansion before coding | Current briefs are 2-3 line summaries. Must expand to full briefs (schema, approach, acceptance checklist, dependencies, scope) before any Stage 3 work begins. |
+| 2026-07-21 (Soul) | CAGE EMPIRE SOUL adopted as prime directive | "The player collects stories, not fighters." Design Law added to CONVENTIONS.md §13. 5 pillars: Discovery, Investment, Growth, Conflict, Legacy. Every task reviewed against these pillars. |
+| 2026-07-21 (Soul) | Voice/interpretation layer reframed | Not a technical utility — it is "the machinery that translates simulation into emotion." Moved to front of Stage 3b (before scouting). |
+| 2026-07-21 (supervisor) | Task 14.5+14.6+14.7 combined as one-off | 68 new columns across 6 tables in one commit. Schema 2.0.0 (MAJOR — first major version). Thorough testing required. |
+| 2026-07-21 (supervisor) | Beat engine split into B1 + B2 | B1: tables + basic beat loop + decision scoring (2.1.0). B2: fatigue + momentum + finishes + commentary (2.2.0). Keeps each task testable. |
+| 2026-07-21 (supervisor) | 7 style + 5 personality archetypes seeded with bias JSON | Variety in regen from the start. Generic 50-everything prospects don't generate stories. |
+| 2026-07-21 (supervisor) | Anticipation Feed added as Task 31 (Stage 5) | UI feature showing "what's coming." Depends on many systems. Too early now. |
+| 2026-07-21 (supervisor) | Execution order: 14.5 → B1 → B2 → 15 → 16 → 17 → 19 → 18 | Voice layer (19) before scouting (18) because scouting reports use the voice layer. Injuries (15) before camps (16) because camp injury risk feeds injury system. |
+| 2026-07-21 (supervisor) | Schema version jumps to 2.0.0 for fighter expansion | MAJOR bump marks the transition from thin skeleton (4 attributes, coin-flip resolver) to real simulation depth (25 attributes, beat-level engine). |

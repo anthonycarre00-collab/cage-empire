@@ -306,22 +306,28 @@ on CAGE EMPIRE, they MUST read these files in this order before
 touching anything:
 
 1. `README.md` — project overview.
-2. `docs/MASTER_PLAN.md` — current state and revised principle.
-3. `docs/STAGES.md` — what task are we on, what's next.
-4. `docs/CONVENTIONS.md` (this file) — the rules.
-5. `docs/SCHEMA_DRIFT_AUDIT.md` — what tables exist and what's
+2. `docs/CAGE_EMPIRE_SOUL.md` — **prime directive**. The project's
+   purpose. Read this FIRST — it defines what "success" means.
+3. `docs/MASTER_PLAN.md` — current state and revised principle.
+4. `docs/STAGES.md` — what task are we on, what's next.
+5. `docs/CONVENTIONS.md` (this file) — the rules.
+6. `docs/SCHEMA_DRIFT_AUDIT.md` — what tables exist and what's
    missing.
-6. `CHANGELOG.md` — what's changed recently.
-7. The supervisor's `worklog.md` — full history of every task.
+7. `CHANGELOG.md` — what's changed recently.
+8. The supervisor's `worklog.md` — full history of every task.
 
 Skipping any of these will cause the agent to miss context and
 likely repeat past mistakes. The supervisor's first instruction to
-any subagent will be "read these 7 files, then start".
+any subagent will be "read these 8 files, then start".
 
 **IMPORTANT for Stage 3+:** Also check `docs/SCHEMA_DRIFT_AUDIT.md §Z`
 for known issues and gaps. The §Z section documents critical gaps
-(e.g., fighter_attributes still at 4/24 stats) that may block
+(e.g., fighter_attributes still at 4/25 stats) that may block
 downstream tasks.
+
+**IMPORTANT for ALL tasks:** Every task must be evaluated against
+the CAGE EMPIRE Design Law (§13). The supervisor will ask: "Which
+of the 5 pillars does this strengthen? What stories does it generate?"
 
 ---
 
@@ -463,3 +469,93 @@ The `scripts/` directory contains:
 - `test_regen.py` (Task 14)
 
 12 tests, 500+ sub-checks, all passing.
+
+---
+
+## 13. CAGE EMPIRE Design Law (Prime Directive)
+
+> **Source:** `docs/CAGE_EMPIRE_SOUL.md` — the project's north star.
+
+### 13.1 The Law
+
+> The player does not collect fighters. The player collects stories.
+>
+> Every major system must contribute to:
+> 1. **Discovery** — finding talent, uncovering hidden potential
+> 2. **Investment** — signing, training, developing fighters
+> 3. **Growth** — fighters improving, careers progressing
+> 4. **Conflict** — fights, rivalries, title battles
+> 5. **Legacy** — hall of fame, records, memories, history
+>
+> If a feature does not strengthen one of those five pillars, it is
+> probably not worth building.
+
+### 13.2 Enforcement
+
+At every task review, the supervisor MUST ask:
+
+1. **Which of the 5 pillars does this task strengthen?** If the answer
+   is "none" or "unclear," the task should be reconsidered.
+2. **What stories does this system generate?** If the answer is "none"
+   or "just numbers moving," the system needs a narrative layer.
+3. **Does this create anticipation?** The player should always have
+   something coming — a prospect developing, a champion aging, a
+   rivalry building. Systems that don't create anticipation are
+   support systems, not core systems.
+
+### 13.3 The Interpretation Layer
+
+The voice/interpretation layer (Task 19) is not a technical utility —
+it is the **machinery that translates simulation into emotion**. Its
+true purpose:
+
+- Raw: `Age 37, Losses 4, Durability down 12%`
+- Meaning: `His best years may be behind him.`
+
+Every system that produces data the player sees must eventually route
+through the interpretation layer. Raw numbers are for debugging; the
+player sees meaning.
+
+### 13.4 Success Metric
+
+**Do not measure success by number of systems built.**
+
+**Measure success by number of stories generated.**
+
+A good outcome: "36-year-old former champion returns after 4 years
+away, upsets undefeated prospect, triggers a comeback storyline.
+Player remembers forever."
+
+A bad outcome: "New ranking algorithm added. Player doesn't care."
+
+### 13.5 Anticipation Principle
+
+Players should constantly have unresolved threads:
+- The prospect just signed (when will they fight?)
+- The champion nearing retirement (who takes over?)
+- The rivalry exploding (when's the rematch?)
+- The gym producing talent (who's next?)
+- The event next month (what's the card?)
+
+**Something is always coming. Something is always developing.
+Something is always unresolved.** That's what keeps people clicking
+Advance Day for another 500 hours.
+
+### 13.6 The 5 Core Fantasies
+
+Every system should serve at least one of these player fantasies:
+
+| Fantasy | Player desire | Example systems |
+|---|---|---|
+| **Talent Hunter** | "I find greatness before anyone else" | Scouting, regen, hidden potential |
+| **Empire Builder** | "My promotion dominates the sport" | Finances, prestige, TV deals, champions |
+| **Kingmaker** | "I create stars" | Matchmaking, hype, rankings, media |
+| **Historian** | "The world remembers what I built" | Hall of fame, records, legacy, lineage |
+| **Puppet Master** | "The sport evolves because of my decisions" | Rivalries, gym ecosystems, promotion AI |
+
+### 13.7 Required Reading
+
+Every agent (human or AI) working on CAGE EMPIRE MUST read
+`docs/CAGE_EMPIRE_SOUL.md` before starting any task. The Soul document
+is the prime directive. The CONVENTIONS.md rules are the mechanics;
+the Soul document is the purpose.

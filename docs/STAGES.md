@@ -196,91 +196,302 @@ each retiring fighter. Regen lineage tracked. New prospect news items.
 
 ---
 
-## Stage 2.5 — Audit gap-fill (NEW — identified during post-Stage-2 audit)
+## Stage 2.5 — Fighter Depth + Engine Rewrite (RESOLVED)
 
-These tasks were identified during the audit pass (see
-`SCHEMA_DRIFT_AUDIT.md §Z` and `MASTER_PLAN.md §8`). They must be
-completed before Stage 3 because they block downstream tasks.
+> **Supervisor decisions (2026-07-21):** The 6 open questions from
+> `STAGE3_EXPANSION_PLAN.md §8` have been resolved by the supervisor.
+> See decisions below.
 
-### Task ID 14.5 — Extend fighter_attributes + fighter_personality to spec
+### Supervisor decisions on the 6 open questions
 
-**Status:** NOT STARTED. **Priority: CRITICAL.**
+1. **Combined commit scope (14.5+14.6+14.7):** YES, combined as a
+   one-off per user instruction. 68 new columns across 6 tables in one
+   commit, tested thoroughly. The `current_date` quirk fix (14.7) rides
+   along. Schema version bumps to 2.0.0 (MAJOR — first major version,
+   marking the transition from thin skeleton to real simulation depth).
 
-**Why.** The v1.6 spec calls for 24 combat stats and 17+ personality
-traits. The v1.9.0 build has 4 and 3. This blocks Tasks 16 (training
-camps), 18 (scouting), 19 (voice layer), and 24 (matchup analysis).
+2. **Beat engine complexity:** SPLIT into B1 (tables + basic beat loop +
+   decision scoring) and B2 (fatigue + momentum + mid-round finishes +
+   commentary beat selection). B1 is the minimum viable engine; B2 adds
+   the dramatic depth that makes fights memorable. This keeps each task
+   testable and reviewable.
 
-**Brief.** TBD — needs full expansion before delegation. Key points:
-- Add 20 columns to `fighter_attributes`: punch_speed, kick_power,
-  kick_speed, accuracy, defense, footwork, head_movement,
-  clinch_offense, clinch_defense, takedown_offense, takedown_defense,
-  top_control, bottom_game, submission_offense, submission_defense,
-  toughness, recovery, adaptability, pace, cage_wrestling, ringcraft,
-  damage_output, finish_instinct, risk_tolerance.
-- Add 14+ columns to `fighter_personality`: discipline, volatility,
-  ego, loyalty, ambition, professionalism, trash_talk,
-  media_friendliness, resilience, confidence, heart, respectfulness,
-  temper, attention_seeking, coachability, focus, fatigue_tolerance.
-- Update `_power_score()` and `_resolve_outcome()` to use the full
-  attribute set (the current 4-attribute formula must be expanded to
-  a 24-attribute formula — this is a significant rebalancing effort).
-- Update seed defaults (all new columns default to 50).
-- Schema version bump.
-- New acceptance test verifying the resolver still works with the
-  expanded attributes (all-90 beats all-30 ≥80% of the time).
+3. **Archetype seed data:** YES, seed 7 style archetypes + 5 personality
+   archetypes with bias JSON. Variety in regen is important from the
+   start — the Soul document says "the story is the reward," and generic
+   50-everything prospects don't generate stories.
 
-### Task ID 14.6 — Add missing fighters table columns
+4. **Anticipation Feed:** Added as Task 31 (Stage 5). It's a UI feature
+   that depends on many systems being in place (injuries, camps, rival
+   promotions, title reigns, regen lineage). Too early to build now.
 
-**Status:** NOT STARTED. **Priority: HIGH.**
+5. **Design Law enforcement:** YES, added to CONVENTIONS.md §13. The
+   supervisor will ask "Which of the 5 pillars does this strengthen?
+   What stories does it generate?" at every task review.
 
-**Why.** The `fighters` table is missing ~14 spec columns needed for
-Tasks 15, 17, 20, 26.
+6. **Execution order:** 14.5+14.6+14.7 → B1 → B2 → 15 → 16 → 17 → 19 → 18.
+   The voice layer (19) comes before scouting (18) because scouting
+   reports use the voice layer. Injuries (15) come before camps (16)
+   because camp injury risk feeds the injury system.
 
-**Brief.** TBD — needs full expansion. Columns to add: height_cm,
-reach_cm, stance, handedness, injury_proneness, weight_cut_difficulty,
-consistency, clutch_factor, marketability, fan_friendliness,
-promo_boost, preferred_gameplans (JSON), bad_matchup_tags (JSON),
-is_deceased. Should be done alongside Task 14.5 (both touch the
-fighter schema).
+### Revised Stage 2.5 task list
 
-### Task ID 14.7 — Fix pre-existing `current_date` SQLite quirk
+| Task | What | Schema version | Pillars served |
+|---|---|---|---|
+| **14.5+14.6+14.7** | Expand fighter_attributes (4→25), fighter_personality (3→20), add 14 fighters columns, 6 promotions columns, 8 gyms columns, 2 archetype bias columns. New `src/fighter_gen.py` module. Fix `current_date` quirk. Backfill all existing fighters. Seed 7 style + 5 personality archetypes with bias JSON. | 2.0.0 (MAJOR) | Growth (attributes are the growth substrate), Discovery (archetypes create variety) |
+| **B1** | Beat-level fight engine — tables (`fight_beats` + `fight_rounds`), basic beat loop (12-28 beats/round, phase-to-attribute mapping, 6 phases), decision scoring. `resolve_round()` function. | 2.1.0 (MINOR) | Conflict (the fight is the primary conflict), Watch Rise (dramatic moments) |
+| **B2** | Beat engine depth — fatigue system (gas depletes across beats/rounds), momentum system (clustered outcomes), mid-round finishes (KO/submission/doctor/corner/DQ), commentary beat selection (3-14 highlight beats). | 2.2.0 (MINOR) | Conflict (dramatic finishes), Watch Rise (the "oh my god it's over" moment) |
+| **B-regen-update** | Update `generate_fighter()` (Task 14) to use `fighter_gen.py` from 14.5. Regen fighters now get full 25-attribute + 20-personality blocks with archetype bias. | 2.2.0 (same commit as B2) | Discovery (regen prospects feel like real fighters, not generic 50s) |
 
-**Status:** NOT STARTED. **Priority: MEDIUM.**
+### Execution order (strict)
 
-**Why.** Bare `current_date` in SELECTs resolves to SQLite's built-in
-date function instead of the `simulation_clock.current_date` column.
-Causes the clock to jump unpredictably on the first tick after a fresh
-build. Flagged in Tasks 12, 13, 14 but never fixed.
+```
+14.5+14.6+14.7 (combined, schema 2.0.0)
+    ↓
+B1 (beat engine tables + basic loop, schema 2.1.0)
+    ↓
+B2 (fatigue + momentum + finishes + commentary, schema 2.2.0)
+    ↓
+B-regen-update (update generate_fighter to use fighter_gen.py, same commit as B2)
+    ↓
+--- Stage 3a begins ---
+15 (injuries, schema 2.3.0)
+    ↓
+16 (training camps, schema 2.4.0)
+    ↓
+17 (weight cuts, schema 2.5.0)
+    ↓
+--- Stage 3b begins ---
+19 (voice/interpretation layer, schema 2.6.0)
+    ↓
+18 (scouting, schema 2.7.0)
+```
 
-**Brief.** Qualify the column as `simulation_clock.current_date` in
-`app.py` `get_clock()` (line 17) and `tick_processor.py` `run_tick()`
-(line 337). Small, low-risk fix. No schema change. No new acceptance
-test needed (existing tests should still pass; tighten
-test_retirement.py case L's loosened assertion if the fix works).
+### Detailed task brief: 14.5+14.6+14.7 — Fighter Schema Expansion
 
-### Task ID 14.8 — Add `fight_rounds` table
+**Pillars served:** Growth (attributes are the substrate fighters grow
+on), Discovery (archetype bias makes regen fighters feel distinct)
 
-**Status:** NOT STARTED. **Priority: MEDIUM.**
+**Brief.** Migrate `fighter_attributes` from 4 to 25 columns and
+`fighter_personality` from 3 to 20 fields. Add archetype bias columns
+to `style_archetypes` and `personality_archetypes`. Add 14 missing
+columns to `fighters`, 6 to `promotions`, 8 to `gyms`. Fix the
+pre-existing `current_date` SQLite quirk. New module `src/fighter_gen.py`
+with generation functions reusable by the backfill and Task 14's
+`generate_fighter()`. Seed 7 style archetypes + 5 personality archetypes
+with bias JSON. Backfill all 5 existing fighters with the new columns.
+Schema version bumped to 2.0.0 (MAJOR — first major version).
 
-**Why.** The resolver produces a `finish_round` but doesn't store
-per-round stats. Needed for Tasks 23 (commentary beats), 24
-(punditry), 26 (show rating).
+**Scope.** Schema migration on 6 existing tables + 2 archetype tables.
+No brand-new tables. New module `src/fighter_gen.py`. Fix in `app.py`
+and `tick_processor.py` (column qualification).
 
-**Brief.** TBD — needs full expansion. Add `fight_rounds` table
-(round_number, fighter_a/b_damage, control_time, knockdowns,
-takedowns, strikes_landed, momentum_state, round_winner_fighter_id).
-Update `resolve_next_fight()` to populate it. Schema version bump.
+**Schema — fighter_attributes (4 → 25 columns):**
 
-### Task ID 6.5 — Staff UI tab
+Add 21 new columns, all `INTEGER NOT NULL DEFAULT 50 CHECK (col BETWEEN 0 AND 100)`:
 
-**Status:** NOT STARTED. **Priority: LOW.**
+| Group | New columns |
+|---|---|
+| Striking | punch_accuracy, kick_power, kick_accuracy, head_movement |
+| Range | footwork, clinch_striking, clinch_offense, clinch_defense |
+| Grappling | takedown_offense, takedown_defense, top_control, bottom_game, submission_offense, submission_defense, scramble_ability, cage_wrestling |
+| Physical | recovery_rate, speed_explosiveness, strength, durability, flexibility |
+| Mental | adaptability |
 
-**Why.** The `staff` and `broadcast_staff` tables exist and are seeded
-but the UI has no dedicated staff management view.
+Keep existing (values preserved): punch_power, cardio, fight_iq, chin
 
-**Brief.** TBD — needs full expansion. Add a Staff tab showing all
-staff with their roles, skills, contracts. Read-only for now (like
-the Contracts tab). No hire/fire yet.
+**Schema — fighter_personality (3 → 20 fields):**
+
+Add 17 new fields, all `INTEGER NOT NULL DEFAULT 50 CHECK (col BETWEEN 0 AND 100)`:
+
+| Group | New fields |
+|---|---|
+| Temperament | risk_taking, killer_instinct, grit, discipline, patience |
+| Career | ambition, loyalty, charisma, attention_seeking, coachability, professionalism |
+| Resilience | ego, resilience, sportsmanship, travel_comfort |
+| Dynamic | focus, fatigue_tolerance |
+
+Keep existing (values preserved): aggression, composure, morale
+
+**Schema — fighters (+14 columns):**
+
+height_cm INTEGER, reach_cm INTEGER, stance TEXT CHECK IN ('orthodox','southpaw','switch'), handedness TEXT CHECK IN ('right','left','ambidextrous'), injury_proneness INTEGER DEFAULT 50 CHECK (0-100), weight_cut_difficulty INTEGER DEFAULT 50 CHECK (0-100), consistency INTEGER DEFAULT 50 CHECK (0-100), clutch_factor INTEGER DEFAULT 50 CHECK (0-100), marketability INTEGER DEFAULT 50 CHECK (0-100), fan_friendliness INTEGER DEFAULT 50 CHECK (0-100), promo_boost INTEGER DEFAULT 0 CHECK (-100 to 100), preferred_gameplans TEXT (JSON), bad_matchup_tags TEXT (JSON), is_deceased INTEGER DEFAULT 0 CHECK IN (0,1)
+
+**Schema — promotions (+6 columns):**
+
+brand_tone TEXT DEFAULT 'standard', starting_budget REAL DEFAULT 0, broadcast_tier TEXT DEFAULT 'local_stream', ownership_type TEXT DEFAULT 'startup', ai_aggression INTEGER DEFAULT 50 CHECK (0-100), ai_spending_style TEXT DEFAULT 'balanced'
+
+**Schema — gyms (+8 columns):**
+
+reputation INTEGER DEFAULT 50 CHECK (0-100), membership_cost REAL DEFAULT 0, facility_quality INTEGER DEFAULT 50 CHECK (0-100), medical_support INTEGER DEFAULT 50 CHECK (0-100), sparring_depth INTEGER DEFAULT 50 CHECK (0-100), development_focus INTEGER DEFAULT 50 CHECK (0-100), culture_tone TEXT DEFAULT 'balanced', weight_cut_support INTEGER DEFAULT 50 CHECK (0-100)
+
+**Schema — style_archetypes + personality_archetypes (+1 column each):**
+
+attribute_bias TEXT (JSON), trait_bias TEXT (JSON)
+
+**Seed archetypes (7 style + 5 personality):**
+
+Style archetypes with bias JSON:
+1. Balanced (existing, add bias: {"punch_power": 5, "cardio": 5, "fight_iq": 5})
+2. Striker ({"punch_power": 15, "kick_power": 15, "punch_accuracy": 10, "head_movement": 10, "takedown_defense": -10, "submission_offense": -10})
+3. Grappler ({"takedown_offense": 15, "top_control": 15, "submission_offense": 15, "punch_power": -5, "kick_power": -5, "head_movement": -5})
+4. Wrestler ({"takedown_offense": 20, "top_control": 15, "cage_wrestling": 15, "strength": 10, "submission_offense": -10, "kick_power": -10})
+5. Brawler ({"punch_power": 20, "chin": 15, "durability": 10, "footwork": -15, "fight_iq": -10, "cardio": -5})
+6. Counter-Striker ({"punch_accuracy": 15, "head_movement": 15, "footwork": 15, "fight_iq": 15, "aggression": -10, "takedown_offense": -10})
+7. Submission Specialist ({"submission_offense": 20, "bottom_game": 15, "flexibility": 15, "punch_power": -10, "chin": -5})
+
+Personality archetypes with bias JSON:
+1. Calm (existing, add bias: {"composure": 15, "aggression": -10, "patience": 10})
+2. Aggressive ({"aggression": 20, "killer_instinct": 15, "patience": -15, "discipline": -5})
+3. Methodical ({"discipline": 15, "patience": 20, "fight_iq": 10, "risk_taking": -10})
+4. Showman ({"charisma": 20, "attention_seeking": 20, "ego": 10, "sportsmanship": -10})
+5. Quiet Professional ({"coachability": 15, "professionalism": 15, "discipline": 10, "attention_seeking": -15})
+
+**`src/fighter_gen.py` module:**
+
+```python
+def generate_attribute_block(archetype_id=None) -> dict:
+    """Generate 25-attribute block, optionally biased by archetype.
+    value = clamp(50 + bias.get(col, 0) + random_noise(-8, 8), 0, 100)"""
+
+def generate_personality_block(archetype_id=None) -> dict:
+    """Generate 20-personality block, optionally biased by archetype.
+    value = clamp(50 + bias.get(col, 0) + random_noise(-8, 8), 0, 100)"""
+
+def generate_physical_block() -> dict:
+    """Generate height, reach, stance, handedness.
+    Height: 165-195cm (normal around 178)
+    Reach: height ± 5-10cm
+    Stance: 80% orthodox, 15% southpaw, 5% switch
+    Handedness: 85% right, 10% left, 5% ambidextrous"""
+```
+
+**`current_date` quirk fix (14.7):**
+
+In `app.py` `get_clock()` and `tick_processor.py` `_check_retirements()`
+and `_check_contract_expiry()` and `run_tick()`: qualify all bare
+`current_date` references as `simulation_clock.current_date`.
+
+**Backfill approach:**
+1. Existing 4 attribute values (punch_power, cardio, fight_iq, chin) are
+   PRESERVED — do not overwrite.
+2. Existing 3 personality values (aggression, composure, morale) are
+   PRESERVED.
+3. New columns filled using `generate_attribute_block()` /
+   `generate_personality_block()` with the fighter's existing archetype_id.
+4. New fighters columns (height, reach, stance, etc.) filled using
+   `generate_physical_block()` + sensible defaults for meta columns
+   (injury_proneness=50, marketability=50, etc.).
+5. New promotions columns: AC gets broadcast_tier='regional_tv',
+   starting_budget=500000, ai_aggression=30 (player-controlled, low AI).
+   RFL gets broadcast_tier='local_stream', starting_budget=200000,
+   ai_aggression=60 (more aggressive AI for future Task 25).
+6. New gyms columns: sensible defaults (facility_quality=60,
+   medical_support=50, sparring_depth=55, development_focus=60).
+
+**Acceptance checklist:**
+- [ ] `fighter_attributes` has all 25 columns with CHECK (0-100)
+- [ ] `fighter_personality` has all 20 fields with CHECK (0-100)
+- [ ] Existing 4+3 values preserved after migration
+- [ ] `fighters` has 14 new columns with correct types/defaults
+- [ ] `promotions` has 6 new columns with correct types/defaults
+- [ ] `gyms` has 8 new columns with correct types/defaults
+- [ ] `style_archetypes.attribute_bias` and `personality_archetypes.trait_bias` columns added (TEXT, JSON)
+- [ ] 7 style archetypes + 5 personality archetypes seeded with bias JSON
+- [ ] `src/fighter_gen.py` exists with 3 generation functions, importable
+- [ ] All 5 existing fighters backfilled (no NULLs in new columns)
+- [ ] `current_date` quirk fixed (tick advances by exactly 1 day, not jumping to today's real date)
+- [ ] `generate_fighter()` (Task 14 regen) updated to use `fighter_gen.py`
+- [ ] Schema version bumped to 2.0.0 (MAJOR)
+- [ ] Migration name is `v2_0_0_fighter_schema_expansion`
+- [ ] SCHEMA_DRIFT_AUDIT.md updated (fighter_attributes: WRONG → OK, fighter_personality: WRONG → OK, fighters: THIN → OK, promotions: THIN → OK, gyms: THIN → OK)
+- [ ] CHANGELOG.md entry
+- [ ] New acceptance test `scripts/test_fighter_attributes.py`:
+  - All 25 attribute columns exist with CHECK constraints
+  - All 20 personality fields exist with CHECK constraints
+  - Existing 4+3 values preserved
+  - All new columns populated (no NULLs)
+  - Archetype bias works: 100 "Brawler" fighters vs 100 "Counter-Striker" fighters — brawler averages higher on punch_power/chin, lower on footwork/fight_iq
+  - `fighter_gen.py` functions return correct shapes (25 keys, 20 keys)
+  - `generate_fighter()` uses `fighter_gen.py` (regen fighters get archetype-biased attributes, not all-50s)
+  - `current_date` quirk fixed (tick advances by exactly 1 day)
+- [ ] **No regression**: all 12 existing tests pass (with dynamic-version pattern handling the 2.0.0 bump)
+
+**Delegation.** full-stack-developer subagent. This is the largest
+single schema change since the project started. Thorough testing is
+critical.
+
+---
+
+### Detailed task brief: B1 — Beat-Level Fight Engine (Basic)
+
+**Pillars served:** Conflict (the fight is the primary conflict),
+Watch Rise (dramatic moments players remember)
+
+**Brief.** Replace the current single-resolution `resolve_next_fight()`
+with a beat-level round simulation. A "beat" is one discrete exchange
+within a round. Target 12-28 beats per round, density driven by the
+fighters' pace attributes. Each beat's outcome is computed from the
+attributes relevant to its current phase (standing, clinch, cage,
+ground_top, ground_bottom, scramble). `fight_rounds` aggregate columns
+become computed sums over that round's `fight_beats` rows.
+
+**Scope.** New tables `fight_beats` + `fight_rounds`. New function
+`resolve_round()` called by `resolve_next_fight()` once per round.
+The `_resolve_outcome()` pure function from Task 3 is replaced.
+
+**Dependencies.** Task 14.5 (needs full 25-attribute set).
+
+**Schema — fight_beats + fight_rounds:** See STAGE3_EXPANSION_PLAN.md Part 2 for full schema.
+
+**Mechanics:** See STAGE3_EXPANSION_PLAN.md Part 2 for:
+- Beat count formula
+- Phase-to-attribute mapping (6 phases)
+- Phase transitions (takedown → ground, scramble → standing)
+- Decision scoring (10-point must system, round-by-round)
+
+**Acceptance checklist:**
+- [ ] `fight_beats` table created
+- [ ] `fight_rounds` table created
+- [ ] `resolve_round()` generates 12-28 beats per round
+- [ ] Phase transitions work (takedown → ground, scramble → standing)
+- [ ] `fight_rounds` aggregates match SUM over `fight_beats`
+- [ ] Decision scoring works (10-point must, unanimous/split/draw)
+- [ ] All-90 beats all-30 ≥80% over 100 sims
+- [ ] No single result type >60%
+- [ ] Schema version 2.1.0
+- [ ] `test_fight_resolver.py` updated for new engine shape
+- [ ] All existing tests pass
+
+**Delegation.** full-stack-developer subagent. After 14.5+14.6+14.7 lands.
+
+---
+
+### Detailed task brief: B2 — Beat Engine Depth (fatigue, momentum, finishes)
+
+**Pillars served:** Conflict (dramatic finishes), Watch Rise (the
+"oh my god it's over" moment)
+
+**Brief.** Add fatigue system (gas depletes across beats/rounds),
+momentum system (clustered outcomes from knockdowns/near-finishes),
+mid-round finishes (KO/submission/doctor/corner/DQ), and commentary
+beat selection (3-14 highlight beats per fight).
+
+**Dependencies.** Task B1 (needs the basic beat loop).
+
+**Acceptance checklist:**
+- [ ] Fatigue: cardio=90 out-lands cardio=30 increasingly in later rounds
+- [ ] Momentum: knockdown raises finish probability for subsequent beats
+- [ ] Mid-round KO/TKO works (cumulative damage threshold)
+- [ ] Mid-round submission works (submission_offense vs defense + flexibility + composure)
+- [ ] Doctor stoppage works (cumulative damage + durability)
+- [ ] Corner stoppage works (3+ lost rounds + low grit/composure)
+- [ ] DQ works (low discipline + illegal strike, rare)
+- [ ] Commentary beat selection picks the right beats (knockdowns, near-finishes, finish, big momentum swings)
+- [ ] Schema version 2.2.0
+- [ ] All existing tests pass
+
+**Delegation.** full-stack-developer subagent. After B1 lands.
 
 ---
 
