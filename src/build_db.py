@@ -8,7 +8,20 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.9.0"
+#
+# v2.0.0 (Task 14.5+14.6+14.7) — MAJOR bump. First major version,
+# marking the transition from the thin skeleton (4 attributes, 3
+# personality traits, coin-flip-equivalent resolver) to real
+# simulation depth (25 attributes, 20 personality traits, full
+# physical + meta columns on fighters, AI-tuning columns on
+# promotions, training-camp-relevant columns on gyms, archetype
+# bias JSON for variety in regen). 68 new columns across 6 existing
+# tables + 2 archetype tables, plus a new module src/fighter_gen.py,
+# plus the long-flagged current_date SQLite quirk fix (§Z.6). No new
+# tables, no columns removed — this is purely an additive expansion
+# (the MAJOR bump is for the depth-of-sim significance, not for any
+# breaking change to existing data shape).
+CODE_SCHEMA_VERSION = "2.0.0"
 
 
 def _parse_version(v):
@@ -187,6 +200,21 @@ CREATE TABLE IF NOT EXISTS promotions (
     current_cash REAL NOT NULL DEFAULT 0,
     reputation INTEGER NOT NULL DEFAULT 50 CHECK (reputation BETWEEN 0 AND 100),
     fan_trust INTEGER NOT NULL DEFAULT 50 CHECK (fan_trust BETWEEN 0 AND 100),
+    -- 6 new columns added v2.0.0 (Task 14.6). These were flagged as
+    -- THIN in SCHEMA_DRIFT_AUDIT.md §Z.4 and are needed by:
+    --   - Task 25 (rival promotion AI) — ai_aggression + ai_spending_style
+    --   - Task 20 (finances) + Task 26 (show rating) — broadcast_tier
+    --   - Task 23 (news engine) — brand_tone for promotion voice
+    -- brand_tone + broadcast_tier + ownership_type + ai_spending_style
+    -- are TEXT with no CHECK constraint (allowed values are open-ended
+    -- for future expansion); ai_aggression has a CHECK (0-100) like the
+    -- other 0-100 promotion columns above.
+    brand_tone TEXT NOT NULL DEFAULT 'standard',
+    starting_budget REAL NOT NULL DEFAULT 0,
+    broadcast_tier TEXT NOT NULL DEFAULT 'local_stream',
+    ownership_type TEXT NOT NULL DEFAULT 'startup',
+    ai_aggression INTEGER NOT NULL DEFAULT 50 CHECK (ai_aggression BETWEEN 0 AND 100),
+    ai_spending_style TEXT NOT NULL DEFAULT 'balanced',
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -197,6 +225,21 @@ CREATE TABLE IF NOT EXISTS gyms (
     city_id INTEGER NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
     nation_id INTEGER REFERENCES nations(nation_id) ON DELETE SET NULL,
     region_id INTEGER REFERENCES regions(region_id) ON DELETE SET NULL,
+    -- 8 new columns added v2.0.0 (Task 14.6). Flagged THIN in
+    -- SCHEMA_DRIFT_AUDIT.md §C — needed by Task 16 (training camps)
+    -- and Task 17 (weight cuts). All 5 INTEGER columns have CHECK
+    -- (0-100) like the other 0-100 gym-relevant columns. culture_tone
+    -- is open-ended TEXT (future values: 'disciplined', 'loose',
+    -- 'predator', etc.). membership_cost is REAL (currency, in
+    -- dollars) — Task 20 finances will use it.
+    reputation INTEGER NOT NULL DEFAULT 50 CHECK (reputation BETWEEN 0 AND 100),
+    membership_cost REAL NOT NULL DEFAULT 0,
+    facility_quality INTEGER NOT NULL DEFAULT 50 CHECK (facility_quality BETWEEN 0 AND 100),
+    medical_support INTEGER NOT NULL DEFAULT 50 CHECK (medical_support BETWEEN 0 AND 100),
+    sparring_depth INTEGER NOT NULL DEFAULT 50 CHECK (sparring_depth BETWEEN 0 AND 100),
+    development_focus INTEGER NOT NULL DEFAULT 50 CHECK (development_focus BETWEEN 0 AND 100),
+    culture_tone TEXT NOT NULL DEFAULT 'balanced',
+    weight_cut_support INTEGER NOT NULL DEFAULT 50 CHECK (weight_cut_support BETWEEN 0 AND 100),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -205,6 +248,15 @@ CREATE TABLE IF NOT EXISTS style_archetypes (
     style_archetype_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
+    -- attribute_bias (added v2.0.0, Task 14.5) holds a JSON dict
+    -- mapping attribute names to +/- integer bias values, e.g.
+    -- {"punch_power": 15, "takedown_defense": -10}. Used by
+    -- fighter_gen.generate_attribute_block(archetype_id, conn) when
+    -- generating new fighters (regen) or backfilling existing ones.
+    -- Nullable — old code that doesn't set it gets NULL, which
+    -- fighter_gen treats as "no bias" (equivalent to {}).
+    -- See docs/STAGES.md §14.5 for the 7 seeded bias values.
+    attribute_bias TEXT,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
@@ -212,6 +264,10 @@ CREATE TABLE IF NOT EXISTS personality_archetypes (
     personality_archetype_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
+    -- trait_bias (added v2.0.0, Task 14.5) — symmetric to
+    -- style_archetypes.attribute_bias but for personality fields.
+    -- Used by fighter_gen.generate_personality_block(archetype_id, conn).
+    trait_bias TEXT,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
@@ -233,6 +289,40 @@ CREATE TABLE IF NOT EXISTS fighters (
     personality_archetype_id INTEGER REFERENCES personality_archetypes(personality_archetype_id) ON DELETE SET NULL,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     is_retired INTEGER NOT NULL DEFAULT 0 CHECK (is_retired IN (0,1)),
+    -- 14 new columns added v2.0.0 (Task 14.6). Flagged THIN in
+    -- SCHEMA_DRIFT_AUDIT.md §Z.3. Needed by:
+    --   - Task 15 (injuries) — injury_proneness
+    --   - Task 17 (weight cuts) — weight_cut_difficulty
+    --   - Task 19 (voice layer) — height_cm, reach_cm, stance,
+    --     handedness, marketability, fan_friendliness
+    --   - Task 20 (finances) + Task 26 (show rating) — marketability,
+    --     fan_friendliness, promo_boost
+    --   - Death/career-end system — is_deceased
+    --   - Task 24 (matchup analysis) — preferred_gameplans,
+    --     bad_matchup_tags (JSON arrays)
+    -- height_cm and reach_cm are nullable INTEGER (no CHECK) — a
+    -- future regen or import path might not have these. stance and
+    -- handedness have CHECK constraints matching the brief. The 6
+    -- 0-100 INTEGER columns follow the same pattern as the existing
+    -- is_active/is_retired CHECK columns. promo_boost is the only
+    -- column that allows -100..100 (it's a delta, not a 0-100 score).
+    -- preferred_gameplans and bad_matchup_tags are TEXT (JSON arrays);
+    -- NULL is allowed and means "no preference" / "no known bad
+    -- matchups" respectively.
+    height_cm INTEGER,
+    reach_cm INTEGER,
+    stance TEXT CHECK (stance IN ('orthodox','southpaw','switch')),
+    handedness TEXT CHECK (handedness IN ('right','left','ambidextrous')),
+    injury_proneness INTEGER NOT NULL DEFAULT 50 CHECK (injury_proneness BETWEEN 0 AND 100),
+    weight_cut_difficulty INTEGER NOT NULL DEFAULT 50 CHECK (weight_cut_difficulty BETWEEN 0 AND 100),
+    consistency INTEGER NOT NULL DEFAULT 50 CHECK (consistency BETWEEN 0 AND 100),
+    clutch_factor INTEGER NOT NULL DEFAULT 50 CHECK (clutch_factor BETWEEN 0 AND 100),
+    marketability INTEGER NOT NULL DEFAULT 50 CHECK (marketability BETWEEN 0 AND 100),
+    fan_friendliness INTEGER NOT NULL DEFAULT 50 CHECK (fan_friendliness BETWEEN 0 AND 100),
+    promo_boost INTEGER NOT NULL DEFAULT 0 CHECK (promo_boost BETWEEN -100 AND 100),
+    preferred_gameplans TEXT,
+    bad_matchup_tags TEXT,
+    is_deceased INTEGER NOT NULL DEFAULT 0 CHECK (is_deceased IN (0,1)),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -240,10 +330,55 @@ CREATE TABLE IF NOT EXISTS fighters (
 CREATE TABLE IF NOT EXISTS fighter_attributes (
     fighter_attribute_id INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_id INTEGER NOT NULL UNIQUE REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    -- Existing 4 attributes (preserved across the v2.0.0 migration —
+    -- their values are NOT touched by the backfill). No CHECK
+    -- constraint is added retroactively, to avoid breaking existing
+    -- tests that UPDATE these columns with arbitrary values like
+    -- 90/30/50 (test_fight_resolver, test_fight_history, etc.).
     punch_power INTEGER NOT NULL DEFAULT 50,
     cardio INTEGER NOT NULL DEFAULT 50,
     fight_iq INTEGER NOT NULL DEFAULT 50,
     chin INTEGER NOT NULL DEFAULT 50,
+    -- 21+ new attributes added v2.0.0 (Task 14.5). All CHECK (0-100)
+    -- per the brief — these are NEW columns so adding CHECK constraints
+    -- is safe (no existing data to violate). The fighter_gen module
+    -- generates values via clamp(50 + bias + noise), so they will
+    -- always satisfy the CHECK. The 5 groups per STAGES.md §14.5:
+    --   Striking:  punch_accuracy, kick_power, kick_accuracy, head_movement
+    --   Range:     footwork, clinch_striking, clinch_offense, clinch_defense
+    --   Grappling: takedown_offense, takedown_defense, top_control,
+    --              bottom_game, submission_offense, submission_defense,
+    --              scramble_ability, cage_wrestling
+    --   Physical:  recovery_rate, speed_explosiveness, strength,
+    --              durability, flexibility
+    --   Mental:    adaptability
+    -- Note: the brief says "21 new columns" but the column-name list
+    -- contains 22 names (4+4+8+5+1=22). Implemented all 22 from the
+    -- list — the column-name list is the authoritative spec. The
+    -- "21" in the brief's prose is an off-by-one typo. See worklog
+    -- decision D1 for the full explanation.
+    punch_accuracy INTEGER NOT NULL DEFAULT 50 CHECK (punch_accuracy BETWEEN 0 AND 100),
+    kick_power INTEGER NOT NULL DEFAULT 50 CHECK (kick_power BETWEEN 0 AND 100),
+    kick_accuracy INTEGER NOT NULL DEFAULT 50 CHECK (kick_accuracy BETWEEN 0 AND 100),
+    head_movement INTEGER NOT NULL DEFAULT 50 CHECK (head_movement BETWEEN 0 AND 100),
+    footwork INTEGER NOT NULL DEFAULT 50 CHECK (footwork BETWEEN 0 AND 100),
+    clinch_striking INTEGER NOT NULL DEFAULT 50 CHECK (clinch_striking BETWEEN 0 AND 100),
+    clinch_offense INTEGER NOT NULL DEFAULT 50 CHECK (clinch_offense BETWEEN 0 AND 100),
+    clinch_defense INTEGER NOT NULL DEFAULT 50 CHECK (clinch_defense BETWEEN 0 AND 100),
+    takedown_offense INTEGER NOT NULL DEFAULT 50 CHECK (takedown_offense BETWEEN 0 AND 100),
+    takedown_defense INTEGER NOT NULL DEFAULT 50 CHECK (takedown_defense BETWEEN 0 AND 100),
+    top_control INTEGER NOT NULL DEFAULT 50 CHECK (top_control BETWEEN 0 AND 100),
+    bottom_game INTEGER NOT NULL DEFAULT 50 CHECK (bottom_game BETWEEN 0 AND 100),
+    submission_offense INTEGER NOT NULL DEFAULT 50 CHECK (submission_offense BETWEEN 0 AND 100),
+    submission_defense INTEGER NOT NULL DEFAULT 50 CHECK (submission_defense BETWEEN 0 AND 100),
+    scramble_ability INTEGER NOT NULL DEFAULT 50 CHECK (scramble_ability BETWEEN 0 AND 100),
+    cage_wrestling INTEGER NOT NULL DEFAULT 50 CHECK (cage_wrestling BETWEEN 0 AND 100),
+    recovery_rate INTEGER NOT NULL DEFAULT 50 CHECK (recovery_rate BETWEEN 0 AND 100),
+    speed_explosiveness INTEGER NOT NULL DEFAULT 50 CHECK (speed_explosiveness BETWEEN 0 AND 100),
+    strength INTEGER NOT NULL DEFAULT 50 CHECK (strength BETWEEN 0 AND 100),
+    durability INTEGER NOT NULL DEFAULT 50 CHECK (durability BETWEEN 0 AND 100),
+    flexibility INTEGER NOT NULL DEFAULT 50 CHECK (flexibility BETWEEN 0 AND 100),
+    adaptability INTEGER NOT NULL DEFAULT 50 CHECK (adaptability BETWEEN 0 AND 100),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -251,9 +386,37 @@ CREATE TABLE IF NOT EXISTS fighter_attributes (
 CREATE TABLE IF NOT EXISTS fighter_personality (
     fighter_personality_id INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_id INTEGER NOT NULL UNIQUE REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    -- Existing 3 personality fields (preserved across the v2.0.0
+    -- migration — their values are NOT touched by the backfill). No
+    -- CHECK constraint added retroactively, to avoid breaking existing
+    -- tests that UPDATE these columns (test_fight_resolver, etc.).
     aggression INTEGER NOT NULL DEFAULT 50,
     composure INTEGER NOT NULL DEFAULT 50,
     morale INTEGER NOT NULL DEFAULT 50,
+    -- 17 new personality fields added v2.0.0 (Task 14.5). All CHECK
+    -- (0-100). The 4 groups per STAGES.md §14.5:
+    --   Temperament: risk_taking, killer_instinct, grit, discipline, patience
+    --   Career:      ambition, loyalty, charisma, attention_seeking,
+    --                coachability, professionalism
+    --   Resilience:  ego, resilience, sportsmanship, travel_comfort
+    --   Dynamic:     focus, fatigue_tolerance
+    risk_taking INTEGER NOT NULL DEFAULT 50 CHECK (risk_taking BETWEEN 0 AND 100),
+    killer_instinct INTEGER NOT NULL DEFAULT 50 CHECK (killer_instinct BETWEEN 0 AND 100),
+    grit INTEGER NOT NULL DEFAULT 50 CHECK (grit BETWEEN 0 AND 100),
+    discipline INTEGER NOT NULL DEFAULT 50 CHECK (discipline BETWEEN 0 AND 100),
+    patience INTEGER NOT NULL DEFAULT 50 CHECK (patience BETWEEN 0 AND 100),
+    ambition INTEGER NOT NULL DEFAULT 50 CHECK (ambition BETWEEN 0 AND 100),
+    loyalty INTEGER NOT NULL DEFAULT 50 CHECK (loyalty BETWEEN 0 AND 100),
+    charisma INTEGER NOT NULL DEFAULT 50 CHECK (charisma BETWEEN 0 AND 100),
+    attention_seeking INTEGER NOT NULL DEFAULT 50 CHECK (attention_seeking BETWEEN 0 AND 100),
+    coachability INTEGER NOT NULL DEFAULT 50 CHECK (coachability BETWEEN 0 AND 100),
+    professionalism INTEGER NOT NULL DEFAULT 50 CHECK (professionalism BETWEEN 0 AND 100),
+    ego INTEGER NOT NULL DEFAULT 50 CHECK (ego BETWEEN 0 AND 100),
+    resilience INTEGER NOT NULL DEFAULT 50 CHECK (resilience BETWEEN 0 AND 100),
+    sportsmanship INTEGER NOT NULL DEFAULT 50 CHECK (sportsmanship BETWEEN 0 AND 100),
+    travel_comfort INTEGER NOT NULL DEFAULT 50 CHECK (travel_comfort BETWEEN 0 AND 100),
+    focus INTEGER NOT NULL DEFAULT 50 CHECK (focus BETWEEN 0 AND 100),
+    fatigue_tolerance INTEGER NOT NULL DEFAULT 50 CHECK (fatigue_tolerance BETWEEN 0 AND 100),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -617,7 +780,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_regen",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_fighter_schema_expansion",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

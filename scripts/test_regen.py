@@ -553,7 +553,10 @@ def main():
             f"got={style_id}, expected={src_style}",
         ))
 
-        # Default attributes (all 50).
+        # Attributes are populated with archetype-biased values (Task 14.5+14.6+14.7
+        # supervisor fix: generate_fighter now uses fighter_gen.py, so values are
+        # NOT all-50 anymore — they're archetype-biased + noise. Assert they're
+        # in valid range [0, 100] and populated (not NULL).
         a = conn.execute(
             "SELECT punch_power, cardio, fight_iq, chin "
             "FROM fighter_attributes WHERE fighter_id=?",
@@ -561,12 +564,12 @@ def main():
         ).fetchone()
         results.append((
             "C",
-            "new fighter has default attributes (all 50)",
-            a == (50, 50, 50, 50),
+            "new fighter has populated attributes (all in 0-100, not NULL)",
+            a is not None and all(v is not None and 0 <= v <= 100 for v in a),
             f"got={a}",
         ))
 
-        # Default personality (all 50).
+        # Personality is populated with archetype-biased values (same fix).
         p = conn.execute(
             "SELECT aggression, composure, morale "
             "FROM fighter_personality WHERE fighter_id=?",
@@ -574,8 +577,8 @@ def main():
         ).fetchone()
         results.append((
             "C",
-            "new fighter has default personality (all 50)",
-            p == (50, 50, 50),
+            "new fighter has populated personality (all in 0-100, not NULL)",
+            p is not None and all(v is not None and 0 <= v <= 100 for v in p),
             f"got={p}",
         ))
 

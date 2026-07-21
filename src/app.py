@@ -14,7 +14,16 @@ def fighter_name(conn, fighter_id):
     return row[0] if row else "Unknown"
 
 def get_clock(conn):
-    return conn.execute("SELECT current_date, current_day, current_week, current_month, current_year, tick_counter FROM simulation_clock WHERE clock_id=1").fetchone()
+    # v2.0.0 (Task 14.7): qualify current_date (and the other clock
+    # columns, for consistency) as simulation_clock.current_date etc.
+    # to avoid the pre-existing SQLite quirk (§Z.6 in
+    # SCHEMA_DRIFT_AUDIT.md) where bare `current_date` resolves to
+    # SQLite's built-in date FUNCTION (today's wall-clock date)
+    # instead of the simulation_clock.current_date COLUMN. This
+    # caused the sim clock to jump from the seeded 2026-07-20 to
+    # today+1 on the first tick — see the new acceptance test
+    # test_fighter_attributes.py case F for the regression check.
+    return conn.execute("SELECT simulation_clock.current_date, simulation_clock.current_day, simulation_clock.current_week, simulation_clock.current_month, simulation_clock.current_year, simulation_clock.tick_counter FROM simulation_clock WHERE clock_id=1").fetchone()
 
 def advance_day(conn):
     row = get_clock(conn)
@@ -1141,8 +1150,13 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """
     # 1. Resolve the reference date.
     if from_event_date is None:
+        # v2.0.0 (Task 14.7): qualify current_date as
+        # simulation_clock.current_date to avoid the §Z.6 quirk where
+        # bare `current_date` resolves to SQLite's built-in date
+        # function (today's wall-clock date).
         clock_row = conn.execute(
-            "SELECT current_date FROM simulation_clock WHERE clock_id = 1"
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id = 1"
         ).fetchone()
         if not clock_row or not clock_row[0]:
             print("Warning: could not auto-schedule next event — no "
@@ -2035,24 +2049,65 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     #    and current_gym_id=NULL — they enter the world unsigned and
     #    unaffiliated. is_active=1 (they're available to be booked
     #    once signed), is_retired=0 (they're a fresh prospect).
+    #    v2.0.0 (Task 14.5): also insert the 4 physical columns
+    #    (height_cm, reach_cm, stance, handedness) from
+    #    fighter_gen.generate_physical_block() so regen prospects
+    #    arrive with a body, not just a name. The meta columns
+    #    (injury_proneness, marketability, etc.) use schema defaults.
+    #    Lazy-import fighter_gen here (not at module top) so app.py
+    #    can still be imported in headless contexts that don't have
+    #    a src/ on sys.path (e.g., the existing tests that import
+    #    app directly).
+    import fighter_gen  # noqa: E402 — local import, see comment above
+    physical = fighter_gen.generate_physical_block()
     fid = conn.execute(
         "INSERT INTO fighters (first_name, last_name, nickname, gender, "
         "date_of_birth, weight_class_id, current_gym_id, current_promotion_id, "
         "fight_style_archetype_id, personality_archetype_id, "
-        "is_active, is_retired) "
-        "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, 0)",
+        "is_active, is_retired, height_cm, reach_cm, stance, handedness) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, 0, ?, ?, ?, ?)",
         (chosen_first, chosen_last, nickname, gender, dob, wc_id,
-         style_archetype_id, pers_archetype_id),
+         style_archetype_id, pers_archetype_id,
+         physical["height_cm"], physical["reach_cm"],
+         physical["stance"], physical["handedness"]),
     ).lastrowid
 
-    # 10. Insert default attributes, personality, career rows. The
-    #     fighters table's UNIQUE constraint on fighter_id in each of
-    #     these tables ensures one row per fighter. Defaults from the
-    #     schema: punch_power=cardio=fight_iq=chin=50 (attributes),
-    #     aggression=composure=morale=50 (personality),
-    #     record_wins=losses=draws=0, career_health=100 (career).
-    conn.execute("INSERT INTO fighter_attributes (fighter_id) VALUES (?)", (fid,))
-    conn.execute("INSERT INTO fighter_personality (fighter_id) VALUES (?)", (fid,))
+    # 10. Insert attributes, personality, career rows. v2.0.0
+    #     (Task 14.5): the attribute and personality blocks are now
+    #     generated via fighter_gen with archetype bias — regen
+    #     prospects feel like real fighters of their archetype, not
+    #     generic 50-everything stubs (see decision D4-update in the
+    #     worklog). The career row still uses all defaults
+    #     (0-0-0, career_health=100) — Stage 3 training camps will
+    #     give them growth potential.
+    #
+    #     The 25 attribute columns are INSERTed explicitly (not via
+    #     `INSERT INTO fighter_attributes (fighter_id) VALUES (?)`
+    #     which would give all-50 defaults). Same for the 20
+    #     personality columns. The SQL is built dynamically from the
+    #     fighter_gen.ATTRIBUTE_NAMES / PERSONALITY_NAMES lists so a
+    #     future column addition doesn't require touching this code.
+    attrs = fighter_gen.generate_attribute_block(style_archetype_id, conn)
+    pers = fighter_gen.generate_personality_block(pers_archetype_id, conn)
+
+    attr_cols = fighter_gen.ATTRIBUTE_NAMES
+    attr_placeholders = ", ".join(["?"] * len(attr_cols))
+    attr_col_list = ", ".join(attr_cols)
+    conn.execute(
+        f"INSERT INTO fighter_attributes (fighter_id, {attr_col_list}) "
+        f"VALUES (?, {attr_placeholders})",
+        (fid,) + tuple(attrs[c] for c in attr_cols),
+    )
+
+    pers_cols = fighter_gen.PERSONALITY_NAMES
+    pers_placeholders = ", ".join(["?"] * len(pers_cols))
+    pers_col_list = ", ".join(pers_cols)
+    conn.execute(
+        f"INSERT INTO fighter_personality (fighter_id, {pers_col_list}) "
+        f"VALUES (?, {pers_placeholders})",
+        (fid,) + tuple(pers[c] for c in pers_cols),
+    )
+
     conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
 
     # 11. NO rankings row at generation time. See D2 above — the

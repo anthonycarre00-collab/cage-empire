@@ -392,7 +392,17 @@ def _check_contract_expiry(conn, current_date):
 
 def run_tick(conn, tick_type="day", steps=1):
     for _ in range(steps):
-        row = conn.execute("SELECT current_date, current_day, current_week, current_month, current_year FROM simulation_clock WHERE clock_id=1").fetchone()
+        # v2.0.0 (Task 14.7): qualify current_date (and the other
+        # clock columns, for consistency) as simulation_clock.current_date
+        # etc. to avoid the pre-existing SQLite quirk (§Z.6 in
+        # SCHEMA_DRIFT_AUDIT.md) where bare `current_date` resolves to
+        # SQLite's built-in date FUNCTION (today's wall-clock date)
+        # instead of the simulation_clock.current_date COLUMN. This
+        # caused the sim clock to jump from the seeded 2026-07-20 to
+        # today+1 on the first tick. The new acceptance test
+        # test_fighter_attributes.py case F verifies the tick now
+        # advances by exactly 1 day from the seeded date.
+        row = conn.execute("SELECT simulation_clock.current_date, simulation_clock.current_day, simulation_clock.current_week, simulation_clock.current_month, simulation_clock.current_year FROM simulation_clock WHERE clock_id=1").fetchone()
         dt = datetime.strptime(row[0], "%Y-%m-%d") + timedelta(days=1)
         day = row[1] + 1
         week = ((day - 1) // 7) + 1

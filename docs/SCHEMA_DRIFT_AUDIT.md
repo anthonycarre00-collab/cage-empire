@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-21 — Task ID 14 (Stage 2 complete).
-> **Current schema version:** 1.9.0 (37 tables).
+> **Last revised:** 2026-07-21 — Task 14.5+14.6+14.7 (fighter schema expansion).
+> **Current schema version:** 2.0.0 (37 tables, 69 new columns across 8 tables).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -61,10 +61,10 @@ when venues/markets become load-bearing for show rating and finance.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `promotions` | yes (rich: brand_tone, size_tier, starting_budget, current_cash, reputation, fan_trust, broadcast_tier, ownership_type, ai_aggression, ai_spending_style) | yes (thin: name, size_tier, current_cash, reputation, fan_trust) | yes (thin) + 2 rows (AC + RFL) | `THIN` — missing ~6 columns (ai_aggression + ai_spending_style needed for Task 25) |
-| `gyms` | yes (rich: reputation, membership_cost, facility_quality, medical_support, sparring_depth, development_focus, culture_tone, weight_cut_support, elite_camp_bonus) | yes (thin: name, location FKs only) | yes (thin) | `THIN` — missing ~8 columns (needed for Task 16 training camps) |
-| `style_archetypes` | yes (name, description, attribute_bias) | yes (thin: missing attribute_bias) | yes (thin) | `THIN` — missing attribute_bias column |
-| `personality_archetypes` | yes (name, description, trait_bias) | yes (thin: missing trait_bias) | yes (thin) | `THIN` — missing trait_bias column |
+| `promotions` | yes (rich: brand_tone, size_tier, starting_budget, current_cash, reputation, fan_trust, broadcast_tier, ownership_type, ai_aggression, ai_spending_style) | yes (thin: name, size_tier, current_cash, reputation, fan_trust) | yes (all spec columns added in Task 14.6) + 2 rows (AC + RFL) | `OK` — all 6 missing columns added (brand_tone, starting_budget, broadcast_tier, ownership_type, ai_aggression, ai_spending_style). AC seeded with broadcast_tier='regional_tv', ai_aggression=30. RFL with 'local_stream', ai_aggression=60. |
+| `gyms` | yes (rich: reputation, membership_cost, facility_quality, medical_support, sparring_depth, development_focus, culture_tone, weight_cut_support, elite_camp_bonus) | yes (thin: name, location FKs only) | yes (all spec columns added in Task 14.6) | `OK` — all 8 missing columns added (reputation, membership_cost, facility_quality, medical_support, sparring_depth, development_focus, culture_tone, weight_cut_support). |
+| `style_archetypes` | yes (name, description, attribute_bias) | yes (thin: missing attribute_bias) | yes (attribute_bias added, Task 14.5) + 7 archetypes seeded | `OK` — attribute_bias TEXT (JSON) column added. 7 archetypes seeded with bias JSON (Balanced, Striker, Grappler, Wrestler, Brawler, Counter-Striker, Submission Specialist). |
+| `personality_archetypes` | yes (name, description, trait_bias) | yes (thin: missing trait_bias) | yes (trait_bias added, Task 14.5) + 5 archetypes seeded | `OK` — trait_bias TEXT (JSON) column added. 5 archetypes seeded with bias JSON (Calm, Aggressive, Methodical, Showman, Quiet Professional). |
 
 **Notes.** Rival promotion seeded in v1.2.1 (Task 2). RFL is inert —
 no AI behaviour until Task ID 25. The `promotions` table is missing
@@ -77,9 +77,9 @@ these must be added as a migration before or during Task 25.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `fighters` | yes (rich: identity + height_cm, reach_cm, stance, handedness, injury_proneness, weight_cut_difficulty, consistency, clutch_factor, marketability, fan_friendliness, promo_boost, preferred_gameplans, bad_matchup_tags, is_active, is_retired, is_deceased) | yes (thin: identity + is_active only) | yes (thin + is_retired) | `THIN` — missing ~14 columns (is_retired added Task 12; is_deceased + injury_proneness + weight_cut_difficulty + physical attrs + marketability attrs all still missing) |
-| `fighter_attributes` | yes (24 combat stats) | `WRONG` (only 4: punch_power, cardio, fight_iq, chin) | `WRONG` (still 4) | `WRONG` — **critical gap**. Task 3 was supposed to extend these to 24 but only replaced the resolver. The resolver works with just 4 but the full 24 are needed for Task 16 (training camps), Task 18 (scouting), Task 19 (voice layer), Task 24 (matchup analysis). |
-| `fighter_personality` | yes (17 traits + morale + focus + fatigue_tolerance) | `WRONG` (only 3: aggression, composure, morale) | `WRONG` (still 3) | `WRONG` — **critical gap**. Same issue as fighter_attributes. 14 personality traits missing (discipline, volatility, ego, loyalty, ambition, professionalism, trash_talk, media_friendliness, resilience, confidence, heart, respectfulness, temper, attention_seeking, coachability, focus, fatigue_tolerance). |
+| `fighters` | yes (rich: identity + height_cm, reach_cm, stance, handedness, injury_proneness, weight_cut_difficulty, consistency, clutch_factor, marketability, fan_friendliness, promo_boost, preferred_gameplans, bad_matchup_tags, is_active, is_retired, is_deceased) | yes (thin: identity + is_active only) | yes (all spec columns added in Task 14.5+14.6) | `OK` — all 14 missing columns added (height_cm, reach_cm, stance, handedness, injury_proneness, weight_cut_difficulty, consistency, clutch_factor, marketability, fan_friendliness, promo_boost, preferred_gameplans, bad_matchup_tags, is_deceased) |
+| `fighter_attributes` | yes (25 combat stats) | `WRONG` (only 4: punch_power, cardio, fight_iq, chin) | `OK` (25 columns, Task 14.5) | `OK` — expanded from 4 to 25 columns in Task 14.5+14.6+14.7. Existing 4 values preserved. 21 new columns added with CHECK (0-100). |
+| `fighter_personality` | yes (20 fields: 17 static + 3 dynamic) | `WRONG` (only 3: aggression, composure, morale) | `OK` (20 fields, Task 14.5) | `OK` — expanded from 3 to 20 fields in Task 14.5+14.6+14.7. Existing 3 values preserved. 17 new fields added with CHECK (0-100). |
 | `fighter_career` | yes (rich: record_*, streaks, current_ranking, title_reigns, title_defenses, legacy_score, market_popularity_local/regional/global, contract_status, career_stage, injury_status, retirement_status, death_flag, peak_rating, career_health, hall_of_fame_flag, legacy_tier) | yes (thin: record_*, streaks, career_health) | yes (thin) | `THIN` — missing ~14 columns |
 | `fight_history` | yes (separate from mutable career counters) | no | yes (Task 4) | `OK` — added in Task 4, 14 columns, title_at_stake populated (Task 11) |
 

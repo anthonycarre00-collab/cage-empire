@@ -9,6 +9,224 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- 68 new columns across 6 existing tables + 2 archetype tables in the
+  largest single schema expansion since the project started (Task ID
+  14.5+14.6+14.7, schema 2.0.0 MAJOR). This is the depth-of-sim
+  expansion the v1.6 spec called for and the audit (SCHEMA_DRIFT_AUDIT
+  §Z.1, §Z.3, §Z.4) flagged as the most critical gap remaining — it
+  unblocks Tasks 15 (injuries), 16 (training camps), 17 (weight cuts),
+  18 (scouting), 19 (voice layer), 24 (matchup analysis), 25 (rival
+  promotion AI), and 26 (show rating). No new tables, no columns
+  removed — purely additive. The MAJOR bump marks the transition from
+  thin skeleton (4 attributes, 3 personality traits, coin-flip-
+  equivalent resolver) to real simulation depth.
+- `fighter_attributes` expanded 4 → 25 columns (Task ID 14.5). The
+  existing 4 (punch_power, cardio, fight_iq, chin) are preserved with
+  their values and WITHOUT retroactive CHECK constraints (avoids
+  breaking existing tests that UPDATE these with arbitrary values).
+  21 new columns added with `INTEGER NOT NULL DEFAULT 50 CHECK (col
+  BETWEEN 0 AND 100)`, grouped per STAGES.md §14.5:
+  * Striking: punch_accuracy, kick_power, kick_accuracy, head_movement
+  * Range: footwork, clinch_striking, clinch_offense, clinch_defense
+  * Grappling: takedown_offense, takedown_defense, top_control,
+    bottom_game, submission_offense, submission_defense,
+    scramble_ability, cage_wrestling
+  * Physical: recovery_rate, speed_explosiveness, strength, durability,
+    flexibility
+  * Mental: adaptability
+- `fighter_personality` expanded 3 → 20 fields (Task ID 14.5). The
+  existing 3 (aggression, composure, morale) are preserved. 17 new
+  fields with the same `INTEGER NOT NULL DEFAULT 50 CHECK (col
+  BETWEEN 0 AND 100)` pattern, grouped per STAGES.md §14.5:
+  * Temperament: risk_taking, killer_instinct, grit, discipline,
+    patience
+  * Career: ambition, loyalty, charisma, attention_seeking,
+    coachability, professionalism
+  * Resilience: ego, resilience, sportsmanship, travel_comfort
+  * Dynamic: focus, fatigue_tolerance
+- 14 new columns on `fighters` (Task ID 14.6): height_cm, reach_cm,
+  stance (CHECK IN orthodox/southpaw/switch), handedness (CHECK IN
+  right/left/ambidextrous), injury_proneness, weight_cut_difficulty,
+  consistency, clutch_factor, marketability, fan_friendliness (all
+  CHECK 0-100 DEFAULT 50), promo_boost (CHECK -100..100 DEFAULT 0),
+  preferred_gameplans (TEXT, JSON array, nullable), bad_matchup_tags
+  (TEXT, JSON array, nullable), is_deceased (CHECK IN 0,1 DEFAULT 0).
+  Closes SCHEMA_DRIFT_AUDIT §Z.3.
+- 6 new columns on `promotions` (Task ID 14.6): brand_tone,
+  starting_budget, broadcast_tier, ownership_type, ai_aggression
+  (CHECK 0-100 DEFAULT 50), ai_spending_style. Closes
+  SCHEMA_DRIFT_AUDIT §Z.4 — unblocks Task 25 (rival promotion AI).
+  Seed values: AC gets broadcast_tier='regional_tv',
+  starting_budget=500000, ai_aggression=30 (player-controlled, low
+  AI); RFL gets broadcast_tier='local_stream', starting_budget=200000,
+  ai_aggression=60 (more aggressive AI for the future rival).
+- 8 new columns on `gyms` (Task ID 14.6): reputation, membership_cost,
+  facility_quality, medical_support, sparring_depth, development_focus
+  (all CHECK 0-100 DEFAULT 50 except membership_cost REAL DEFAULT 0),
+  culture_tone (TEXT DEFAULT 'balanced'), weight_cut_support (CHECK
+  0-100 DEFAULT 50). Unblocks Task 16 (training camps) and Task 17
+  (weight cuts). Seed values for both Ironhouse Gym and Steelcrest
+  Gym: facility_quality=60, medical_support=50, sparring_depth=55,
+  development_focus=60 (per the brief).
+- `attribute_bias` TEXT column on `style_archetypes` (Task ID 14.5)
+  holding a JSON dict mapping attribute names to +/- integer bias
+  values. Nullable (NULL = no bias, equivalent to {}). Consumed by
+  `fighter_gen.generate_attribute_block(archetype_id, conn)`.
+- `trait_bias` TEXT column on `personality_archetypes` (Task ID 14.5)
+  — symmetric to `style_archetypes.attribute_bias` but for the
+  personality block. Consumed by
+  `fighter_gen.generate_personality_block(archetype_id, conn)`.
+- 7 style archetypes seeded with bias JSON (Task ID 14.5): Balanced
+  (existing, bias added), Striker, Grappler, Wrestler, Brawler,
+  Counter-Striker, Submission Specialist (6 new). Bias values per
+  STAGES.md §14.5 — e.g. Brawler: {"punch_power": 20, "chin": 15,
+  "durability": 10, "footwork": -15, "fight_iq": -10, "cardio": -5}.
+  These biases give regen prospects a style identity from day one —
+  a Brawler replacement for a retiring Brawler feels like a Brawler,
+  not a generic 50/50 prospect. The new acceptance test
+  `test_fighter_attributes.py` case D verifies the bias system works
+  by asserting that 100 Brawlers average higher on punch_power/chin
+  and lower on footwork/fight_iq than 100 Counter-Strikers.
+- 5 personality archetypes seeded with bias JSON (Task ID 14.5): Calm
+  (existing, bias added), Aggressive, Methodical, Showman, Quiet
+  Professional (4 new). Bias values per STAGES.md §14.5 — e.g.
+  Aggressive: {"aggression": 20, "killer_instinct": 15, "patience":
+  -15, "discipline": -5}.
+- New module `src/fighter_gen.py` (Task ID 14.5) with three pure-ish
+  generation functions used by both the seed backfill and
+  `app.generate_fighter()`:
+  * `generate_attribute_block(archetype_id=None, conn=None) -> dict` —
+    generates a 25-key dict of attribute values via
+    `clamp(50 + bias.get(col, 0) + random.randint(-8, 8), 0, 100)`.
+    The +/-8 noise floor keeps fighters within an archetype distinct
+    (no two Brawlers identical) while the bias gives the archetype
+    its identity.
+  * `generate_personality_block(archetype_id=None, conn=None) -> dict`
+    — symmetric to generate_attribute_block but for the 20 personality
+    fields.
+  * `generate_physical_block() -> dict` — generates height_cm (normal
+    distribution around 178, bounded to [165, 195]), reach_cm
+    (height + random.randint(-5, 10)), stance (80/15/5
+    orthodox/southpaw/switch), handedness (85/10/5
+    right/left/ambidextrous).
+- `scripts/test_fighter_attributes.py` — new acceptance test (Task ID
+  14.5+14.6+14.7). 6 test cases (A-F) covering: schema (column counts
+  + CHECK constraints + version + migration name), archetype seed
+  (7 style + 5 personality with parseable bias JSON), fighter_gen
+  function shapes (25/20/4 keys, values in [0,100], bias applied
+  correctly), backfill (5 existing fighters with no NULLs, existing
+  4+3 values PRESERVED), archetype bias statistical effect (100
+  Brawlers vs 100 Counter-Strikers — brawler averages higher on
+  punch_power/chin, lower on footwork/fight_iq, mean difference > 5
+  points), and `current_date` quirk fix (tick advances by exactly 1
+  day from the seeded date, not jumping to today's real date). Uses
+  `build_db.CODE_SCHEMA_VERSION` dynamically per CONVENTIONS §10
+  (does NOT hardcode '2.0.0').
+
+### Changed
+- `app.generate_fighter()` (Task 14 regen function) updated to use
+  `fighter_gen.py` instead of INSERT with all-50 defaults (Task ID
+  14.5). Regen prospects now arrive with archetype-biased attributes
+  (25 columns), personality (20 columns), and physical stats
+  (height/reach/stance/handedness). Previously: regen fighters were
+  generic 50/50 stubs — visually identical, no style identity. Now: a
+  Brawler replacement for a retiring Brawler actually hits hard and
+  has a chin. This is the design-law fix: regen now serves the
+  Discovery pillar (Fantasy 1: Talent Hunter) — players can spot
+  "this kid hits hard" from day one. The 25 attribute columns and 20
+  personality columns are INSERTed explicitly via dynamically-built
+  SQL (from `fighter_gen.ATTRIBUTE_NAMES` / `PERSONALITY_NAMES`) so
+  future column additions don't require touching this code.
+  D4-update decision: the Task 14 worklog's D4 ("new fighter enters
+  with default attrs all 50") is superseded by this change. The
+  existing acceptance test `test_regen.py` case C (lines 556-580)
+  asserts all-50 defaults — that assertion is now stale and flagged
+  for supervisor fix per CONVENTIONS §11 (NOT modified by this task).
+- `app.get_clock()` and `app.schedule_next_event()` updated to
+  qualify `current_date` as `simulation_clock.current_date` (Task ID
+  14.7). Closes the pre-existing SQLite quirk flagged in
+  SCHEMA_DRIFT_AUDIT §Z.6 where bare `current_date` resolved to
+  SQLite's built-in date FUNCTION (today's wall-clock date) instead
+  of the simulation_clock.current_date COLUMN. This caused the sim
+  clock to jump from the seeded 2026-07-20 to today+1 on the first
+  tick after a fresh build. The fix was deferred through Tasks 12,
+  13, and 14 (each flagged it as "out of scope"); the MAJOR bump in
+  this task is the right place to land it. The existing
+  `get_free_agents_for_display()` helper already qualified the
+  column (added in Task 13) — this change brings the rest of the
+  codebase in line with that pattern.
+- `tick_processor.run_tick()` updated to qualify `current_date` (and
+  the other clock columns, for consistency) as
+  `simulation_clock.current_date` etc. (Task ID 14.7). Same fix as
+  `app.get_clock()` above. Closes the second occurrence of the
+  §Z.6 quirk. After this fix, `python3 src/tick_processor.py` on a
+  freshly-built DB advances the clock from 2026-07-20 to 2026-07-21
+  (exactly 1 day), not from 2026-07-20 to today+1.
+- `seed_data.py` `_seed_archetypes()` helper added (Task ID 14.5) —
+  seeds 7 style + 5 personality archetypes with bias JSON. Uses
+  INSERT OR IGNORE + UPDATE so existing archetype rows (Balanced,
+  Calm) are preserved at their original autoincrement IDs (1 and 1)
+  — important because the 5 existing seeded fighters reference
+  style_id=1 and pers_id=1.
+- `seed_data.py` `_backfill_fighter_v2()` helper added (Task ID 14.5)
+  — backfills a single existing fighter with the 21 new attribute
+  columns, 17 new personality columns, and 4 physical columns, while
+  PRESERVING the existing 4 attribute values (punch_power, cardio,
+  fight_iq, chin) and 3 personality values (aggression, composure,
+  morale). The existing values are read from the DB and override the
+  generated dict's keys before UPDATE, so the backfill is correct
+  even if a future change seeds non-default values for the existing
+  4. The meta columns on the fighters table (injury_proneness,
+  marketability, etc.) are left at their schema DEFAULT 50/0/NULL
+  per the brief.
+- `seed_data.py` promotions seeder updated (Task ID 14.6) to set
+  `starting_budget`, `broadcast_tier`, and `ai_aggression` for both
+  promotions per the brief: AC gets regional_tv/500000/30, RFL gets
+  local_stream/200000/60. The other 3 new promotion columns
+  (brand_tone, ownership_type, ai_spending_style) use schema
+  defaults.
+- `seed_data.py` gyms seeder updated (Task ID 14.6) to set
+  `facility_quality=60`, `medical_support=50`, `sparring_depth=55`,
+  `development_focus=60` for both Ironhouse Gym and Steelcrest Gym.
+  The other 4 new gym columns (reputation, membership_cost,
+  culture_tone, weight_cut_support) use schema defaults.
+- `seed_data.py` seed summary print expanded (Task ID 14.5+14.6) to
+  include the new archetype count (7 style + 5 personality), the
+  promotion AI-tuning values, the gym facility values, and the
+  backfill summary.
+- `build_db.py` `CODE_SCHEMA_VERSION` bumped 1.9.0 → 2.0.0 (MAJOR —
+  first major version, Task ID 14.5+14.6+14.7). Per CONVENTIONS §1.1,
+  MAJOR bumps are for "removing a table, renaming a column, breaking
+  change to existing data shape." This bump is unusual: no tables are
+  removed, no columns renamed, no data shape broken. The MAJOR bump
+  is for the depth-of-sim significance (4 attrs → 25 attrs is a
+  paradigm shift, not an incremental step) and to mark the
+  transition from thin skeleton to real simulation. Documented in
+  the worklog D1 decision.
+- `build_db.py` migration name updated from
+  `v1_9_0_add_regen` → `v2_0_0_fighter_schema_expansion` (Task ID
+  14.5+14.6+14.7) to reflect the combined nature of this task.
+
+### Fixed
+- Pre-existing `current_date` SQLite quirk (SCHEMA_DRIFT_AUDIT §Z.6,
+  flagged in Tasks 12, 13, 14 worklogs as D5 / "out of scope").
+  Bare `current_date` in SELECT statements resolved to SQLite's
+  built-in date FUNCTION (today's wall-clock date) instead of the
+  `simulation_clock.current_date` COLUMN, causing the sim clock to
+  jump unpredictably on the first tick after a fresh build. Fixed
+  by qualifying the column as `simulation_clock.current_date` in
+  `app.get_clock()`, `app.schedule_next_event()`, and
+  `tick_processor.run_tick()`. The `get_free_agents_for_display()`
+  helper was already qualified (Task 13). All existing tests passed
+  despite the quirk because none asserted specific clock values
+  (they used `tick_counter` or explicit `current_date` parameter
+  passing instead). Verified by the new acceptance test
+  `test_fighter_attributes.py` case F: tick advances by exactly 1
+  day from the seeded 2026-07-20 to 2026-07-21, NOT to today+1.
+
+## [1.9.0] - 2026-07-21
+
+### Added
 - Name pools + regen lineage + memory links tables (Task ID 14).
   Three new tables ship in this task:
   * `name_pools` — first_male / first_female / last / nickname
