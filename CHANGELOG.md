@@ -9,6 +9,50 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `titles` table (Task ID 11) — one row per belt per promotion per
+  weight class. Tracks the current champion, when they won it
+  (`champion_since_date`), how many reigns they've had
+  (`title_reigns_count`), how many defenses they've made
+  (`title_defenses_count`), and whether the title is vacant
+  (`is_vacant`). UNIQUE constraint on (promotion_id, weight_class_id)
+  enforces one belt per weight class per promotion. CHECK constraints
+  enforce `is_vacant IN (0,1)`, `title_reigns_count >= 0`,
+  `title_defenses_count >= 0`. `current_champion_fighter_id` is
+  nullable (NULL = vacant). Foundation for Task 8's
+  `schedule_next_event()` (future: champion vs #1 contender), Task 14
+  (regen — retiring champions vacate the title), and Task 22
+  (rivalries — title fight rivalries are the most heated).
+- `_resolve_title_after_fight()` private helper in `app.py`
+  (Task ID 11) — transfers or vacates the title after a title fight
+  resolution. Called unconditionally by `resolve_next_fight()` but
+  returns None early if the fight is not a title fight (defensive —
+  the caller doesn't need to check `bout_type`). Handles all five
+  cases: vacant + non-draw (winner becomes champion), vacant + draw
+  (stays vacant), held + champion wins (defense incremented), held +
+  contender wins (title changes hands, defenses reset), held + draw
+  (champion retains, no defense counted). Returns the `title_id` if a
+  title change occurred, else None. The caller uses the non-None
+  return to enrich the news/commentary with a "(TITLE CHANGE!)"
+  suffix.
+- `_seed_vacant_title()` helper in `seed_data.py` (Task ID 11) —
+  creates a vacant title for a (promotion, weight_class) pair. Uses
+  `INSERT OR IGNORE` so the seed is idempotent. Called from the seed
+  for both AC Lightweight and RFL Lightweight.
+- Acceptance test `scripts/test_titles.py` (Task ID 11) — tests
+  schema (CHECK + UNIQUE constraints), seed (2 vacant titles, seeded
+  main event is a title_fight), vacant-title + non-draw transfer
+  (winner becomes champion, reigns=1, defenses=0, fight_history
+  title_at_stake=1), held-title + champion-wins defense
+  (defenses=1, reigns still 1), held-title + contender-wins upset
+  (title changes hands, reigns=2, defenses=0, champion_since_date
+  updated), held-title + draw (champion retains, no defense),
+  vacant-title + draw (stays vacant), non-title fight (no title
+  change, fight_history title_at_stake=0), `_resolve_title_after_fight()`
+  defensive cases (non-existent fight_id, non-title bout_type,
+  non-existent promotion_id), and regression (fight_history +
+  rankings + event lifecycle + event scheduler + contracts all still
+  work together; AC Lightweight title has a champion after resolving
+  the seeded title fight). UI smoke test SKIPs cleanly in headless.
 - `rankings` table (Task ID 10) — one row per fighter per weight class
   per promotion, with an ELO-style rating (default 1000.0), cumulative
   fights_count / wins / losses / draws, and last_fight_date. UNIQUE
@@ -182,6 +226,28 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.5.0 → 1.6.0 (Task ID 11) — third MINOR bump
+  in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0 and Task ID 10's
+  1.4.0 → 1.5.0). Adds the `titles` table.
+- `build_db.py` migration name updated to `v1_6_0_add_titles`.
+- `seed_data.py` now creates 2 vacant titles (AC Lightweight + RFL
+  Lightweight) and marks the seeded main event as
+  `bout_type='title_fight'` so the title-transfer logic is exercised
+  end-to-end on the first resolve. Seed summary printout updated to
+  include the titles count.
+- `resolve_next_fight()` in `app.py` now resolves titles after the
+  rankings ELO update (Task ID 10) and before `write_news` /
+  `write_commentary` (so the news can mention the title change). The
+  `write_news` and `write_commentary` calls were moved to AFTER the
+  rankings + title resolution to make this ordering possible. News
+  headline is enriched with a "(TITLE CHANGE!)" suffix and commentary
+  with " Title changes hands!" when a title change occurred (new
+  champion crowned from vacant OR title changed hands). Docstring's
+  side-effects list updated to include the new titles line and
+  reflect the `title_at_stake` population on the fight_history line.
+- `fight_history` INSERTs in `resolve_next_fight()` now populate
+  `title_at_stake` based on `fights.bout_type` (1 if 'title_fight',
+  0 otherwise). Previously hardcoded to 0 (placeholder since Task ID 4).
 - Schema version bumped 1.4.0 → 1.5.0 (Task ID 10) — second MINOR bump
   in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0). Adds the `rankings`
   table.

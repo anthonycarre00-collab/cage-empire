@@ -360,9 +360,14 @@ def main():
         "SELECT title_at_stake FROM fight_history WHERE fight_id=?",
         (first_fight_id,),
     ).fetchall()]
+    # Task ID 11 supervisor fix: the seeded main event is now a title fight
+    # (bout_type='title_fight'), so fight_history rows get title_at_stake=1.
+    # The original "title_at_stake=0 placeholder" assertion was correct for
+    # Tasks 4-10 (before titles existed) but is now stale. This is the same
+    # pattern as the dynamic-version fixes in Tasks 9 and 10's sign-offs.
     fatal_results.append((
-        "title_at_stake=0 on both rows (placeholder for Task 11)",
-        title_vals == [0, 0],
+        "title_at_stake=1 on both rows (seeded fight is a title_fight since Task 11)",
+        title_vals == [1, 1],
         f"got={title_vals}",
     ))
 

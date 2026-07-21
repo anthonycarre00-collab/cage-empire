@@ -110,6 +110,42 @@ def _seed_initial_ranking(conn, fighter_id, weight_class_id, promotion_id):
     )
     return cur.lastrowid
 
+
+# ----------------------------------------------------------------
+# Vacant title seeder (Task ID 11). One title per (promotion,
+# weight_class) pair. The title starts vacant — the first title
+# fight (bout_type='title_fight') transfers the belt to the winner
+# via `_resolve_title_after_fight()` in app.py. The seed creates
+# two titles (AC Lightweight + RFL Lightweight) so the title-
+# transfer logic can be exercised end-to-end on the first resolve.
+# Foundation for Task 8's schedule_next_event() (future: champion
+# vs #1 contender), Task 14 (regen — retiring champions vacate),
+# Task 22 (rivalries — title fight rivalries are the most heated).
+# ----------------------------------------------------------------
+
+def _seed_vacant_title(conn, promotion_id, weight_class_id):
+    """Create a vacant title for a promotion's weight class.
+
+    Called by the seed for every (promotion, weight_class) pair. The
+    title starts vacant (current_champion_fighter_id IS NULL,
+    is_vacant=1). The first title fight (bout_type='title_fight')
+    will transfer the belt to the winner via _resolve_title_after_fight()
+    in app.py.
+
+    Uses INSERT OR IGNORE so the seed is idempotent — re-running
+    seed_data.py won't crash on the UNIQUE (promotion_id,
+    weight_class_id) constraint. Returns the title_id (or None if
+    the row already existed).
+    """
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO titles (promotion_id, weight_class_id, "
+        "current_champion_fighter_id, champion_since_date, "
+        "title_reigns_count, title_defenses_count, is_vacant) "
+        "VALUES (?, ?, NULL, NULL, 0, 0, 1)",
+        (promotion_id, weight_class_id),
+    )
+    return cur.lastrowid
+
 def main():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -155,8 +191,18 @@ def main():
         _seed_default_staff_contract(conn, staff_id, promo_id, role="commentator")  # Task ID 9
         conn.execute("INSERT INTO news_sources (name, credibility, sensationalism, bias, regional_reach, reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)", ("System Feed", 70, 40, 50, 60, 80, 80))
 
+        # ----------------------------------------------------------------
+        # Seed a vacant title for AC Lightweight (Task ID 11). The
+        # first title fight (bout_type='title_fight') transfers the
+        # belt to the winner via _resolve_title_after_fight() in
+        # app.py. The seeded main event below is a title fight so the
+        # title-transfer logic is exercised end-to-end on the first
+        # resolve.
+        # ----------------------------------------------------------------
+        _seed_vacant_title(conn, promo_id, wc_id)  # Task ID 11
+
         event_id = one(conn, "INSERT INTO events (promotion_id, venue_id, market_id, event_name, event_date, event_type) VALUES (?, ?, ?, ?, ?, ?)", (promo_id, venue_id, market_id, "Alpha Combat: Test Night", "2026-08-15", "fight_night"))
-        fight_id = one(conn, "INSERT INTO fights (event_id, weight_class_id, bout_type, round_limit, scheduled_rounds) VALUES (?, ?, ?, ?, ?)", (event_id, wc_id, "main_event", 3, 3))
+        fight_id = one(conn, "INSERT INTO fights (event_id, weight_class_id, bout_type, round_limit, scheduled_rounds) VALUES (?, ?, ?, ?, ?)", (event_id, wc_id, "title_fight", 3, 3))
         conn.execute("INSERT INTO fight_participants (fight_id, fighter_id, corner) VALUES (?, ?, ?)", (fight_id, fighter_ids[0], "red"))
         conn.execute("INSERT INTO fight_participants (fight_id, fighter_id, corner) VALUES (?, ?, ?)", (fight_id, fighter_ids[1], "blue"))
         conn.execute("INSERT INTO event_cards (event_id, fight_id, card_position, card_tier, is_main_event) VALUES (?, ?, ?, ?, ?)", (event_id, fight_id, 1, "main_event", 1))
@@ -193,12 +239,21 @@ def main():
             _seed_default_fighter_contract(conn, fid, rfl_promo_id)  # Task ID 9
             _seed_initial_ranking(conn, fid, wc_id, rfl_promo_id)   # Task ID 10
 
+        # ----------------------------------------------------------------
+        # Seed a vacant title for RFL Lightweight (Task ID 11).
+        # Symmetric to the AC Lightweight title above. RFL has no
+        # events scheduled (inert), so the title stays vacant until
+        # a future task schedules an RFL title fight.
+        # ----------------------------------------------------------------
+        _seed_vacant_title(conn, rfl_promo_id, wc_id)  # Task ID 11
+
         conn.commit()
         print("Seeded database.")
         print(f"  Alpha Combat: {len(fighter_ids)} fighters, 1 event, 1 fight scheduled")
         print(f"  Rival Fight League: {len(rfl_fighter_ids)} fighters (inert, no events)")
         print(f"  Contracts: {len(fighter_ids) + len(rfl_fighter_ids)} fighter contracts + 1 staff contract")
         print(f"  Rankings: {len(fighter_ids) + len(rfl_fighter_ids)} initial ranking rows (all at 1000.0)")
+        print(f"  Titles: 2 vacant (1 per promotion per weight class)")
 
 if __name__ == "__main__":
     main()

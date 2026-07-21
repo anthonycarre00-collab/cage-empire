@@ -720,6 +720,174 @@ def _update_rankings_after_resolution(conn, winner_id, loser_id,
 
 
 # ----------------------------------------------------------------
+# Title resolution (Task ID 11).
+#
+# After a fight resolves and the rankings ELO update (Task ID 10)
+# runs, this helper transfers or vacates the title if the fight was
+# a title fight (bout_type='title_fight'). Called unconditionally by
+# `resolve_next_fight()` but returns None early if the fight is not a
+# title fight (defensive — the caller doesn't need to check
+# bout_type).
+#
+# Transfer rules:
+#   - VACANT title + non-draw: winner becomes champion. Set
+#     current_champion_fighter_id=winner_id, champion_since_date=
+#     fight_date, title_reigns_count += 1, is_vacant=0. Return
+#     title_id (title change occurred).
+#   - VACANT title + draw: title stays vacant. Return None.
+#   - HELD title + non-draw, champion wins: title_defenses_count +=
+#     1. Champion retains. Return None (no title change).
+#   - HELD title + non-draw, contender wins: title changes hands.
+#     New champion = contender. Set current_champion_fighter_id=
+#     contender_id, champion_since_date=fight_date,
+#     title_reigns_count += 1, title_defenses_count=0 (reset for
+#     new reign), is_vacant=0. Return title_id (title change).
+#   - HELD title + draw: champion retains, no defense counted
+#     (draws don't count as defenses in most MMA rulesets). Return
+#     None.
+#
+# Returns:
+#   title_id (int) if a title change occurred (new champion crowned
+#   from vacant OR title changed hands), else None. The caller uses
+#   a non-None return to enrich the news/commentary with a
+#   "(TITLE CHANGE!)" suffix.
+#
+# Foundation for Task 12 (retirement — retiring champions vacate),
+# Task 14 (regen — retiring champions vacate, new fighters enter),
+# Task 22 (rivalries — title fight rivalries are the most heated).
+#
+# Schema version is bumped 1.5.0 -> 1.6.0 in this task (the new
+# `titles` table is the only schema change).
+# ----------------------------------------------------------------
+
+def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
+                                weight_class_id, promotion_id, was_draw,
+                                result_type, fight_date=None):
+    """Transfer or vacate the title after a title fight resolution.
+
+    Rules (Task ID 11):
+      - Only fires if the fight's bout_type is 'title_fight'. Called
+        unconditionally by resolve_next_fight() but returns early if
+        the fight is not a title fight (defensive — the caller
+        doesn't need to check bout_type).
+      - Looks up the title row for (promotion_id, weight_class_id).
+        If no title row exists (defensive — shouldn't happen with
+        the seed, but a new weight class added without a title would
+        trigger this), returns early.
+      - If the title is VACANT (current_champion_fighter_id IS NULL):
+        - Non-draw: the winner becomes the new champion. Set
+          current_champion_fighter_id=winner_id, champion_since_date=
+          fight_date, title_reigns_count += 1, is_vacant=0.
+        - Draw: the title stays vacant (no champion for a vacant
+          title fight that ends in a draw — sensible default).
+      - If the title is HELD (current_champion_fighter_id is not
+        NULL):
+        - Determine which fighter is the champion and which is the
+          contender. The champion is the one whose fighter_id
+          matches current_champion_fighter_id; the other is the
+          contender.
+        - Non-draw, champion wins: title_defenses_count += 1.
+          Champion retains.
+        - Non-draw, contender wins: title changes hands. New
+          champion = contender. Set current_champion_fighter_id=
+          contender_id, champion_since_date=fight_date,
+          title_reigns_count += 1, title_defenses_count=0 (reset
+          for the new reign).
+        - Draw: champion retains (no change to current_champion or
+          defenses_count — draws don't count as defenses in most
+          MMA rulesets).
+      - Returns the title_id if a title change occurred (new
+        champion crowned from vacant or title changed hands), else
+        None. The caller can use this to enrich the news/commentary.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fight_id: the fights.fight_id (for logging/defensive checks).
+        event_id: the events.event_id (for logging).
+        winner_id: fighters.fighter_id of the winner (ignored if
+            was_draw).
+        loser_id: fighters.fighter_id of the loser (ignored if
+            was_draw).
+        weight_class_id: the weight class the fight was at.
+        promotion_id: the promotion the fight was under.
+        was_draw: True if the fight was a draw.
+        result_type: the result_type string (for logging).
+        fight_date: ISO date string for champion_since_date. If None,
+            uses CURRENT_DATE.
+
+    Returns:
+        title_id (int) if a title change occurred, else None.
+    """
+    # 1. Fetch the fight's bout_type. If it's not 'title_fight',
+    #    this is a no-op (defensive — the caller doesn't need to
+    #    check bout_type before calling).
+    fight_row = conn.execute(
+        "SELECT bout_type FROM fights WHERE fight_id = ?",
+        (fight_id,),
+    ).fetchone()
+    if not fight_row or fight_row[0] != 'title_fight':
+        return None
+
+    # 2. Fetch the title row for (promotion_id, weight_class_id).
+    #    If no title row exists (defensive — shouldn't happen with
+    #    the seed, but a new weight class added without a title
+    #    would trigger this), return None.
+    title_row = conn.execute(
+        "SELECT title_id, current_champion_fighter_id, is_vacant, "
+        "title_reigns_count, title_defenses_count "
+        "FROM titles WHERE promotion_id = ? AND weight_class_id = ?",
+        (promotion_id, weight_class_id),
+    ).fetchone()
+    if not title_row:
+        return None
+    title_id, current_champ, is_vacant, reigns, defenses = title_row
+
+    # 3. Handle the cases.
+    if current_champ is None:
+        # VACANT title.
+        if was_draw:
+            # Vacant + draw → stays vacant. No change.
+            return None
+        # Vacant + non-draw → winner becomes champion.
+        conn.execute(
+            "UPDATE titles SET current_champion_fighter_id = ?, "
+            "champion_since_date = COALESCE(?, CURRENT_DATE), "
+            "title_reigns_count = title_reigns_count + 1, "
+            "is_vacant = 0, updated_at = CURRENT_TIMESTAMP "
+            "WHERE title_id = ?",
+            (winner_id, fight_date, title_id),
+        )
+        return title_id
+    else:
+        # HELD title. current_champ is the reigning champion.
+        if was_draw:
+            # Held + draw → champion retains, no defense counted.
+            # (Draws don't count as defenses in most MMA rulesets.)
+            return None
+        if winner_id == current_champ:
+            # Champion retained. Increment defenses.
+            conn.execute(
+                "UPDATE titles SET title_defenses_count = "
+                "title_defenses_count + 1, "
+                "updated_at = CURRENT_TIMESTAMP WHERE title_id = ?",
+                (title_id,),
+            )
+            return None  # no title change
+        else:
+            # Contender won. Title changes hands.
+            conn.execute(
+                "UPDATE titles SET current_champion_fighter_id = ?, "
+                "champion_since_date = COALESCE(?, CURRENT_DATE), "
+                "title_reigns_count = title_reigns_count + 1, "
+                "title_defenses_count = 0, "
+                "is_vacant = 0, updated_at = CURRENT_TIMESTAMP "
+                "WHERE title_id = ?",
+                (winner_id, fight_date, title_id),
+            )
+            return title_id
+
+
+# ----------------------------------------------------------------
 # Repeatable event generator (Task ID 8).
 #
 # After the last fight on a card resolves and the event transitions
@@ -991,8 +1159,9 @@ def resolve_next_fight(conn):
       - UPDATE fights SET winner/loser/result_type/finish_round/...
       - UPDATE fight_participants SET is_winner=...
       - UPDATE fighter_career SET record_wins/losses/draws, streaks
-      - INSERT INTO fight_history (2 rows, one per fighter)  [v1.3.0]
+      - INSERT INTO fight_history (2 rows, one per fighter, title_at_stake populated)  [v1.3.0, v1.6.0]
       - UPDATE rankings SET rating/fights_count/wins/losses/draws (ELO)  [v1.5.0, Task ID 10]
+      - UPDATE titles SET current_champion/defenses/reigns (if title fight)  [v1.6.0, Task ID 11]
       - UPDATE events SET status=in_progress/completed  [v1.3.0, Task ID 7]
       - INSERT INTO events + fights + fight_participants + event_cards
         (auto-scheduled next card, only if event just completed)  [v1.3.0, Task ID 8]
@@ -1093,10 +1262,11 @@ def resolve_next_fight(conn):
     # perspective). New in v1.3.0 (Task ID 4) — separate from the
     # mutable `fighter_career` counters. The UNIQUE (fight_id, fighter_id)
     # constraint enforces one row per fighter per fight. `title_at_stake`
-    # is hardcoded to 0 for now; Task ID 11 (titles) will populate it.
-    # `score_margin` is the rounded absolute margin from the resolver.
-    # Read by upcoming rankings, legacy, and stats-based commentary
-    # work (Tasks 10, 11, 14, 19, 23) — see docs/STAGES.md Task ID 4.
+    # is populated based on `fights.bout_type` (1 if 'title_fight',
+    # 0 otherwise) — added in v1.6.0 (Task ID 11). `score_margin` is
+    # the rounded absolute margin from the resolver. Read by upcoming
+    # rankings, legacy, and stats-based commentary work (Tasks 10, 11,
+    # 14, 19, 23) — see docs/STAGES.md Task ID 4.
     #
     # Defensive DELETE: in normal gameplay each fight is resolved exactly
     # once, so there are no prior fight_history rows to conflict with.
@@ -1108,6 +1278,17 @@ def resolve_next_fight(conn):
     # the sensible behaviour. (This is what keeps
     # scripts/test_fight_resolver.py passing after Task ID 4.)
     # ----------------------------------------------------------------
+    # Determine if this was a title fight (Task ID 11). The
+    # fight_history rows get title_at_stake=1 if so, 0 otherwise.
+    # This is read by upcoming legacy/Hall of Fame work to count
+    # title fights per fighter.
+    bout_type_row = conn.execute(
+        "SELECT bout_type FROM fights WHERE fight_id = ?",
+        (fight_id,),
+    ).fetchone()
+    is_title_fight = bool(bout_type_row and bout_type_row[0] == 'title_fight')
+    title_at_stake_val = 1 if is_title_fight else 0
+
     conn.execute(
         "DELETE FROM fight_history WHERE fight_id=?",
         (fight_id,),
@@ -1119,17 +1300,19 @@ def resolve_next_fight(conn):
             "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
             "outcome, result_type, finish_round, finish_time, score_margin, "
             "event_id, event_date, weight_class_id, title_at_stake) "
-            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, ?)",
             (fight_id, a_id, b_id, result_type, finish_round, finish_time,
-             score_margin_int, event_id, event_date, weight_class_id),
+             score_margin_int, event_id, event_date, weight_class_id,
+             title_at_stake_val),
         )
         conn.execute(
             "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
             "outcome, result_type, finish_round, finish_time, score_margin, "
             "event_id, event_date, weight_class_id, title_at_stake) "
-            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?, ?, ?)",
             (fight_id, b_id, a_id, result_type, finish_round, finish_time,
-             score_margin_int, event_id, event_date, weight_class_id),
+             score_margin_int, event_id, event_date, weight_class_id,
+             title_at_stake_val),
         )
     else:
         # Winner row: outcome='win', opponent_id = loser.
@@ -1137,34 +1320,32 @@ def resolve_next_fight(conn):
             "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
             "outcome, result_type, finish_round, finish_time, score_margin, "
             "event_id, event_date, weight_class_id, title_at_stake) "
-            "VALUES (?, ?, ?, 'win', ?, ?, ?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, 'win', ?, ?, ?, ?, ?, ?, ?, ?)",
             (fight_id, winner_id, loser_id, result_type, finish_round, finish_time,
-             score_margin_int, event_id, event_date, weight_class_id),
+             score_margin_int, event_id, event_date, weight_class_id,
+             title_at_stake_val),
         )
         # Loser row: outcome='loss', opponent_id = winner.
         conn.execute(
             "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
             "outcome, result_type, finish_round, finish_time, score_margin, "
             "event_id, event_date, weight_class_id, title_at_stake) "
-            "VALUES (?, ?, ?, 'loss', ?, ?, ?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, 'loss', ?, ?, ?, ?, ?, ?, ?, ?)",
             (fight_id, loser_id, winner_id, result_type, finish_round, finish_time,
-             score_margin_int, event_id, event_date, weight_class_id),
+             score_margin_int, event_id, event_date, weight_class_id,
+             title_at_stake_val),
         )
-
-    # The write_news / write_commentary calls themselves are preserved
-    # exactly — only the headline / body / commentary strings change.
-    write_news(conn, headline, body, "fight", event_id, fight_id, news_fighter_id, promo_id)
-    write_commentary(conn, event_id, fight_id, commentary)
 
     # ----------------------------------------------------------------
     # Rankings ELO update (Task ID 10). Update both fighters' rating
     # rows after the fight_history rows are written (Task ID 4) and
-    # BEFORE the event status transition (Task ID 7). The update is
-    # zero-sum — the winner's gain is the loser's loss. For draws,
-    # both fighters get +1 draws and the ELO delta uses score=0.5 for
-    # each, which produces zero rating change when both start at the
-    # same rating (expected=0.5, score=0.5, delta=0). K-factor is
-    # fixed at 32.0. See docs/STAGES.md Task ID 10 for the spec.
+    # BEFORE the title resolution (Task ID 11) so the new champion's
+    # ranking is already updated. The update is zero-sum — the
+    # winner's gain is the loser's loss. For draws, both fighters get
+    # +1 draws and the ELO delta uses score=0.5 for each, which
+    # produces zero rating change when both start at the same rating
+    # (expected=0.5, score=0.5, delta=0). K-factor is fixed at 32.0.
+    # See docs/STAGES.md Task ID 10 for the spec.
     # ----------------------------------------------------------------
     if result_type == "draw":
         _update_rankings_after_resolution(
@@ -1176,6 +1357,46 @@ def resolve_next_fight(conn):
             conn, winner_id, loser_id, weight_class_id, promo_id,
             score_margin_int, was_draw=False, fight_date=event_date,
         )
+
+    # ----------------------------------------------------------------
+    # Resolve title (Task ID 11). If this was a title fight
+    # (bout_type='title_fight'), transfer or vacate the belt. Returns
+    # the title_id if a title change occurred (new champion crowned
+    # from vacant OR title changed hands), else None. The title_id is
+    # used below to enrich the news/commentary with a "(TITLE
+    # CHANGE!)" suffix. The helper is a no-op for non-title fights
+    # (returns None early). For draws, winner_id/loser_id are not
+    # used by the helper (it detects the draw and skips the transfer).
+    # ----------------------------------------------------------------
+    title_change_id = _resolve_title_after_fight(
+        conn,
+        fight_id=fight_id,
+        event_id=event_id,
+        winner_id=winner_id if result_type != "draw" else a_id,
+        loser_id=loser_id if result_type != "draw" else b_id,
+        weight_class_id=weight_class_id,
+        promotion_id=promo_id,
+        was_draw=(result_type == "draw"),
+        result_type=result_type,
+        fight_date=event_date,
+    )
+
+    # Enrich news/commentary for title changes (Task ID 11). Simple
+    # approach: append "(TITLE CHANGE!)" to the headline and " Title
+    # changes hands!" to the commentary when title_change_id is not
+    # None. The helper returns just the title_id (or None), so we
+    # can't distinguish "won from vacant" vs "dethroned champion"
+    # without an extra DB query — keeping it simple per the brief's
+    # "the goal is to surface the title change to the player, not to
+    # write perfect prose" guidance. See worklog decision D1.
+    if title_change_id is not None:
+        headline = f"{headline} (TITLE CHANGE!)"
+        commentary = f"{commentary} Title changes hands!"
+
+    # The write_news / write_commentary calls themselves are preserved
+    # exactly — only the headline / body / commentary strings change.
+    write_news(conn, headline, body, "fight", event_id, fight_id, news_fighter_id, promo_id)
+    write_commentary(conn, event_id, fight_id, commentary)
 
     # ----------------------------------------------------------------
     # Event lifecycle (Task ID 7). Transition the parent event's status:

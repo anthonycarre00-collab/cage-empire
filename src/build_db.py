@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.5.0"
+CODE_SCHEMA_VERSION = "1.6.0"
 
 
 def _parse_version(v):
@@ -494,6 +494,35 @@ CREATE TABLE IF NOT EXISTS rankings (
     updated_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_id, weight_class_id, promotion_id)
 );
+
+-- ----------------------------------------------------------------
+-- Titles (added in v1.6.0, Task ID 11).
+-- One row per belt per promotion per weight class. Tracks the
+-- current champion, when they won it, how many defenses they've
+-- made, and whether the title is vacant. Foundation for Task 8's
+-- schedule_next_event() (future: champion vs #1 contender), Task
+-- 14 (regen - retiring champions vacate), Task 22 (rivalries -
+-- title fight rivalries are the most heated).
+--
+-- A title is "vacant" when current_champion_fighter_id IS NULL.
+-- The seed creates all titles as vacant. The first title fight
+-- transfers the belt to the winner. Subsequent title fights are
+-- the champion defending against a contender. If a champion
+-- retires (Task 12) or leaves (Task 13), the title is vacated.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titles (
+    title_id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id                 INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    weight_class_id              INTEGER NOT NULL REFERENCES weight_classes(weight_class_id) ON DELETE CASCADE,
+    current_champion_fighter_id  INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+    champion_since_date          TEXT,
+    title_reigns_count           INTEGER NOT NULL DEFAULT 0 CHECK (title_reigns_count >= 0),
+    title_defenses_count         INTEGER NOT NULL DEFAULT 0 CHECK (title_defenses_count >= 0),
+    is_vacant                    INTEGER NOT NULL DEFAULT 1 CHECK (is_vacant IN (0, 1)),
+    created_at                   TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at                   TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (promotion_id, weight_class_id)
+);
 """
 
 def main():
@@ -534,7 +563,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_rankings",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_titles",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
