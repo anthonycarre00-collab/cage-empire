@@ -9,6 +9,132 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- Contract expiry logic (Task ID 13) — when a fighter's contract
+  `end_date` passes the current sim date, the contract transitions to
+  `'expired'` and the fighter becomes a free agent
+  (`current_promotion_id = NULL`). This is the talent-circulation
+  foundation for Task 25 (rival promotion AI — RFL signs free agents),
+  Task 14 (regen — new generated fighters enter as free agents), and
+  the "playable forever" loop (without free agency, the roster is
+  static). Uses the existing `contracts`, `fighter_contracts`, and
+  `fighters` tables — no new tables, no new columns. The version bump
+  (1.7.0 -> 1.8.0, MINOR) documents that the free-agency behavior was
+  added in this version; per CONVENTIONS.md the MINOR/MAJOR/PATCH
+  categories don't cleanly fit a "significant new behavior, no schema
+  change" task, so MINOR was chosen as the closest match (see worklog
+  decision D2 for the rationale).
+- `_check_contract_expiry(conn, current_date)` function in
+  `tick_processor.py` (Task ID 13) — runs on every tick (called from
+  `run_tick()` AFTER `_check_retirements()` so a retired-and-contract-
+  expiring fighter is handled correctly). For each contract with
+  `status='active'` AND `end_date < current_date`: sets
+  `contracts.status='expired'`; for fighter contracts whose fighter is
+  NOT already retired, sets the fighter's `current_promotion_id=NULL`
+  (free agent) and `is_active=1`, writes a free-agency news item
+  (`topic='signing'`, `fighter_id` set, `published_at=current_date`).
+  Staff/broadcast contracts also expire but don't set
+  `current_promotion_id` (staff don't have that column) and don't get
+  a news item. The `is_retired` check is critical: a retired fighter
+  whose contract also expired on this tick was retired FIRST by
+  `_check_retirements` (which runs before this function in `run_tick`);
+  setting `current_promotion_id=NULL` on a retired fighter would be
+  misleading (they're not a free agent, they're retired). Returns the
+  list of `(contract_id, fighter_id_or_None)` tuples that expired
+  (`fighter_id` is `None` for staff/broadcast contracts and for fighter
+  contracts whose fighter is already retired). The function does NOT
+  commit — the caller (`run_tick`) commits.
+- `sign_free_agent(conn, fighter_id, promotion_id, start_date,
+  salary=50000.0)` module-scope function in `app.py` (Task ID 13) —
+  signs a free agent to a promotion with a new 12-month exclusive
+  contract. Verifies the fighter is currently a free agent
+  (`current_promotion_id IS NULL`) and active (`is_active=1`,
+  `is_retired=0`); refuses retired fighters ("they can't sign") and
+  already-signed fighters ("they're not free agents"). Creates one
+  row in `contracts` (`contract_target_type='fighter'`,
+  `status='active'`, `exclusive_flag=1`, `start_date=start_date`,
+  `end_date=start_date+365 days`, `salary=salary`) and one in
+  `fighter_contracts` (`contract_type='standard'`), sets the fighter's
+  `current_promotion_id`, writes a signing news item
+  (`"<fighter> signs with <promotion>"`, `topic='signing'`,
+  `fighter_id` set, `promotion_id` set, `published_at=start_date`),
+  and returns the new `contract_id` (None on failure). No negotiation
+  flow yet — that's a future task; the player signs at the default
+  salary.
+- `get_free_agents_for_display(conn)` helper in `app.py` (Task ID 13)
+  — returns a list of `(fighter_id, fighter_name, weight_class_name,
+  record_str, age_int)` tuples for every fighter who is currently a
+  free agent (`current_promotion_id IS NULL` AND `is_active=1` AND
+  `is_retired=0`). The `fighter_id` is included (as the first element)
+  so the Treeview can use it as the item iid, which lets the Sign
+  button read the fighter_id directly from `tree.selection()[0]`
+  instead of doing a fragile name lookup. The age is computed from
+  `date_of_birth` and the current sim date — read using the QUALIFIED
+  column reference `simulation_clock.current_date` (not bare
+  `current_date`) to avoid the pre-existing D5 SQLite quirk where bare
+  `current_date` resolves to the built-in date function. The
+  pre-existing `get_clock()` function (line 17) is left unchanged —
+  fixing it is out of scope for this task and is flagged for a future
+  housekeeping task.
+- Free Agents tab in the UI (Task ID 13) — fourth tab in the right-
+  pane `ttk.Notebook` (after "News & Commentary", "Contracts",
+  "Rankings"). Shows a read-only Treeview of all free agents with
+  columns: name, weight class, record, age. The Treeview item iid is
+  the fighter_id (so the Sign button can read it directly from the
+  selection). A "Sign Selected" button above the Treeview calls
+  `on_sign_free_agent()` which calls `sign_free_agent()` with the
+  player's current promotion filter (or the first promotion if "All
+  Promotions" is selected). The Free Agents tab does NOT respect the
+  promotion filter — free agents are not bound to any promotion, so
+  they're available to sign with ANY promotion. The UI always shows
+  all free agents regardless of the `current_promotion_filter`
+  dropdown. This is intentional and documented (case I of
+  `test_free_agency.py`).
+- Free agency news items (Task ID 13) — written by
+  `_check_contract_expiry` when a fighter's contract expires. Headline:
+  `"<fighter> becomes a free agent"`. Body: a brief announcement that
+  the fighter's contract has expired and they are available to sign
+  with any promotion. `topic='signing'` (so future UI filters can
+  group signing-related news together — both free-agency + actual
+  signings), `fighter_id` set, `published_at=current_date` (the sim
+  date the expiry happened on, NOT `CURRENT_TIMESTAMP` which is wall-
+  clock time).
+- Signing news items (Task ID 13) — written by `sign_free_agent` when
+  a free agent is signed to a promotion. Headline: `"<fighter> signs
+  with <promotion>"`. Body: a brief announcement. `topic='signing'`,
+  `fighter_id` set, `promotion_id` set, `published_at=start_date`.
+  Sentiment is `'positive'` (signings are good news for the signing
+  promotion).
+- Acceptance test `scripts/test_free_agency.py` (Task ID 13) — tests
+  schema (version, migration name prefix, no new tables, seeded
+  contracts all `'active'` with `end_date='2027-07-20'`), contract
+  expiry on tick (one fighter contract expires -> status='expired',
+  fighter becomes free agent, free-agency news item written), multiple
+  contracts expire on one tick (all 5 fighter contracts -> all 5
+  expired, all 5 free agents, 5 news items), staff contract expiry
+  (Nina Cross's contract expires -> status='expired', NO fighter
+  update, NO free-agency news item), `sign_free_agent()` function
+  (signs free agent to RFL -> new contract with correct fields, new
+  fighter_contracts row, fighter's current_promotion_id updated,
+  signing news item written), `sign_free_agent()` rejects non-free-
+  agents (already-signed fighter -> returns None, no changes),
+  `sign_free_agent()` rejects retired fighters (retired fighter ->
+  returns None, no new contract), `get_free_agents_for_display()`
+  helper (empty at seed, 1 row after setting one fighter's
+  current_promotion_id=NULL, 2 rows after setting a second,
+  inactive/retired fighters excluded), Free Agents tab does NOT
+  respect the promotion filter (documented; verified via the helper
+  signature), retired fighter's contract expiry doesn't make them a
+  free agent (the `is_retired` check in `_check_contract_expiry`
+  skips the `current_promotion_id=NULL` update), regression (Tasks
+  3-12 side effects still work, no spurious contract expirations or
+  retirements on a normal tick), and UI smoke (optional, SKIPs in
+  headless). 12 cases A-L. Uses `build_db.CODE_SCHEMA_VERSION`
+  dynamically (no hardcoded version string — same pattern as
+  `test_retirement.py`, `test_rankings.py`, `test_contracts.py`,
+  `test_titles.py`, `test_schema_versioning.py`,
+  `test_fight_history.py`). Uses `random.seed(42)` for
+  reproducibility where relevant. Prints PASS/FAIL summary. Exit 0 =
+  all PASS, 1 = any FAIL.
 - `is_retired` column on `fighters` table (Task ID 12) — INTEGER NOT
   NULL DEFAULT 0 CHECK (is_retired IN (0,1)). Distinguishes "retired"
   (is_retired=1) from "inactive for another reason" (injury in Task
@@ -299,6 +425,41 @@ and this project adheres to the schema versioning rules in
   (Task ID 2).
 
 ### Changed
+- Schema version bumped 1.7.0 → 1.8.0 (Task ID 13) — fifth MINOR bump
+  in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0, Task ID 10's 1.4.0 →
+  1.5.0, Task ID 11's 1.5.0 → 1.6.0, Task ID 12's 1.6.0 → 1.7.0).
+  This task adds no new tables and no new columns — the schema itself
+  is unchanged from 1.7.0. The MINOR bump documents that significant
+  new gameplay behavior (contract expiry, free agency, click-to-sign)
+  was added in this version. Per CONVENTIONS.md §1.1 the MINOR
+  category is "Adding a new table or new columns to an existing
+  table" and PATCH is "Restoring a dropped table, fixing a
+  constraint, adding an index, no new gameplay tables" — neither
+  category cleanly fits a "significant new behavior, no schema
+  change" task. MINOR was chosen as the closest match (the supervisor
+  can downgrade to PATCH if they disagree — see worklog decision D2).
+- `build_db.py` migration name updated from `v1_7_0_add_retirement` to
+  `v1_8_0_add_free_agency` (Task ID 13). Note: build_db.py records
+  only the latest migration name on each rebuild (it drops + recreates
+  the DB file before recording), so the schema_migrations table
+  contains only the current task's migration after a rebuild — this
+  is a known quirk of the build_db.py design and is unchanged by Task
+  13.
+- `tick_processor.run_tick()` now checks for contract expiry AFTER
+  retirements (Task ID 13). The new order inside the for loop is:
+  clock UPDATE → `_check_retirements(conn, new_date_str)` →
+  `_check_contract_expiry(conn, new_date_str)` → `conn.commit()`. The
+  expiry check uses the NEW sim date (so a contract that expires on
+  this tick's new date is caught today, not yesterday). The expiry
+  runs AFTER retirements so a retired-and-contract-expiring fighter
+  is handled correctly: `_check_retirements` sets `is_retired=1`
+  first, then `_check_contract_expiry` sees `is_retired=1` and skips
+  the `current_promotion_id=NULL` update (they're retired, not a free
+  agent). If any contracts expired, a one-line log message is printed
+  ("Expired N contract(s) on YYYY-MM-DD: [...]"), mirroring the
+  pattern in `_check_retirements`'s retirement log. The commit covers
+  the clock UPDATE + retirement side effects + contract-expiry side
+  effects.
 - Schema version bumped 1.6.0 → 1.7.0 (Task ID 12) — fourth MINOR bump
   in Stage 2 (after Task ID 9's 1.3.0 → 1.4.0, Task ID 10's 1.4.0 →
   1.5.0, Task ID 11's 1.5.0 → 1.6.0). Adds the `is_retired` column to

@@ -8,7 +8,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
-CODE_SCHEMA_VERSION = "1.7.0"
+CODE_SCHEMA_VERSION = "1.8.0"
 
 
 def _parse_version(v):
@@ -564,7 +564,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_retirement",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_free_agency",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

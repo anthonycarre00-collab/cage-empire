@@ -1575,6 +1575,267 @@ def resolve_next_fight(conn):
 
     return fight_id
 
+
+# ----------------------------------------------------------------
+# Free agency helpers (Task ID 13).
+#
+# Two module-scope helpers that power the Free Agents tab:
+#
+#   get_free_agents_for_display(conn)
+#     Returns a list of (fighter_id, name, weight_class, record, age)
+#     tuples for every fighter who is currently a free agent — i.e.,
+#     current_promotion_id IS NULL AND is_active=1 AND is_retired=0.
+#     Used by the Free Agents tab's Treeview in refresh_all(). The
+#     fighter_id is included (as the first element) so the Treeview
+#     can use it as the item iid, which lets the Sign button read
+#     the fighter_id directly from `tree.selection()[0]` instead of
+#     doing a fragile name lookup.
+#
+#   sign_free_agent(conn, fighter_id, promotion_id, start_date,
+#                   salary=50000.0)
+#     Signs a free agent to a promotion with a new 12-month exclusive
+#     contract. Verifies the fighter is currently a free agent and
+#     active (refuses retired / already-signed / inactive fighters).
+#     Creates one row in `contracts` and one in `fighter_contracts`,
+#     sets the fighter's current_promotion_id, writes a signing news
+#     item, and returns the new contract_id (None on failure).
+#
+# The age computation in get_free_agents_for_display reads
+# simulation_clock.current_date using the QUALIFIED column reference
+# `simulation_clock.current_date` (not bare `current_date`). This is
+# important because of the pre-existing D5 SQLite quirk: a bare
+# `SELECT current_date FROM simulation_clock` resolves to the built-in
+# date function (today's wall-clock date) instead of the column. The
+# new helper qualifies the column to avoid the quirk. The pre-existing
+# `get_clock()` function (line 17) does NOT qualify it and is left
+# unchanged per the brief (out of scope; flagged for a future
+# housekeeping task).
+# ----------------------------------------------------------------
+
+def get_free_agents_for_display(conn):
+    """Return free agent rows for the UI Free Agents tab (Task ID 13).
+
+    A free agent is a fighter with current_promotion_id IS NULL,
+    is_active=1, and is_retired=0. Returns one row per free agent with
+    their fighter_id, name, weight class, record, and age.
+
+    The Free Agents tab does NOT respect the promotion filter — free
+    agents are not bound to any promotion, so they're available to sign
+    with any promotion. The UI always shows all free agents regardless
+    of the current_promotion_filter dropdown.
+
+    Args:
+        conn: sqlite3 connection.
+
+    Returns:
+        List of 5-tuples: (fighter_id, fighter_name, weight_class_name,
+        record_str, age_int). Ordered by fighter_id.
+
+        - fighter_id:         int (used as the Treeview item iid so
+                              the Sign button can read it directly).
+        - fighter_name:       'first_name last_name'.
+        - weight_class_name:  weight_classes.name, or 'Unknown'.
+        - record_str:         'W-L-D' from fighter_career counters,
+                              defaulting to '0-0-0' if no career row.
+        - age_int:            computed from date_of_birth and the
+                              current sim date.
+    """
+    # Read the current sim date. Qualify the column as
+    # simulation_clock.current_date to avoid the D5 quirk where bare
+    # `current_date` resolves to SQLite's built-in date function
+    # (today's wall-clock date) instead of the column.
+    clock_row = conn.execute(
+        "SELECT simulation_clock.current_date "
+        "FROM simulation_clock WHERE clock_id = 1"
+    ).fetchone()
+    if clock_row and clock_row[0]:
+        try:
+            current_dt = datetime.strptime(clock_row[0], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            current_dt = datetime.now()
+    else:
+        current_dt = datetime.now()
+
+    # Pull all free agents. LEFT JOIN weight_classes + fighter_career
+    # so a fighter missing either row (defensive — shouldn't happen
+    # with the seed) doesn't crash the helper.
+    rows = conn.execute(
+        "SELECT f.fighter_id, f.first_name || ' ' || f.last_name, "
+        "COALESCE(w.name, 'Unknown'), "
+        "COALESCE(fc.record_wins, 0) || '-' || "
+        "COALESCE(fc.record_losses, 0) || '-' || "
+        "COALESCE(fc.record_draws, 0), "
+        "f.date_of_birth "
+        "FROM fighters f "
+        "LEFT JOIN weight_classes w ON w.weight_class_id = f.weight_class_id "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+        "WHERE f.current_promotion_id IS NULL "
+        "AND f.is_active = 1 AND f.is_retired = 0 "
+        "ORDER BY f.fighter_id"
+    ).fetchall()
+
+    out = []
+    for fighter_id, name, wc_name, record_str, dob in rows:
+        # Compute age from date_of_birth + the current sim date.
+        # Same pattern as _check_retirements: tuple comparison on
+        # (month, day) handles leap-year birthdays correctly.
+        try:
+            dob_dt = datetime.strptime(dob, "%Y-%m-%d")
+            age = current_dt.year - dob_dt.year
+            if (current_dt.month, current_dt.day) < (dob_dt.month, dob_dt.day):
+                age -= 1
+        except (ValueError, TypeError):
+            # Defensive: fighter with malformed DOB gets age 0 (will
+            # display as "0" in the UI). Shouldn't happen with the
+            # seed, but a future regen engine or mod tool could produce
+            # one.
+            age = 0
+        out.append((fighter_id, name, wc_name, record_str, age))
+    return out
+
+
+def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
+    """Sign a free agent to a promotion with a new 12-month contract.
+
+    Rules (Task ID 13):
+      - The fighter must currently be a free agent
+        (current_promotion_id IS NULL) and active (is_active=1,
+        is_retired=0). If not, return None with a printed warning.
+        Refuses retired fighters (they can't sign) and already-signed
+        fighters (they're not free agents).
+      - Creates a new contracts row (contract_target_type='fighter',
+        status='active', exclusive_flag=1, start_date=start_date,
+        end_date=start_date + 365 days, salary=salary).
+      - Creates a fighter_contracts row linking the contract to the
+        fighter (contract_type='standard').
+      - Sets the fighter's current_promotion_id = promotion_id.
+      - Writes a news item: "<fighter> signs with <promotion>".
+        topic='signing' so future UI filters can group signing-related
+        news together.
+      - Returns the new contract_id (int) on success, None on failure.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the free agent's fighter_id.
+        promotion_id: the promotion signing them.
+        start_date: ISO date string 'YYYY-MM-DD' for the contract start.
+        salary: contract salary. Default 50000.0 (matches the seed
+            default — no negotiation flow yet, that's a future task).
+
+    Returns:
+        New contract_id (int) on success, None on failure.
+    """
+    # 1. Verify the fighter is a free agent and active. Refuse retired
+    #    fighters (they're not coming back) and already-signed fighters
+    #    (they're not free agents).
+    row = conn.execute(
+        "SELECT is_active, is_retired, current_promotion_id "
+        "FROM fighters WHERE fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    if not row:
+        print(f"Warning: fighter_id={fighter_id} not found.")
+        return None
+    is_active, is_retired, current_promo = row
+    if is_retired == 1:
+        print(f"Warning: fighter_id={fighter_id} is retired — cannot sign.")
+        return None
+    if current_promo is not None:
+        print(f"Warning: fighter_id={fighter_id} is already signed to "
+              f"promotion_id={current_promo}.")
+        return None
+    if is_active != 1:
+        print(f"Warning: fighter_id={fighter_id} is not active — cannot sign.")
+        return None
+
+    # 2. Compute end_date (start_date + 365 days). Mirrors the seed
+    #    default in _seed_default_fighter_contract (seed_data.py).
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    except (ValueError, TypeError) as e:
+        print(f"Warning: invalid start_date {start_date!r}: {e}")
+        return None
+    end_dt = start_dt + timedelta(days=365)
+    end_date = end_dt.strftime("%Y-%m-%d")
+
+    # 3. Insert the contract. contract_target_type='fighter',
+    #    exclusive_flag=1 (mirrors the seed default), status='active'.
+    contract_id = conn.execute(
+        "INSERT INTO contracts (contract_target_type, promotion_id, "
+        "start_date, end_date, salary, exclusive_flag, status) "
+        "VALUES ('fighter', ?, ?, ?, ?, 1, 'active')",
+        (promotion_id, start_date, end_date, salary),
+    ).lastrowid
+
+    # 4. Insert the fighter_contracts row linking the contract to the
+    #    fighter. contract_type='standard' (same as the seed default).
+    conn.execute(
+        "INSERT INTO fighter_contracts (contract_id, fighter_id, "
+        "contract_type) VALUES (?, ?, 'standard')",
+        (contract_id, fighter_id),
+    )
+
+    # 5. Set the fighter's current_promotion_id. This is what
+    #    _pick_matchup (Task 8) and get_fighters_for_display (Task 6)
+    #    filter on — once it's set, the fighter appears in the
+    #    promotion's roster and is eligible for new matchups.
+    conn.execute(
+        "UPDATE fighters SET current_promotion_id = ?, "
+        "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+        (promotion_id, fighter_id),
+    )
+
+    # 6. Write the signing news item. Direct INSERT (same pattern as
+    #    _check_retirements + _vacate_title_on_retirement) to avoid
+    #    pulling in app.write_news from this same module (it would be
+    #    fine since we're already in app.py, but the direct INSERT is
+    #    what the brief specifies and matches the established pattern).
+    fighter_name_row = conn.execute(
+        "SELECT first_name || ' ' || last_name FROM fighters "
+        "WHERE fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    fighter_name = fighter_name_row[0] if fighter_name_row else f"Fighter {fighter_id}"
+
+    promo_name_row = conn.execute(
+        "SELECT name FROM promotions WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchone()
+    promo_name = promo_name_row[0] if promo_name_row else f"Promotion {promotion_id}"
+
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, promotion_id, published_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            src_id,
+            f"{fighter_name} signs with {promo_name}",
+            f"Free agent {fighter_name} has signed a new contract "
+            f"with {promo_name}.",
+            "positive",
+            "signing",
+            fighter_id,
+            promotion_id,
+            start_date,
+        ),
+    )
+
+    return contract_id
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1725,6 +1986,49 @@ class App(tk.Tk):
             self.rankings.column(c, width=w, anchor='w')
         self.rankings.pack(fill='both', expand=True, pady=(6, 0))
 
+        # ----------------------------------------------------------------
+        # Tab 4: Free Agents (new in Task ID 13). Shows fighters with
+        # no current promotion (current_promotion_id IS NULL,
+        # is_active=1, is_retired=0). The player can sign them to the
+        # current promotion via the "Sign Selected" button. The Sign
+        # button calls on_sign_free_agent() which calls
+        # sign_free_agent() with the player's current promotion filter
+        # (or the first promotion if "All Promotions" is selected).
+        #
+        # IMPORTANT: the Free Agents tab does NOT respect the promotion
+        # filter — free agents are not bound to any promotion, so they're
+        # available to sign with ANY promotion. The UI always shows all
+        # free agents regardless of the current_promotion_filter dropdown.
+        # This is intentional and documented (case I of test_free_agency).
+        #
+        # The Treeview item iid is the fighter_id (so the Sign button can
+        # read it directly from tree.selection()[0] instead of doing a
+        # fragile name lookup). The values are the remaining 4 fields:
+        # (name, weight_class, record, age).
+        # ----------------------------------------------------------------
+        free_agents_tab = ttk.Frame(right_notebook)
+        right_notebook.add(free_agents_tab, text="Free Agents")
+        # Top row: label + Sign button.
+        fa_top = ttk.Frame(free_agents_tab)
+        fa_top.pack(fill='x', pady=(0, 4))
+        ttk.Label(fa_top, text="Available Free Agents",
+                  font=("Segoe UI", 11, "bold")).pack(side='left')
+        self.sign_button = ttk.Button(
+            fa_top, text="Sign Selected", command=self.on_sign_free_agent
+        )
+        self.sign_button.pack(side='right')
+        # Treeview. The item iid is the fighter_id (set in refresh_all).
+        self.free_agents = ttk.Treeview(
+            free_agents_tab,
+            columns=('name', 'weight_class', 'record', 'age'),
+            show='headings', height=18
+        )
+        for c, w in [('name', 160), ('weight_class', 110),
+                     ('record', 80), ('age', 50)]:
+            self.free_agents.heading(c, text=c.title())
+            self.free_agents.column(c, width=w, anchor='w')
+        self.free_agents.pack(fill='both', expand=True, pady=(4, 0))
+
     def clear_tree(self, tree):
         for item in tree.get_children():
             tree.delete(item)
@@ -1769,6 +2073,7 @@ class App(tk.Tk):
         self.clear_tree(self.fights)
         self.clear_tree(self.contracts)
         self.clear_tree(self.rankings)
+        self.clear_tree(self.free_agents)
         self.news.delete(0, tk.END)
         self.commentary.delete(0, tk.END)
 
@@ -1823,6 +2128,24 @@ class App(tk.Tk):
             for r in get_rankings_for_display(self.conn, rankings_promo_id):
                 self.rankings.insert('', 'end', values=r)
 
+        # Populate Free Agents tab (Task ID 13). The helper returns
+        # 5-tuples (fighter_id, name, weight_class, record, age). The
+        # fighter_id is used as the Treeview item iid (so the Sign
+        # button can read it directly from tree.selection()[0] without
+        # a fragile name lookup), and the remaining 4 fields are the
+        # display values.
+        #
+        # IMPORTANT: the Free Agents tab does NOT respect the promotion
+        # filter — free agents are not bound to any promotion, so
+        # they're available to sign with ANY promotion. The UI always
+        # shows all free agents regardless of the
+        # current_promotion_filter dropdown. This is intentional and
+        # documented (case I of test_free_agency).
+        for r in get_free_agents_for_display(self.conn):
+            # r is (fighter_id, name, wc, record, age). Use fighter_id
+            # (str'd, since ttk Treeview iids are strings) as the iid.
+            self.free_agents.insert(str(r[0]), 'end', values=r[1:])
+
     def on_promo_filter_change(self, event=None):
         """Handle promotion filter dropdown change (Task ID 6).
 
@@ -1868,6 +2191,99 @@ class App(tk.Tk):
             if resolve_next_fight(self.conn) is None:
                 messagebox.showinfo("Resolve Fight", "No unresolved fights found.")
             self.conn.commit()
+            self.refresh_all()
+        except Exception as e:
+            self.conn.rollback()
+            messagebox.showerror("Error", str(e))
+
+    def on_sign_free_agent(self):
+        """Sign the selected free agent to the player's promotion (Task ID 13).
+
+        Reads the selected Treeview item's iid (which is the fighter_id
+        — see refresh_all()), determines the player's promotion (the
+        current_promotion_filter if set, else the first promotion in
+        the DB), reads the current sim date for the contract start, and
+        calls sign_free_agent(). On success, commits, refreshes the UI,
+        and shows a confirmation messagebox. On failure (fighter not a
+        free agent, retired, etc.), shows an error messagebox and rolls
+        back.
+
+        The fighter_id-as-iid approach is cleaner than looking up the
+        fighter by name (which would be fragile if names aren't unique
+        — see worklog decision D1). The Treeview stores display values
+        (name, wc, record, age) but the iid is the fighter_id.
+        """
+        selection = self.free_agents.selection()
+        if not selection:
+            messagebox.showinfo("Sign Free Agent", "Select a free agent first.")
+            return
+        # The iid is the fighter_id (str'd by Tkinter). Convert back to int.
+        try:
+            fighter_id = int(selection[0])
+        except (ValueError, TypeError):
+            messagebox.showerror(
+                "Sign Free Agent",
+                f"Could not parse fighter_id from selection {selection!r}.",
+            )
+            return
+
+        # Determine the player's promotion. For now, use the current
+        # promotion filter (if set), else the first promotion. A future
+        # task will add a proper "player promotion" concept (Task 25 —
+        # rival promotion AI implies the player IS one of the
+        # promotions, not "all promotions").
+        player_promo_id = self.current_promotion_filter
+        if player_promo_id is None:
+            first_promo = self.conn.execute(
+                "SELECT promotion_id FROM promotions ORDER BY promotion_id LIMIT 1"
+            ).fetchone()
+            player_promo_id = first_promo[0] if first_promo else None
+        if player_promo_id is None:
+            messagebox.showerror(
+                "Sign Free Agent",
+                "No promotion available to sign to.",
+            )
+            return
+
+        # Read the current sim date for the contract start. Uses
+        # get_clock (line 17) — note this is affected by the pre-existing
+        # D5 current_date quirk (bare SELECT current_date resolves to
+        # the built-in date function), but for the UI this is
+        # acceptable. The qualified-column fix is only applied to the
+        # new get_free_agents_for_display helper.
+        clock_row = get_clock(self.conn)
+        start_date = clock_row[0] if clock_row else None
+        if not start_date:
+            messagebox.showerror(
+                "Sign Free Agent",
+                "Could not read current sim date from simulation_clock.",
+            )
+            return
+
+        # Get the fighter's name for the confirmation messagebox.
+        fighter_name_row = self.conn.execute(
+            "SELECT first_name || ' ' || last_name FROM fighters WHERE fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()
+        fighter_name = (fighter_name_row[0]
+                        if fighter_name_row
+                        else f"Fighter {fighter_id}")
+
+        try:
+            contract_id = sign_free_agent(
+                self.conn, fighter_id, player_promo_id, start_date
+            )
+            if contract_id is None:
+                messagebox.showerror(
+                    "Sign Free Agent",
+                    f"Could not sign {fighter_name} (see console for details).",
+                )
+                return
+            self.conn.commit()
+            messagebox.showinfo(
+                "Sign Free Agent",
+                f"Signed {fighter_name} to a 12-month contract.",
+            )
             self.refresh_all()
         except Exception as e:
             self.conn.rollback()

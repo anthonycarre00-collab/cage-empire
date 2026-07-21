@@ -171,6 +171,167 @@ def _check_retirements(conn, current_date):
     return retired
 
 
+# ----------------------------------------------------------------
+# Contract expiry (Task ID 13).
+#
+# When a fighter's contract end_date passes the current sim date,
+# the contract transitions to 'expired' and the fighter becomes a
+# free agent (current_promotion_id = NULL). This is the talent-
+# circulation foundation for:
+#   - Task 25 (rival promotion AI) — RFL signs free agents.
+#   - Task 14 (regen) — new generated fighters enter as free agents.
+#   - The "playable forever" loop — without free agency the roster
+#     is static.
+#
+# Rules:
+#   - For each contract with status='active' AND end_date < current_date:
+#     (a) Set contracts.status = 'expired', contracts.updated_at =
+#         CURRENT_TIMESTAMP.
+#     (b) If the contract is a fighter contract
+#         (contract_target_type='fighter' AND the linked fighter is
+#         NOT retired), set the fighter's current_promotion_id = NULL
+#         and is_active = 1 (they're still active, just unsigned). The
+#         is_retired check is important: a retired fighter whose
+#         contract also expired on this tick was retired FIRST by
+#         _check_retirements (which runs before this function in
+#         run_tick). Setting current_promotion_id = NULL on a retired
+#         fighter would be misleading — they're not a free agent,
+#         they're retired. So we skip that update for retired fighters.
+#     (c) For fighter contracts (non-retired), write a news item:
+#         "<fighter> becomes a free agent".
+#   - Staff / broadcast contracts also expire (status -> 'expired')
+#     but they don't have a current_promotion_id column on the
+#     fighters table — they're in the `staff` table — so no fighter
+#     update happens, and no news item is written for them (the
+#     player-facing UI doesn't surface staff contract expiry).
+#   - Returns the list of (contract_id, fighter_id_or_None) tuples
+#     that expired (fighter_id is None for staff/broadcast contracts,
+#     or for fighter contracts whose fighter is already retired).
+#
+# This function runs on every tick (called from run_tick AFTER
+# _check_retirements, so a retired-and-contract-expiring fighter is
+# handled correctly). It does NOT commit — the caller commits.
+# ----------------------------------------------------------------
+
+def _check_contract_expiry(conn, current_date):
+    """Expire contracts past their end_date and set fighters as free agents.
+
+    Rules (Task ID 13):
+      - For each contract with status='active' AND end_date < current_date:
+        (a) Set contracts.status = 'expired', contracts.updated_at =
+            CURRENT_TIMESTAMP.
+        (b) If the contract is a fighter contract
+            (contract_target_type='fighter') AND the linked fighter is
+            NOT already retired, set the fighter's current_promotion_id
+            = NULL (they become a free agent). Also set is_active = 1
+            (they're still active, just unsigned — defensive in case
+            they were marked inactive for some other reason). Retired
+            fighters are skipped: they're not free agents, they're
+            retired.
+        (c) For fighter contracts whose fighter is not retired, write a
+            news item: "<fighter> becomes a free agent". topic='signing'
+            (so future UI filters can group signing-related news
+            together), fighter_id set, published_at=current_date.
+      - Staff/broadcast contracts (contract_target_type='staff' or
+        'broadcast') also expire but don't set current_promotion_id
+        (staff don't have that column) and don't get a news item.
+      - Returns the list of (contract_id, fighter_id_or_None) tuples
+        that expired. fighter_id is None for staff/broadcast contracts
+        and for fighter contracts whose fighter is already retired.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        current_date: ISO date string 'YYYY-MM-DD' (the current sim date).
+
+    Returns:
+        List of (contract_id, fighter_id) tuples for contracts that
+        expired on this tick. fighter_id is None for staff/broadcast
+        contracts and for fighter contracts whose fighter is already
+        retired.
+    """
+    # Fetch active contracts past their end_date. LEFT JOIN
+    # fighter_contracts to pick up the fighter_id (NULL for staff/
+    # broadcast contracts). LEFT JOIN fighters to get the name +
+    # is_retired flag (we only want to set current_promotion_id=NULL
+    # for non-retired fighters).
+    rows = conn.execute(
+        "SELECT c.contract_id, c.contract_target_type, "
+        "fc.fighter_id, f.first_name, f.last_name, f.is_retired "
+        "FROM contracts c "
+        "LEFT JOIN fighter_contracts fc ON fc.contract_id = c.contract_id "
+        "LEFT JOIN fighters f ON f.fighter_id = fc.fighter_id "
+        "WHERE c.status = 'active' AND c.end_date < ?",
+        (current_date,),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Get or create the "System Feed" news source (same pattern as
+    # app.write_news and _check_retirements). The seeded DB already
+    # has this source.
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    expired = []
+    for contract_id, target_type, fighter_id, first_name, last_name, is_retired in rows:
+        # (a) Mark the contract as expired.
+        conn.execute(
+            "UPDATE contracts SET status = 'expired', "
+            "updated_at = CURRENT_TIMESTAMP WHERE contract_id = ?",
+            (contract_id,),
+        )
+
+        # (b) For fighter contracts whose fighter is NOT retired, set
+        # current_promotion_id = NULL (free agent). is_retired check
+        # is critical: a retired fighter whose contract also expired
+        # on this tick was retired FIRST by _check_retirements (which
+        # runs before this function in run_tick). Setting
+        # current_promotion_id = NULL on a retired fighter would be
+        # misleading — they're not a free agent, they're retired.
+        if target_type == 'fighter' and fighter_id is not None and is_retired != 1:
+            conn.execute(
+                "UPDATE fighters SET current_promotion_id = NULL, "
+                "is_active = 1, updated_at = CURRENT_TIMESTAMP "
+                "WHERE fighter_id = ?",
+                (fighter_id,),
+            )
+            # (c) Write the free-agency news item.
+            full_name = f"{first_name} {last_name}"
+            conn.execute(
+                "INSERT INTO news_items (news_source_id, headline, body, "
+                "sentiment, topic, fighter_id, published_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    src_id,
+                    f"{full_name} becomes a free agent",
+                    f"{full_name}'s contract has expired and they are now "
+                    f"a free agent, available to sign with any promotion.",
+                    "neutral",
+                    "signing",
+                    fighter_id,
+                    current_date,
+                ),
+            )
+            expired.append((contract_id, fighter_id))
+        else:
+            # Staff/broadcast contract, OR fighter contract for an
+            # already-retired fighter. No fighter update, no news item.
+            expired.append((contract_id, None))
+
+    return expired
+
+
 def run_tick(conn, tick_type="day", steps=1):
     for _ in range(steps):
         row = conn.execute("SELECT current_date, current_day, current_week, current_month, current_year FROM simulation_clock WHERE clock_id=1").fetchone()
@@ -194,6 +355,20 @@ def run_tick(conn, tick_type="day", steps=1):
         if retired:
             print(f"  Retired {len(retired)} fighter(s) on "
                   f"{dt.strftime('%Y-%m-%d')}: {retired}")
+        # Task ID 13: check for contract expiry on every tick. Runs
+        # AFTER _check_retirements so a retired-and-contract-expiring
+        # fighter is handled correctly: _check_retirements sets
+        # is_retired=1 first, then _check_contract_expiry sees
+        # is_retired=1 and skips the current_promotion_id=NULL update
+        # (they're retired, not a free agent). The function does NOT
+        # commit — the conn.commit() below covers both the clock
+        # UPDATE and any contract-expiry side effects (contracts
+        # UPDATE, fighters UPDATE, news_items INSERTs). Prints a one-
+        # line log per tick if any contracts expired.
+        expired = _check_contract_expiry(conn, dt.strftime("%Y-%m-%d"))
+        if expired:
+            print(f"  Expired {len(expired)} contract(s) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {expired}")
         conn.commit()
 
 def main():
