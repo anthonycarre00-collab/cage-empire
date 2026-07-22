@@ -5730,6 +5730,24 @@ class App(tk.Tk):
             _register_rivalries()
         except ImportError:
             pass  # rivalries.py not available — legacy behavior
+        # v3.3.0 (Task 24): register the punditry subscribers on the
+        # global event bus. The punditry system writes matchup analyses
+        # (the pundit's pre-fight prediction for a fighter pair) to the
+        # matchup_analyses table in response to FIGHT_RESOLVED events
+        # (CONVENTIONS §15.4 — additive, no inline side effects added
+        # to resolve_next_fight). The analysis is generated
+        # retroactively after the fight resolves — it describes the
+        # pre-fight matchup, written for the news feed so the player
+        # sees "here's what the pundits thought going in." All analysis
+        # text uses voice descriptors per CONVENTIONS §14 — no raw
+        # numbers in any analysis_text, style_edge, or upset_risk
+        # string. Lazy import for the same reasons as news.py /
+        # social.py / rivalries.py above.
+        try:
+            from punditry import register_subscribers as _register_punditry
+            _register_punditry()
+        except ImportError:
+            pass  # punditry.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

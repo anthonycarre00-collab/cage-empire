@@ -505,9 +505,57 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.2.0"
+CODE_SCHEMA_VERSION = "3.3.0"
 
 
+# v3.3.0 (Task 24 — Punditry / matchup analysis) — MINOR bump. Adds the
+# new `matchup_analyses` table. Per CONVENTIONS §1.1, adding a new table
+# is a MINOR bump. Per §5 (one table-group per task), this task adds
+# ONLY the `matchup_analyses` table — it is a single logical group
+# (Conflict + Anticipation pillars of the Design Law §13) that captures
+# the pundit's pre-fight prediction for a fighter pair: predicted
+# winner + method, confidence, style edge, excitement score, upset
+# risk, and a full prose analysis_text (voice-layer-driven per §14 —
+# NO raw attribute values, NO digit characters anywhere in the text).
+#
+# The brief mentioned 3 tables (pundit_segments + matchup_analysis +
+# betting_odds), but per CONVENTIONS §5 (one table-group per task),
+# this task adds ONLY `matchup_analyses`. The other two tables
+# (pundit_segments for in-fight pundit commentary, betting_odds for
+# the sportsbook line) are reserved for a follow-up task — the
+# analysis_text column already carries the pundit's voice; a future
+# task can add pundit_segments for round-by-round commentary and
+# betting_odds for the implied probability line.
+#
+# Schema changes in this task:
+#   1. New `matchup_analyses` table — 13 columns. One row per
+#      (fighter_a_id, fighter_b_id, fight_id) triple (UNIQUE). The
+#      analysis is generated retroactively after a fight resolves
+#      (the FIGHT_RESOLVED subscriber writes the analysis as the
+#      pundit's pre-fight prediction — the analysis describes the
+#      pre-fight matchup, written after the fight for the news feed
+#      so the player sees "here's what the pundits thought going
+#      in"). predicted_winner + predicted_method are TEXT (fighter
+#      full name + method label, NO raw numbers). confidence_pct +
+#      excitement_score are 0-100 (CHECK BETWEEN 0 AND 100). style_edge
+#      + upset_risk are TEXT (voice-layer-driven, NO raw numbers).
+#      analysis_text is the full prose analysis (voice-layer-driven,
+#      NO raw numbers per §14).
+#
+# Code changes:
+#   - New `src/punditry.py` — entirely event-bus-driven (CONVENTIONS
+#     §15.4). Subscribes to FIGHT_RESOLVED (_process_scheduled_fight).
+#     The subscriber generates a matchup analysis as the pundit's pre-
+#     fight prediction (using the pre-fight state — the analysis is
+#     written retroactively after the fight resolves so it appears in
+#     the news feed). Writes voice-layer-driven analysis_text
+#     (CONVENTIONS §14 — no raw numbers in any text).
+#   - Reader function: get_matchup_analysis(conn, fighter_a_id,
+#     fighter_b_id, fight_id) returns the analysis row for a fight
+#     (or None). Used by a future UI tab to surface pundit takes.
+#
+# Migration name: v3_3_0_add_matchup_analyses.
+#
 # v3.2.0 (Task 22 — Rivalries) — MINOR bump. Adds the new `rivalries`
 # table (one row per pairwise rivalry between two fighters). Per
 # CONVENTIONS §1.1, adding a new table is a MINOR bump. Per §5 (one
@@ -1939,6 +1987,69 @@ CREATE TABLE IF NOT EXISTS rivalries (
     updated_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_a_id, fighter_b_id)
 );
+
+-- ----------------------------------------------------------------
+-- matchup_analyses (added v3.3.0, Task 24 — Punditry / matchup
+-- analysis). One row per (fighter_a_id, fighter_b_id, fight_id)
+-- triple (UNIQUE — the pundit's pre-fight prediction for a single
+-- scheduled fight). Generated retroactively by src/punditry.py
+-- (event-bus subscriber for FIGHT_RESOLVED — the analysis describes
+-- the pre-fight matchup, written after the fight so it appears in
+-- the news feed as "here's what the pundits thought going in").
+--
+-- The analysis is the pundit's take on the matchup:
+--   predicted_winner     — fighter full name (TEXT, NO raw numbers)
+--   predicted_method     — "KO/TKO" / "submission" / "decision" /
+--                          "KO or submission" (TEXT, method label)
+--   confidence_pct       — 0-100 INTEGER (the only numeric column
+--                          the player sees — see D2 in the worklog;
+--                          represents pundit confidence, NOT a
+--                          fighter attribute value, so §14 doesn't
+--                          forbid it. CHECK BETWEEN 0 AND 100.)
+--   style_edge           — voice-layer-driven phrase (e.g.,
+--                          "the striker has the edge on the feet")
+--                          — NO raw attribute numbers per §14.
+--   excitement_score     — 0-100 INTEGER (CHECK BETWEEN 0 AND 100).
+--                          Same §14 carve-out as confidence_pct —
+--                          the pundit's excitement rating, not a
+--                          fighter attribute.
+--   upset_risk           — voice-layer-driven phrase (e.g.,
+--                          "real upset risk" / "the favorite should
+--                          hold" / "upset alert") — NO raw numbers.
+--   analysis_text        — full prose analysis (voice-layer-driven,
+--                          NO raw numbers per §14). The pundit's
+--                          pre-fight breakdown using voice.
+--                          describe_career_stage + voice.
+--                          describe_attribute descriptors.
+--
+-- fighter_a_id + fighter_b_id are NOT NULL (every analysis involves
+-- two fighters). fight_id is nullable (a future UI might let the
+-- player request a pundit analysis for a hypothetical matchup; for
+-- now, every analysis is tied to a real fight via FIGHT_RESOLVED).
+-- event_id is nullable + denormalized for convenience (the news
+-- feed can filter analyses by event without a JOIN).
+--
+-- UNIQUE (fighter_a_id, fighter_b_id, fight_id) — the pundit only
+-- writes one analysis per scheduled fight. If the same pair rematches
+-- in a later fight (different fight_id), a new analysis row is
+-- written (so the player sees the pundit's evolving take).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS matchup_analyses (
+    analysis_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_a_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    fighter_b_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    fight_id            INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,
+    event_id            INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    predicted_winner    TEXT,
+    predicted_method    TEXT,
+    confidence_pct      INTEGER NOT NULL DEFAULT 50 CHECK (confidence_pct BETWEEN 0 AND 100),
+    style_edge          TEXT,
+    excitement_score    INTEGER NOT NULL DEFAULT 50 CHECK (excitement_score BETWEEN 0 AND 100),
+    upset_risk          TEXT,
+    analysis_text       TEXT NOT NULL,
+    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fighter_a_id, fighter_b_id, fight_id)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2496,6 +2607,33 @@ def _migrate_v3_2_0_add_rivalries(conn):
         )
 
 
+def _migrate_v3_3_0_add_matchup_analyses(conn):
+    """Task 24 — Punditry / matchup analysis. Adds the matchup_analyses table.
+
+    Migration name: v3_3_0_add_matchup_analyses. Idempotent — checks
+    for the table's existence before creating.
+    """
+    if not _has_table(conn, "matchup_analyses"):
+        conn.execute(
+            "CREATE TABLE matchup_analyses (\n"
+            "    analysis_id         INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_a_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    fighter_b_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    fight_id            INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,\n"
+            "    event_id            INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    predicted_winner    TEXT,\n"
+            "    predicted_method    TEXT,\n"
+            "    confidence_pct      INTEGER NOT NULL DEFAULT 50 CHECK (confidence_pct BETWEEN 0 AND 100),\n"
+            "    style_edge          TEXT,\n"
+            "    excitement_score    INTEGER NOT NULL DEFAULT 50 CHECK (excitement_score BETWEEN 0 AND 100),\n"
+            "    upset_risk          TEXT,\n"
+            "    analysis_text       TEXT NOT NULL,\n"
+            "    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_a_id, fighter_b_id, fight_id)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2508,6 +2646,7 @@ MIGRATIONS = [
     ("v3_0_0_add_finance_transactions","3.0.0", _migrate_v3_0_0_add_finance_transactions),
     ("v3_1_0_add_social_posts",    "3.1.0", _migrate_v3_1_0_add_social_posts),
     ("v3_2_0_add_rivalries",       "3.2.0", _migrate_v3_2_0_add_rivalries),
+    ("v3_3_0_add_matchup_analyses","3.3.0", _migrate_v3_3_0_add_matchup_analyses),
 ]
 
 

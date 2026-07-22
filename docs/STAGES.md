@@ -1070,9 +1070,114 @@ bodies.
 **Dependencies:** Task 19 (voice layer), Task 14.8 (fight_rounds
 for round-level commentary).
 
-### Task ID 24 — Punditry / matchup analysis
+### Task ID 24 — Punditry / matchup analysis — **DONE** (schema 3.2.0 → 3.3.0 MINOR)
 
-**Brief (needs expansion).** Add `pundit_segments` + `matchup_analysis`
+**Status:** Signed off (pending supervisor verification). Schema
+version 3.3.0 (MINOR bump — new table). 1 new table (`matchup_
+analyses`, 13 columns). Migration `v3_3_0_add_matchup_analyses`.
+
+**What landed:** New `src/punditry.py` — entirely event-bus-driven
+(CONVENTIONS §15.4 — subscribes to FIGHT_RESOLVED, no new inline
+side effects in `resolve_next_fight`). The subscriber generates a
+matchup analysis retroactively after the fight resolves (per the
+brief: the analysis describes the pre-fight matchup, written after
+the fight for the news feed so the player sees "here's what the
+pundits thought going in"). All analysis text uses voice descriptors
+(CONVENTIONS §14 — no raw digit characters in any player-facing
+string: predicted_winner, predicted_method, style_edge, upset_risk,
+analysis_text).
+
+**Implementation:**
+- `generate_matchup_analysis(conn, fighter_a_id, fighter_b_id,
+  fight_id=None, event_id=None, rng=None)` — the core function.
+  Compares both fighters' attributes using voice descriptors,
+  predicts winner/method, computes excitement score + upset risk,
+  writes a row to `matchup_analyses`. Returns the analysis dict.
+  - Predicted winner: avg of 5 key attributes (punch_power, cardio,
+    fight_iq, chin, takedown_offense) with Gaussian noise (σ=10)
+    for pundit uncertainty.
+  - Predicted method: based on both fighters' style archetypes
+    (Striker vs Striker → "KO/TKO"; Grappler vs Striker →
+    "submission or KO"; Wrestler vs anyone → "decision";
+    Submission Specialist → "submission"; Brawler involved →
+    "KO/TKO"; Balanced involved → "decision or late finish").
+  - Confidence: 50-90% based on attribute gap (linear interp).
+  - Style edge: voice-layer phrase identifying the strongest
+    domain (feet / ground / clinch / cardio) for the favorite
+    ("the striker has the edge on the feet" / "the wrestler
+    dominates on the ground").
+  - Excitement score: avg of both fighters' aggression +
+    punch_power + killer_instinct.
+  - Upset risk: high/moderate/low based on underdog's potential
+    + attribute gap.
+  - Analysis text: 4 body template variants for variety, using
+    voice.describe_career_stage + voice._tier_for + local
+    _TIER_ADJECTIVE map for noun-phrase descriptors.
+- `_process_scheduled_fight(conn, event)` — FIGHT_RESOLVED
+  subscriber. Defensive (silently returns on missing fighter IDs).
+- `register_subscribers()` — registers the FIGHT_RESOLVED
+  subscriber on the global event bus.
+- Reader functions: `get_matchup_analysis(conn, a, b, fight_id=None)`
+  returns the analysis row for a fighter pair (order-independent);
+  `get_recent_analyses(conn, fighter_id, limit=10)` returns recent
+  analyses involving the fighter; `get_event_analyses(conn, event_id)`
+  returns all analyses for an event.
+
+**Schema decisions:**
+- D1 (one table-group per task, §5): the brief mentioned 3 tables
+  (`pundit_segments` + `matchup_analysis` + `betting_odds`), but
+  per CONVENTIONS §5 this task adds ONLY `matchup_analyses` (one
+  logical group). The other two tables are reserved for follow-up
+  tasks: `pundit_segments` for in-fight round-by-round pundit
+  commentary (would need fight_rounds data, which exists); `betting_
+  odds` for the sportsbook implied-probability line. The analysis_
+  text column already carries the pundit's voice, so the single
+  table covers the core "pundit take" requirement.
+- D2 (confidence_pct + excitement_score as INTEGER columns): §14
+  says "no raw attribute values, potential numbers, or internal
+  ratings appear in the player-facing UI." confidence_pct and
+  excitement_score are NOT fighter attribute values — they're the
+  PUNDIT's own rating of the matchup. The pundit is a character in
+  the world; his confidence/excitement numbers are like a bookmaker's
+  odds — they ARE the feature, not raw sim data. The analysis_text
+  column uses word forms ("Confidence: moderate" / "Expect
+  fireworks") so the player-facing PROSE has no digit characters
+  per §14. The INTEGER columns are for sorting/filtering in the UI
+  (e.g., "show me high-confidence predictions") — they don't appear
+  as raw numbers in any text the player reads.
+- D3 (predicted_method labels): "KO/TKO" / "submission" / "decision"
+  / "submission or KO" / "decision or late finish". No digit
+  characters (§14). The "/" in "KO/TKO" is a stylistic choice (the
+  brief uses "KO/TKO" verbatim).
+- D4 (pre-fight vs post-fight timing): FIGHT_RESOLVED fires AFTER
+  resolve_next_fight updates fighter_career (record_wins/losses,
+  streaks). The analysis reflects the slightly-post-fight career
+  state (one extra win/loss on the streak). This is acceptable per
+  the brief — "the analysis describes the pre-fight matchup,
+  written after the fight." The fighter_attributes table is NOT
+  updated by resolve_next_fight, so attribute descriptors reflect
+  the true pre-fight state.
+- D5 (noun-phrase descriptors for grammar): the brief example uses
+  "Vale's experience should carry him, but Reed's cardio could
+  flip the script" — simple noun slots. voice.describe_attribute
+  returns random variants, some of which are verb phrases
+  ("recovers at a normal pace" / "can be taken down") that would
+  be ungrammatical in "X's {descriptor} should carry him" slots.
+  Solution: a local _attribute_noun_phrase helper that uses
+  voice._tier_for for tier classification + a _TIER_ADJECTIVE map
+  for pundit adjectives ("elite power" / "questionable takedown
+  defense" / "shaky chin"). The voice layer is still being used
+  (via _tier_for) — just not via describe_attribute's random
+  variant selection. The opening sentence top-2 attribute slots
+  also use _attribute_noun_phrase for grammatical correctness.
+
+Acceptance test: `scripts/test_punditry.py` — 78 sub-checks across
+9 cases (A schema, B generate_matchup_analysis, C no raw numbers,
+D event bus integration, E predicted winner uses voice, F excitement
+score range, G style edge uses voice, H Design Law, X bonus —
+seeded title fight smoke check). All PASS.
+
+**Original brief.** Add `pundit_segments` + `matchup_analysis`
 + `betting_odds` tables. When two fighters are paired, generate a
 matchup analysis with predicted winner, method, main-event score,
 prelim score, style edge, excitement score, upset risk. Pundits

@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-24 — Task 22 (rivalries).
-> **Current schema version:** 3.2.0 (48 tables, +1 new table this task).
+> **Last revised:** 2026-07-25 — Task 24 (punditry / matchup analysis).
+> **Current schema version:** 3.3.0 (49 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -161,8 +161,8 @@ historical fights have no round data.
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
 | `scouting_reports` | yes | no | no | `MISSING` — Task ID 18 (Stage 3) |
-| `betting_odds` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
-| `matchup_analysis` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
+| `betting_odds` | yes | no | no | `MISSING` — reserved for a follow-up to Task ID 24 (Stage 4). Task 24 added `matchup_analyses` only (one table-group per CONVENTIONS §5). |
+| `matchup_analyses` | yes | no | yes (Task 24) | `OK` — v3.3.0 added 13-column matchup_analyses table (predicted_winner + predicted_method + confidence_pct 0-100 + style_edge + excitement_score 0-100 + upset_risk + analysis_text NOT NULL). UNIQUE (fighter_a_id, fighter_b_id, fight_id). Written by src/punditry.py event-bus subscriber (FIGHT_RESOLVED). NO raw numbers in any text field per §14 (confidence_pct + excitement_score are stored as INTEGER for sorting, but the analysis_text uses word forms). |
 
 ---
 
@@ -173,7 +173,7 @@ historical fights have no round data.
 | `news_sources` | yes (rich: credibility, sensationalism, bias, regional_reach, reliability, frequency) | yes (matches spec) | yes | `OK` |
 | `news_items` | yes (rich: + region_id) | yes (thin: missing region_id) | yes (thin) | `THIN` — missing region_id column. News items now written by: fight resolution (Task 3), title changes (Task 11), retirement (Task 12), title vacation (Task 12), contract expiry (Task 13), free agent signing (Task 13), new prospect (Task 14). |
 | `commentary_segments` | yes | yes | yes | `OK` — enriched with title-change suffix (Task 11) |
-| `pundit_segments` | yes | no | no | `MISSING` — Task ID 24 (Stage 4) |
+| `pundit_segments` | yes | no | no | `MISSING` — reserved for a follow-up to Task ID 24 (Stage 4). Task 24 added `matchup_analyses` only (one table-group per CONVENTIONS §5); the analysis_text column carries the pundit's voice. A future task can add pundit_segments for round-by-round in-fight commentary. |
 
 ---
 
@@ -418,8 +418,8 @@ This is a minor convention deviation. The tests are:
 | Contracts | 4 | 0 | 4 | 0 |
 | Events & fights | 5 | 4 | 4 | 1 table (fight_rounds still missing) |
 | Career & medical | 2 | 0 | 0 | 2 tables (Task 15-16) |
-| Scouting & analysis | 3 | 0 | 0 | 3 tables (Task 18, 24) |
-| News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, Task 24) |
+| Scouting & analysis | 3 | 0 | 1 (matchup_analyses Task 24) | 2 tables (scouting_reports → Task 18, betting_odds → follow-up) |
+| News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, follow-up to Task 24) |
 | Rankings & titles | 2 | 0 | 2 | 0 |
 | Social & rivalries | 3 | 0 | 2 (social_posts Task 21, rivalries Task 22) | 1 table (social_accounts deliberately skipped) |
 | Regen & name pools | 10 | 0 | 3 (consolidated) | 0 tables (7 consolidated/dropped by design — see §M) |
@@ -428,7 +428,7 @@ This is a minor convention deviation. The tests are:
 | Portraits & art | 2 | 0 | 0 | 2 tables (Task 29) |
 | Finances | 1 | 0 | 0 | 1 table (Task 20) |
 | Modding | 1 | 0 | 0 | 1 table (Task 29) |
-| **TOTAL TABLES** | **~60** | **24** | **48** (47 user + 1 sqlite_sequence) | **~12 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, matchup_analysis, fighter_bios variants, hall_of_fame polish, etc.) |
+| **TOTAL TABLES** | **~60** | **24** | **49** (48 user + 1 sqlite_sequence) | **~11 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, fighter_bios variants, hall_of_fame polish, etc.) |
 | **TOTAL THIN COLUMNS** | — | — | — | **~67 columns** (geography 20 + promotions/gyms 16 + fighters 14 + staff 17) |
 | **WRONG (critical)** | — | — | — | **fighter_attributes (4/24) + fighter_personality (3/17)** — 34 columns missing |
 
@@ -443,7 +443,9 @@ This is a minor convention deviation. The tests are:
   fighter_bios + hall_of_fame (16.5), weight_cut_log (17),
   fighter_descriptors (19), scouting_reports (18),
   finance_transactions (20), social_posts (21), rivalries (22).
-- 27 acceptance tests, 1600+ sub-checks, all passing.
+- Built v3.3.0 (Task 24): 49 tables (48 user + 1 sqlite_sequence).
+  +1 from Task 24: matchup_analyses (punditry / matchup analysis).
+- 28 acceptance tests, 1700+ sub-checks, all passing.
 
 **Most critical gaps (priority order):**
 1. **fighter_attributes + fighter_personality extension** (Z.1) —

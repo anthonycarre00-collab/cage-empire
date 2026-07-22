@@ -8,6 +8,82 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task 24 — Punditry / matchup analysis, schema 3.2.0 → 3.3.0 MINOR)
+- New `matchup_analyses` table — the pundit's pre-fight prediction
+  for a fighter pair. 13 columns: analysis_id PK, fighter_a_id +
+  fighter_b_id FKs (NOT NULL ON DELETE CASCADE), fight_id (nullable
+  FK → fights ON DELETE SET NULL), event_id (nullable FK → events
+  ON DELETE SET NULL — denormalized for convenience), predicted_
+  winner (TEXT — fighter full name, NO raw numbers), predicted_
+  method (TEXT — "KO/TKO" / "submission" / "decision" /
+  "submission or KO" / "decision or late finish"), confidence_pct
+  (INTEGER 0-100 DEFAULT 50 CHECK BETWEEN 0 AND 100 — the pundit's
+  confidence rating, NOT a fighter attribute), style_edge (TEXT —
+  voice-layer-driven phrase like "the striker has the edge on the
+  feet"), excitement_score (INTEGER 0-100 DEFAULT 50 CHECK BETWEEN
+  0 AND 100 — the pundit's excitement rating), upset_risk (TEXT —
+  voice-layer-driven phrase like "upset alert — real risk"),
+  analysis_text (TEXT NOT NULL — full prose analysis using voice
+  descriptors, NO raw numbers per CONVENTIONS §14), created_at.
+  UNIQUE (fighter_a_id, fighter_b_id, fight_id) — the pundit only
+  writes one analysis per scheduled fight (a rematch = new analysis
+  with a different fight_id). Migration `v3_3_0_add_matchup_
+  analyses`. Per CONVENTIONS §5 (one table-group per task), this
+  task adds ONLY the `matchup_analyses` table — the brief mentioned
+  3 tables (pundit_segments + matchup_analysis + betting_odds) but
+  the other two are reserved for follow-up tasks.
+- New `src/punditry.py` — entirely event-bus-driven (subscribes to
+  FIGHT_RESOLVED per CONVENTIONS §15.4):
+  * `generate_matchup_analysis(conn, fighter_a_id, fighter_b_id,
+    fight_id=None, event_id=None, rng=None)` — the core function.
+    Compares both fighters' attributes using voice descriptors,
+    predicts winner/method, computes excitement score + upset risk,
+    writes a row to matchup_analyses. Returns the analysis dict.
+    Predicted winner = avg of 5 key attributes (punch_power, cardio,
+    fight_iq, chin, takedown_offense) with Gaussian noise (σ=10)
+    for pundit uncertainty. Predicted method = based on both
+    fighters' style archetypes (Striker vs Striker → "KO/TKO",
+    Grappler vs Striker → "submission or KO", Wrestler vs anyone →
+    "decision", Submission Specialist → "submission", etc.).
+    Confidence = 50-90% based on attribute gap (linear interp).
+    Style edge = voice-layer phrase identifying the strongest
+    domain (feet / ground / clinch / cardio) for the favorite.
+    Excitement = avg of both fighters' aggression + punch_power +
+    killer_instinct. Upset risk = high/moderate/low based on
+    underdog's potential + attribute gap.
+  * `_process_scheduled_fight(conn, event)` — FIGHT_RESOLVED
+    subscriber. Generates the analysis retroactively after the
+    fight resolves (per the brief: the analysis describes the
+    pre-fight matchup, written after the fight for the news feed).
+    Uses a fresh RNG per call for variety.
+  * `register_subscribers()` — registers the FIGHT_RESOLVED
+    subscriber on the global event bus.
+  * `get_matchup_analysis(conn, a, b, fight_id=None)` — reader.
+    Returns the analysis row for a fighter pair (order-independent).
+  * `get_recent_analyses(conn, fighter_id, limit=10)` — reader.
+    Returns recent analyses involving the fighter (most recent
+    first).
+  * `get_event_analyses(conn, event_id)` — reader. Returns all
+    analyses for an event (used by post-event news feed).
+- Voice layer (§14) integration: all analysis text uses voice.
+  describe_career_stage for fighter career stage, voice._tier_for
+  for attribute tier classification, plus a local _TIER_ADJECTIVE
+  map for noun-phrase descriptors ("elite power" / "questionable
+  takedown defense" / "shaky chin"). 4 body template variants for
+  analysis_text variety. NO raw digit characters in any
+  player-facing string (predicted_winner, predicted_method,
+  style_edge, upset_risk, analysis_text).
+- Wired `punditry.register_subscribers()` into `app.py`
+  `App.__init__` (same lazy-import pattern as news.py / social.py /
+  rivalries.py — keeps a missing punditry.py from breaking the app).
+  No changes to `resolve_next_fight` (§15.4 — additive, event bus
+  is not a replacement).
+- Acceptance test: `scripts/test_punditry.py` — 78 sub-checks
+  across 9 cases (A schema, B generate_matchup_analysis, C no raw
+  numbers, D event bus integration, E predicted winner uses voice,
+  F excitement score range, G style edge uses voice, H Design Law,
+  X bonus — seeded title fight smoke check). All PASS.
+
 ### Added (Task 22 — Rivalries, schema 3.1.0 → 3.2.0 MINOR)
 - New `rivalries` table — pairwise rivalries between two fighters.
   16 columns: rivalry_id PK, fighter_a_id + fighter_b_id FKs (NOT
