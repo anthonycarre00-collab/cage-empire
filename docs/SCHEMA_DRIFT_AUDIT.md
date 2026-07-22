@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-23 — Task 20 (finance system).
-> **Current schema version:** 3.0.0 (46 tables, +1 new table this task).
+> **Last revised:** 2026-07-23 — Task 21 (social media + beefs).
+> **Current schema version:** 3.1.0 (47 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -190,9 +190,9 @@ historical fights have no round data.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `social_posts` | yes | no | no | `MISSING` — Task ID 21 (Stage 4) |
-| `social_accounts` | yes | no | no | `MISSING` — Task ID 21 (Stage 4) |
-| `rivalries` | yes | no | no | `MISSING` — Task ID 22 (Stage 4) |
+| `social_posts` | yes | no | yes (Task 21) | `OK` — v3.1.0 added 9-column social_posts table (9 post types via CHECK, engagement + is_beef_escalation columns). Written by src/social.py event-bus subscribers (FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED). NO raw numbers in post_text per §14. |
+| `social_accounts` | yes | no | no | `MISSING` — Task 21 chose to skip the separate accounts table. Fighter identity on the `fighters` table is sufficient; the player isn't managing account credentials. If a future task adds account-level state (followers count, verified status, suspended flag), this table can be added then. |
+| `rivalries` | yes | no | no | `MISSING` — Task ID 22 (Stage 4). Task 21's `social_posts.is_beef_escalation` column feeds this future table. |
 
 ---
 
@@ -262,7 +262,8 @@ against the `fighters` table directly.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `finances` | yes (per-event P&L, weekly burn rate, forecast) | no (only `promotions.current_cash` column) | no (still only `current_cash`) | `MISSING` — Task ID 20 (Stage 4) |
+| `finances` | yes (per-event P&L, weekly burn rate, forecast) | no (only `promotions.current_cash` column) | no (still only `current_cash`) | `CONSOLIDATED` → built as `finance_transactions` (Task 20, v3.0.0). One row per transaction (revenue/expense) with type, amount, event_id, fighter_id. Per-event P&L = SUM(amount) WHERE event_id=X. Weekly burn rate = SUM(amount) WHERE transaction_date >= date('now','-7 days') AND amount < 0. |
+| `finance_transactions` | yes | no | yes (Task 20, v3.0.0) | `OK` — 9 columns, 11 transaction types via CHECK constraint. Written by src/finance.py event-bus subscriber (FIGHT_RESOLVED). |
 
 ---
 
@@ -420,7 +421,7 @@ This is a minor convention deviation. The tests are:
 | Scouting & analysis | 3 | 0 | 0 | 3 tables (Task 18, 24) |
 | News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, Task 24) |
 | Rankings & titles | 2 | 0 | 2 | 0 |
-| Social & rivalries | 3 | 0 | 0 | 3 tables (Task 21-22) |
+| Social & rivalries | 3 | 0 | 1 (social_posts, Task 21) | 2 tables (rivalries Task 22; social_accounts deliberately skipped) |
 | Regen & name pools | 10 | 0 | 3 (consolidated) | 0 tables (7 consolidated/dropped by design — see §M) |
 | Voice & templates | 4 | 0 | 0 | 4 tables (Task 19, 23) |
 | Legacy & history | 5 | 0 | 1 (fight_history) | 4 tables |

@@ -8,6 +8,52 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task 21 — Social media + beefs, schema 3.0.0 → 3.1.0 MINOR)
+- New `social_posts` table — fighter-driven social media posts + beef
+  escalation. 9 post types via CHECK constraint (callout, trash_talk,
+  hype, apology, announcement, brag, excuse, retirement_hint,
+  challenge). `engagement` (non-negative int) + `is_beef_escalation`
+  (0/1) columns. Migration `v3_1_0_add_social_posts`.
+- New `src/social.py` — entirely event-bus-driven (subscribes to
+  FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED per CONVENTIONS §15.4):
+  * `generate_post` — single-post writer using voice descriptors
+    (career stage + top attribute + career health). At least 4 template
+    variants per post type, all using voice.py descriptors.
+  * `_process_fight_social` (FIGHT_RESOLVED subscriber) — winner brags
+    (always) + may call out a future opponent (high aggression + ego).
+    Loser picks from excuse / trash_talk / apology / silence based on
+    composure, ego, sportsmanship, aggression.
+  * `_process_title_social` (TITLE_CHANGED subscriber) — new champion
+    brags + may challenge a contender (high ego + charisma). Former
+    champion (if dethroned, not vacant-claim) reacts with trash_talk /
+    excuse / apology / silence.
+  * `_check_social_activity` (TICK_ADVANCED subscriber) — samples up
+    to 5 fighters per tick weighted by attention_seeking. For each
+    sampled fighter, picks a post type weighted by personality
+    (aggression → trash_talk/callout/challenge, ego → brag/challenge,
+    attention_seeking → hype/announcement, etc.). Old + worn fighters
+    have a small chance of posting retirement_hint.
+  * Beef escalation: when fighter A has previously callout'd or trash-
+    talked fighter B, any new callout/trash_talk/excuse/challenge post
+    between them is flagged `is_beef_escalation=1`. Directional (A→B
+    beef doesn't auto-flag B→A posts). Feeds Task 22 (rivalries).
+  * Personality influence: attention_seeking → post frequency,
+    aggression → trash_talk/callout mix, charisma → engagement score,
+    ego → brag/challenge frequency, composure → fewer excuse posts,
+    sportsmanship → more apologies.
+  * NO raw numbers in any post_text (CONVENTIONS §14). Round numbers
+    use word forms ("first", "opening minute"); career stats use word
+    forms ("one", "three", "dozens of"). All descriptors come from
+    voice.py.
+- App `__init__` now calls `social.register_subscribers()` so the UI
+  starts with the social system wired to the event bus. Lazy import
+  inside __init__ keeps a missing social.py from breaking the app.
+- New acceptance test `scripts/test_social.py` — 51 sub-checks across
+  9 cases (A schema, B generate_post, C no raw numbers, D FIGHT_RESOLVED
+  triggers, E TICK_ADVANCED triggers, F personality influence,
+  G beef escalation, H Design Law, X TITLE_CHANGED bonus). All PASS.
+- All 26 acceptance tests pass (25 existing + 1 new). 1550+ sub-checks.
+
 ### Added (Task 23 — News Engine, no schema change)
 - New `src/news.py` — the news engine, entirely event-bus-driven
   (subscribes to FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED per

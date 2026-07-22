@@ -5699,6 +5699,17 @@ class App(tk.Tk):
             _register_news()
         except ImportError:
             pass  # news.py not available — legacy behavior
+        # v3.1.0 (Task 21): register the social media subscribers on
+        # the global event bus. The social system writes fighter
+        # posts to the social_posts table in response to FIGHT_RESOLVED,
+        # TITLE_CHANGED, and TICK_ADVANCED events (CONVENTIONS §15.4
+        # — additive, no inline side effects added to resolve_next_
+        # fight). Lazy-import for the same reasons as news.py above.
+        try:
+            from social import register_subscribers as _register_social
+            _register_social()
+        except ImportError:
+            pass  # social.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

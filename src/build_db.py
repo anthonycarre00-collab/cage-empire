@@ -505,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.0.0"
+CODE_SCHEMA_VERSION = "3.1.0"
 
 
 def _parse_version(v):
@@ -1769,6 +1769,56 @@ CREATE TABLE IF NOT EXISTS finance_transactions (
     transaction_date        TEXT NOT NULL,
     created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- social_posts (added v3.1.0, Task 21 — Social media + beefs).
+--
+-- One row per fighter social media post. Created by src/social.py
+-- (event bus subscriber) in response to FIGHT_RESOLVED, TITLE_CHANGED,
+-- and TICK_ADVANCED events. Posts are entirely voice-layer-driven —
+-- no raw attribute numbers, ratings, or stats appear in post_text
+-- (CONVENTIONS §14).
+--
+-- Personality influence on post generation (handled in src/social.py):
+--   attention_seeking → frequency of posts (high trait → more posts)
+--   aggression        → mix of post types (high → more trash_talk/callout)
+--   charisma          → engagement score (high → more likes/comments)
+--   ego               → more brags / challenges
+--   composure         → fewer excuse posts, more measured tone
+--   sportsmanship     → more apologies, fewer trash_talks
+--
+-- Beef escalation: when fighter A has previously callout'd or trash-
+-- talked fighter B, any new callout/trash_talk/excuse between them is
+-- flagged is_beef_escalation=1. Task 22 (rivalries) will mine this
+-- column to seed rivalries.
+--
+-- 9 post types (CHECK constraint):
+--   callout            — calling out a specific fighter for a fight
+--   trash_talk         — insulting a specific fighter
+--   hype               — building up an upcoming fight or training camp
+--   apology            — apologizing for poor behavior or performance
+--   announcement       — generic announcement (could be retirement,
+--                        signing, etc.)
+--   brag               — bragging about a recent win or achievement
+--   excuse             — explaining away a loss
+--   retirement_hint    — hinting at retirement (often the precursor
+--                        to FIGHTER_RETIRED events)
+--   challenge          — challenging the current champion
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS social_posts (
+    post_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id       INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    post_type        TEXT NOT NULL CHECK (post_type IN (
+        'callout', 'trash_talk', 'hype', 'apology', 'announcement',
+        'brag', 'excuse', 'retirement_hint', 'challenge'
+    )),
+    target_fighter_id INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+    post_text        TEXT NOT NULL,
+    post_date        TEXT NOT NULL,
+    engagement       INTEGER NOT NULL DEFAULT 0 CHECK (engagement >= 0),
+    is_beef_escalation INTEGER NOT NULL DEFAULT 0 CHECK (is_beef_escalation IN (0, 1)),
+    created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2269,6 +2319,31 @@ def _migrate_v3_0_0_add_finance_transactions(conn):
         )
 
 
+def _migrate_v3_1_0_add_social_posts(conn):
+    """Task 21 — Social media + beefs. Adds the social_posts table.
+
+    Migration name: v3_1_0_add_social_posts. Idempotent — checks for
+    the table's existence before creating.
+    """
+    if not _has_table(conn, "social_posts"):
+        conn.execute(
+            "CREATE TABLE social_posts (\n"
+            "    post_id          INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id       INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    post_type        TEXT NOT NULL CHECK (post_type IN (\n"
+            "        'callout', 'trash_talk', 'hype', 'apology', 'announcement',\n"
+            "        'brag', 'excuse', 'retirement_hint', 'challenge'\n"
+            "    )),\n"
+            "    target_fighter_id INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,\n"
+            "    post_text        TEXT NOT NULL,\n"
+            "    post_date        TEXT NOT NULL,\n"
+            "    engagement       INTEGER NOT NULL DEFAULT 0 CHECK (engagement >= 0),\n"
+            "    is_beef_escalation INTEGER NOT NULL DEFAULT 0 CHECK (is_beef_escalation IN (0, 1)),\n"
+            "    created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2279,6 +2354,7 @@ MIGRATIONS = [
     ("v2_8_0_add_fighter_descriptors","2.8.0", _migrate_v2_8_0_add_fighter_descriptors),
     ("v2_9_0_add_scouting_reports","2.9.0", _migrate_v2_9_0_add_scouting_reports),
     ("v3_0_0_add_finance_transactions","3.0.0", _migrate_v3_0_0_add_finance_transactions),
+    ("v3_1_0_add_social_posts",    "3.1.0", _migrate_v3_1_0_add_social_posts),
 ]
 
 

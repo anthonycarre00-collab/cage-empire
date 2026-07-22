@@ -916,10 +916,69 @@ Voice layer (finance descriptors not raw numbers).
 **Dependencies:** Task 14.6 (needs `marketability` column for fighter
 purse calculation).
 
-### Task ID 21 — Social media + beefs
+### Task ID 21 — Social media + beefs — **DONE** (schema 3.0.0 → 3.1.0 MINOR)
 
-**Brief (needs expansion).** Add `social_posts` + `social_accounts`
-tables. Fighters post on a schedule based on `attention_seeking` and
+**Status:** Signed off pending. Schema version 3.1.0.
+
+**What landed:** New `social_posts` table (1 table group, 9 columns, 9
+post types via CHECK constraint) + new module `src/social.py`, entirely
+event-bus-driven (subscribes to FIGHT_RESOLVED, TITLE_CHANGED,
+TICK_ADVANCED per CONVENTIONS §15.4). Fighters post based on
+personality (attention_seeking → frequency, aggression →
+trash_talk/callout mix, charisma → engagement, ego → brag/challenge,
+composure → fewer excuses, sportsmanship → more apologies). Beefs
+escalate: a callout/trash_talk/excuse/challenge post against a target
+the posting fighter has previously called out is flagged
+`is_beef_escalation=1` (directional — feeds Task 22 rivalries).
+
+Four generator functions:
+  - `generate_post` — single-post writer using voice descriptors
+    (career stage, top attribute, career health). 4+ template variants
+    per post type (9 types × 4 variants = 36 templates). NO raw
+    numbers in any post text (CONVENTIONS §14).
+  - `_process_fight_social` (FIGHT_RESOLVED subscriber) — winner brags
+    (always) + may call out a future opponent (high aggression + ego).
+    Loser picks excuse / trash_talk / apology / silence based on
+    composure, ego, sportsmanship, aggression.
+  - `_process_title_social` (TITLE_CHANGED subscriber) — new champion
+    brags + may challenge a contender. Former champion (if dethroned,
+    not vacant-claim) reacts.
+  - `_check_social_activity` (TICK_ADVANCED subscriber) — samples up
+    to 5 fighters per tick weighted by attention_seeking. Personality-
+    weighted post type selection.
+
+Personality influence (test F verified):
+  - attention_seeking=100 vs =1: high-attention fighter posts ≥ low.
+  - aggression=100 vs =1: high-aggression writes more
+    trash_talk/callout/challenge posts.
+  - charisma=100 vs =1: high-charisma posts have higher avg engagement
+    (~3x engagement boost).
+
+Beef escalation (test G verified): first callout is NOT marked beef;
+second post (trash_talk after callout) IS marked; subsequent excuses
+also marked; directional (fighter A→B doesn't auto-flag B→A); hype
+posts never marked (type mismatch).
+
+Acceptance test: `scripts/test_social.py` — 51 sub-checks across 9
+cases. All PASS. All 26 acceptance tests pass (25 existing + 1 new).
+~1550+ sub-checks total.
+
+**Pillars served:** Conflict (beefs, callouts, trash talk), Stories
+(in-character social media drama), Kingmaker/Puppet Master (personality-
+driven star building).
+
+**Files changed:**
+  - `src/build_db.py` (bumped to 3.1.0, added social_posts table to
+    SCHEMA_SQL, added `_migrate_v3_1_0_add_social_posts` migration,
+    appended to MIGRATIONS list)
+  - `src/social.py` (new — ~700 lines)
+  - `scripts/test_social.py` (new — 51 sub-checks)
+  - `src/app.py` (lazy `social.register_subscribers()` in App.__init__)
+  - `CHANGELOG.md` ([Unreleased] section)
+  - `docs/STAGES.md` (Task 21 marked DONE with details)
+
+**Original brief.** Add `social_posts` + `social_accounts` tables.
+Fighters post on a schedule based on `attention_seeking` and
 `trash_talk`. Beefs escalate from callouts → insults → apology videos,
 driven by personality and recent fight results.
 
