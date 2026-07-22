@@ -1,22 +1,28 @@
-"""Fighter generation primitives (added in v2.0.0, Task 14.5+14.6+14.7).
+"""Fighter generation primitives (added in v2.0.0, Task 14.5+14.6+14.7;
+extended in v2.0.1, Task pre-B1-fixes).
 
-Three pure-ish functions used by:
+Four pure-ish functions used by:
 
   * `seed_data.py` — to backfill the 5 existing seeded fighters with the
     21 new attribute columns, 17 new personality columns, and 14 new
-    fighters-table columns added in this schema expansion.
+    fighters-table columns added in this schema expansion. (v2.0.1
+    adds a separate deterministic backfill for `potential` — see
+    `seed_data._backfill_potential_title_reigns`.)
   * `app.generate_fighter()` — Task 14's regen function. Previously it
     INSERTed all-50 defaults; now it uses these functions to produce
-    archetype-biased attribute and personality blocks so regen
-    prospects feel like real fighters, not generic 50s.
+    archetype-biased attribute and personality blocks (v2.0.0) AND a
+    randomly-distributed `potential` value (v2.0.1) so regen
+    prospects feel like real fighters, not generic 50s, and so the
+    Talent Hunter fantasy is preserved (elite prospects are rare).
 
 The bias system:
 
   * `style_archetypes.attribute_bias` is a JSON column holding a dict
-    like `{"punch_power": 15, "takedown_defense": -10}`. When
+    like `{"punch_power": 10, "takedown_defense": -5}`. When
     `generate_attribute_block(archetype_id, conn)` is called with a
     non-None archetype_id and a live connection, the bias is loaded
-    and applied to the base value of 50.
+    and applied to the base value of 50. (v2.0.1 softened all biases
+    ~40-50% — max absolute bias is now 10, was 20.)
   * `personality_archetypes.trait_bias` is the same idea for the
     personality block.
   * The formula for every attribute/trait is:
@@ -25,23 +31,59 @@ The bias system:
 
     The +/-8 noise floor keeps fighters within an archetype distinct
     (no two Brawlers will be identical) while the bias gives the
-    archetype its identity (Brawlers average ~70 punch_power, ~65 chin).
+    archetype its identity (Brawlers average ~60 punch_power, ~58 chin
+    with the softened +10/+8 biases).
 
-The 3 functions are deliberately kept side-effect-free (no DB writes).
+The potential distribution (v2.0.1, Task pre-B1-fixes):
+
+  `generate_potential()` returns a value 0-100 using this distribution:
+    - 10% chance: elite potential (70-90) — "that kid from Mexico"
+      rare prospects.
+    - 30% chance: solid potential (50-69) — can become contenders
+      with development.
+    - 60% chance: limited potential (25-49) — journeymen who plateau
+      early.
+
+  Scarcity makes elite prospects exciting to find. The Talent Hunter
+  fantasy (CAGE_EMPIRE_SOUL.md Fantasy 1) depends on this: if every
+  fighter could reach 100 in every attribute, "discovering greatness"
+  is meaningless — every prospect is potentially great. With the
+  distribution above, ~1 in 10 regen prospects is elite, and the
+  player has to scout to find them (Task 18, future, will add
+  scouting uncertainty on top of this).
+
+The 4 functions are deliberately kept side-effect-free (no DB writes).
 Callers own the INSERT/UPDATE so the same primitives can be reused by
 the seed (backfill), by regen (Task 14), and by future tasks (Task 18
 scouting reports will generate "scout-estimated" attribute blocks that
-the player can compare against the real values).
+the player can compare against the real values; Task 16 training
+camps will read `potential` to compute diminishing-returns growth
+toward the ceiling).
 
 Design Law check (CONVENTIONS.md §13):
   - Discovery (Fantasy 1: Talent Hunter): the bias system means regen
     prospects arrive with a *style identity* — a Brawler replacement
     for a retiring Brawler feels like a Brawler, not a generic 50/50
     prospect. Players can spot "this kid hits hard" from day one.
+    v2.0.1 ADDS the `potential` distribution on top — now players
+    also have to discover whether a hard-hitting Brawler prospect
+    has the *ceiling* to become a champion or is just a journeyman
+    who hits hard. The Talent Hunter fantasy now has TWO dimensions
+    to scout: style (visible immediately via biased attributes) and
+    potential (hidden until scouted — Task 18 will add this).
   - Growth (Fantasy 2 + 3): the 25 attributes are the substrate that
     future training camps (Task 16), scouting (Task 18), and the voice
     layer (Task 19) will grow, scout, and describe. Without these
-    columns, those tasks have nothing to act on.
+    columns, those tasks have nothing to act on. v2.0.1 ADDS the
+    `potential` ceiling that training camps will push attributes
+    toward with diminishing returns — without it, every fighter has
+    unlimited growth and the development fantasy collapses.
+  - Legacy (Fantasy 5): the `title_reigns` counter (set by
+    _resolve_title_after_fight, read by the retirement path) drives
+    the memory-resurfacing logic — only champions get the
+    "reminiscent of former champion {name}" treatment. Reserving
+    memory resurfacing for champions makes the comparison
+    meaningful: it's a stamp of greatness, not noise.
 """
 
 import json
@@ -273,3 +315,71 @@ def generate_physical_block():
         "stance": stance,
         "handedness": handedness,
     }
+
+
+# ----------------------------------------------------------------
+# Potential distribution (added v2.0.1, Task pre-B1-fixes).
+#
+# `generate_potential()` returns the fighter's growth ceiling. The
+# distribution makes elite prospects rare and exciting to find:
+#   - 10% elite (70-90): "that kid from Mexico" — the Talent Hunter
+#     fantasy's payoff.
+#   - 30% solid (50-69): can become contenders with development.
+#   - 60% limited (25-49): journeymen who plateau early.
+#
+# This is the second dimension of scouting (style identity is the
+# first — visible immediately via biased attributes). Potential is
+# HIDDEN from the player until Task 18 (scouting) adds scout-estimated
+# reports; for now, the player sees the raw value in the DB. The
+# distribution's importance is for the underlying simulation: training
+# camps (Task 16, future) will read `potential` and apply diminishing
+# returns as attributes approach the ceiling, so a 25-potential
+# journeyman physically cannot become a 90-punch-power killer no
+# matter how many camps they do.
+# ----------------------------------------------------------------
+
+# Distribution buckets. The weights MUST sum to 100 (random.choices
+# normalizes, but asserting the sum keeps the intent obvious).
+# Range boundaries are INCLUSIVE on both ends.
+POTENTIAL_DISTRIBUTION = [
+    # (label, weight_percent, low, high)
+    ("elite", 10, 70, 90),
+    ("solid", 30, 50, 69),
+    ("limited", 60, 25, 49),
+]
+
+
+def generate_potential():
+    """Generate a `potential` value (0-100) using the rare-elite distribution.
+
+    Distribution (Task pre-B1-fixes brief):
+      - 10% chance: elite potential in [70, 90]
+      - 30% chance: solid potential in [50, 69]
+      - 60% chance: limited potential in [25, 49]
+
+    Returns:
+        int in [25, 90]. Always within the union of the three ranges
+        above — i.e., values in [50, 69] are valid (solid), values
+        below 50 are limited, values above 69 are elite. Values in
+        [0, 24] and [91, 100] are NEVER returned (the brief's ranges
+        deliberately exclude them — a 0-potential fighter would be
+        unplayable, and a 91-100 potential would be too generous for
+        the "elite" tier ceiling).
+
+    Pure function — no I/O, no side effects. Callers (app.generate_fighter)
+    INSERT the returned value into fighter_career.potential.
+
+    The acceptance test scripts/test_pre_b1_fixes.py case C asserts
+    the distribution holds over 1000 samples (within +/- 5% tolerance
+    per tier).
+    """
+    labels = [bucket[0] for bucket in POTENTIAL_DISTRIBUTION]
+    weights = [bucket[1] for bucket in POTENTIAL_DISTRIBUTION]
+    chosen = random.choices(labels, weights=weights, k=1)[0]
+    for label, _, low, high in POTENTIAL_DISTRIBUTION:
+        if label == chosen:
+            return random.randint(low, high)
+    # Defensive: should never reach here (chosen always matches one
+    # of the labels). Returns the middle-of-the-road 50 as a safe
+    # fallback if it somehow does.
+    return 50

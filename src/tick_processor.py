@@ -197,6 +197,25 @@ def _check_retirements(conn, current_date):
         # retired on this tick", and the replacement isn't retired.
         # The replacement_id is logged via a separate print in
         # run_tick (see below).
+        #
+        # v2.0.1 (Task pre-B1-fixes): champion-successor memory
+        # resurfacing. After generating the replacement, check whether
+        # the retiring fighter was ever a champion (fighter_career.
+        # title_reigns > 0). If YES:
+        #   - Create a fighter_memory_links row with link_type=
+        #     'successor' linking the new fighter to the retiring
+        #     champion. link_strength is based on title_reigns (more
+        #     reigns = stronger link): min(50 + 10*reigns, 100).
+        #   - Write a "comparisons to former champion {name}" news
+        #     item with topic='legacy' (separate from the standard
+        #     'prospect' news generate_fighter already wrote). This
+        #     is the memory-resurfacing payoff: the world remembers
+        #     who the retiring champion was and draws the comparison
+        #     to the new prospect.
+        # If NO (non-champion retirement): no memory link, no extra
+        # news. The standard "new prospect emerges" news from
+        # generate_fighter is enough — keeps the world alive without
+        # cheapening the memory-resurfacing feature.
         # ----------------------------------------------------------------
         replacement_id = generate_fighter(
             conn,
@@ -218,11 +237,94 @@ def _check_retirements(conn, current_date):
                 "VALUES (?, ?, ?, ?)",
                 (fighter_id, replacement_id, style_archetype_id, current_date),
             )
-            # Note: the replacement enters as a free agent. They'll
-            # appear in the Free Agents tab (Task 13) and can be signed
-            # by any promotion. No further action needed here — the
-            # news item about the new prospect is written by
-            # generate_fighter itself.
+
+            # v2.0.1 (Task pre-B1-fixes): champion-successor memory
+            # resurfacing. Check whether the retiring fighter was
+            # ever a champion. The fighter_career.title_reigns column
+            # is the cleanest, most reliable signal — it's incremented
+            # by _resolve_title_after_fight() in app.py every time
+            # the fighter wins a title (vacant title claimed OR
+            # reigning champion dethroned). COALESCE(..., 0) is
+            # defensive: a fighter without a career row (shouldn't
+            # happen with the seed) is treated as non-champion.
+            reigns_row = conn.execute(
+                "SELECT COALESCE(fc.title_reigns, 0) "
+                "FROM fighter_career fc "
+                "WHERE fc.fighter_id = ?",
+                (fighter_id,),
+            ).fetchone()
+            retiring_reigns = reigns_row[0] if reigns_row else 0
+
+            if retiring_reigns > 0:
+                # The retiring fighter was a champion. Create the
+                # fighter_memory_links 'successor' row linking the
+                # new prospect to the retiring champion. link_strength
+                # is based on title_reigns: 1 reign = 60, 2 = 70,
+                # 3 = 80, 4 = 90, 5+ = 100 (capped). More reigns =
+                # stronger link (a 5-reign champion's successor is a
+                # MUCH bigger deal than a 1-reign champion's
+                # successor). INSERT OR IGNORE protects against the
+                # UNIQUE (fighter_id, linked_fighter_id, link_type)
+                # constraint — duplicate successor links (theoretically
+                # impossible since regen_lineage also has UNIQUE on
+                # retiring+replacement pairs) are silently skipped.
+                link_strength = min(50 + 10 * retiring_reigns, 100)
+                conn.execute(
+                    "INSERT OR IGNORE INTO fighter_memory_links "
+                    "(fighter_id, linked_fighter_id, link_type, "
+                    "link_strength) VALUES (?, ?, 'successor', ?)",
+                    (replacement_id, fighter_id, link_strength),
+                )
+
+                # Write the champion-successor comparison news item.
+                # topic='legacy' so future UI filters can group
+                # memory-resurfacing news together (separate from
+                # 'prospect' news the standard generate_fighter
+                # already wrote, and from 'retirement' news the
+                # retirement announcement already wrote). The
+                # headline follows the brief's exact wording: "New
+                # prospect {name} emerges on the scene — fight fans
+                # are already drawing comparisons to former champion
+                # {retiring_fighter_name}." fighter_id is set to the
+                # NEW fighter (the prospect) so future UIs can filter
+                # "this prospect's news". published_at=current_date.
+                replacement_name_row = conn.execute(
+                    "SELECT first_name || ' ' || last_name "
+                    "FROM fighters WHERE fighter_id = ?",
+                    (replacement_id,),
+                ).fetchone()
+                replacement_name = (
+                    replacement_name_row[0]
+                    if replacement_name_row
+                    else f"Fighter {replacement_id}"
+                )
+                conn.execute(
+                    "INSERT INTO news_items (news_source_id, headline, "
+                    "body, sentiment, topic, fighter_id, published_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        src_id,
+                        f"New prospect {replacement_name} emerges on "
+                        f"the scene — fight fans are already drawing "
+                        f"comparisons to former champion {full_name}",
+                        f"A new talent, {replacement_name}, has arrived "
+                        f"as a free agent. Fans and pundits are already "
+                        f"drawing comparisons to former champion "
+                        f"{full_name}, who retired with "
+                        f"{retiring_reigns} title reign(s) to their "
+                        f"name. Only time will tell whether the "
+                        f"comparisons hold up.",
+                        "positive",
+                        "legacy",
+                        replacement_id,
+                        current_date,
+                    ),
+                )
+            # Non-champion retirement: no memory link, no extra news.
+            # The standard "new prospect emerges" news from
+            # generate_fighter is the only prospect news — keeps the
+            # world alive without cheapening the memory-resurfacing
+            # feature.
 
         retired.append(fighter_id)
 

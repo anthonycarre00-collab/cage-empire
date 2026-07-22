@@ -9,6 +9,113 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `fighter_career.potential` column (INTEGER NOT NULL DEFAULT 50 CHECK
+  (potential BETWEEN 0 AND 100)) — the fighter's growth ceiling (Task
+  pre-B1-fixes, schema 2.0.1 MINOR). Training camps (Task 16, future)
+  will push attributes toward this ceiling with diminishing returns as
+  they approach it. Without this column, every fighter has unlimited
+  growth potential and the Talent Hunter fantasy
+  (CAGE_EMPIRE_SOUL.md Fantasy 1) collapses — a journeyman could
+  theoretically train every attribute to 100. The DEFAULT 50 keeps
+  existing rows valid; new fighters get potential from
+  `fighter_gen.generate_potential()` (10% elite 70-90, 30% solid 50-69,
+  60% limited 25-49). Scarcity makes elite prospects exciting to find.
+- `fighter_career.title_reigns` column (INTEGER NOT NULL DEFAULT 0 CHECK
+  (title_reigns >= 0)) — counts how many title reigns this fighter has
+  had (Task pre-B1-fixes, schema 2.0.1 MINOR). Incremented by
+  `_resolve_title_after_fight()` in app.py every time the fighter wins
+  a title (vacant title claimed OR reigning champion dethroned). It is
+  the clean, reliable signal the retirement path uses to decide whether
+  to create a `fighter_memory_links` "successor" row — only fighters
+  who held a title get the "reminiscent of former champion {name}"
+  treatment. Reserving memory resurfacing for champions makes the
+  comparison meaningful.
+- `fighter_gen.generate_potential()` function (Task pre-B1-fixes) —
+  returns an int in [25, 90] using the rare-elite distribution: 10%
+  elite (70-90), 30% solid (50-69), 60% limited (25-49). Pure function
+  — no I/O, no side effects. Called by `app.generate_fighter()` to set
+  the new fighter's `potential` column at creation time.
+- Champion-successor memory resurfacing (Task pre-B1-fixes) — when a
+  fighter with `fighter_career.title_reigns > 0` retires, the
+  retirement path now (1) creates a `fighter_memory_links` row with
+  `link_type='successor'` linking the new replacement fighter to the
+  retiring champion, with `link_strength=min(50 + 10*reigns, 100)`,
+  and (2) writes a 'legacy'-topic news item with the headline "New
+  prospect {name} emerges on the scene — fight fans are already drawing
+  comparisons to former champion {retiring_name}." This is the
+  memory-resurfacing payoff: the world remembers who the retiring
+  champion was and draws the comparison to the new prospect. Non-
+  champion retirements get neither the memory link nor the extra news
+  — only the standard "new prospect emerges" news from
+  `generate_fighter`. This keeps the memory resurfacing rare and
+  meaningful (a "stamp of greatness"), not noise.
+
+### Changed
+- All 12 archetype biases softened ~40-50% (Task pre-B1-fixes). The
+  maximum absolute bias dropped from 20 to 10. Modern MMA fighters at
+  the highest level are well-rounded; archetypes should be tendencies,
+  not extremes. A Brawler should hit a bit harder and take a better
+  shot, but not be helpless on the feet or gas after 1 round. The 7
+  style archetypes and 5 personality archetypes all use the softened
+  values per the brief. The existing `test_fighter_attributes.py` case
+  D statistical checks (Brawler > Counter-Striker on punch_power/chin,
+  CS > Brawler on footwork/fight_iq, with a >5 margin) STILL pass with
+  the softened biases (margins of 10, 8, 16, 13 — all comfortably >5).
+- `app.generate_fighter()` now sets `potential` on the new fighter via
+  `fighter_gen.generate_potential()` (Task pre-B1-fixes). Previously
+  the fighter_career INSERT used the schema DEFAULT 50; now it
+  explicitly INSERTs the generated value. All other fighter_career
+  columns (record, streaks, career_health, title_reigns) still use
+  their schema DEFAULTs (0-0-0, 100, 0) — sensible for a fresh
+  prospect.
+- `app._resolve_title_after_fight()` now increments
+  `fighter_career.title_reigns` for the new champion when a title is
+  won (vacant title claimed OR reigning champion dethroned). A
+  successful title defense (champion wins) does NOT increment the
+  counter — it's a HISTORICAL reign counter, not a current-reign flag.
+  The title-level `titles.title_reigns_count` is unchanged (it tracks
+  the title's history across all champions, not per-fighter).
+- Schema version bumped 2.0.0 → 2.0.1 (MINOR — adding 2 new columns to
+  an existing table). Migration name
+  `v2_0_1_potential_memory_archetype_fix`. The version-check gate
+  (Task ID 5) refuses to clobber a newer on-disk schema — old scripts
+  running against a 2.0.1 DB will abort with a clear RuntimeError.
+
+### Fixed
+- None in this task. (No bugs fixed — purely additive + the
+  design-fix softening of archetype biases.)
+
+### Known issues (flagged for supervisor)
+- `test_fighter_attributes.py` case A.3 (exact migration name check
+  for `v2_0_0_fighter_schema_expansion`) — STALE after the v2.0.1 bump.
+  The dynamic-prefix check (A.2) still passes; only the exact-name
+  check fails because the new migration is
+  `v2_0_1_potential_memory_archetype_fix`. Flagged as D1 in the
+  worklog; NOT modified per CONVENTIONS §11.
+- `test_fighter_attributes.py` case B.7 (6 exact-value assertions on
+  Brawler bias) — STALE after bias softening. The new Brawler bias is
+  `{"punch_power": 10, "chin": 8, "durability": 5, "footwork": -8,
+  "fight_iq": -5, "cardio": -3}` (was punch_power=20, chin=15,
+  durability=10, footwork=-15, fight_iq=-10, cardio=-5). Flagged as
+  D2; NOT modified per CONVENTIONS §11.
+- `test_fighter_attributes.py` case B.8 (6 exact-value assertions on
+  Counter-Striker bias) — STALE after bias softening. The new CS bias
+  is `{"punch_accuracy": 8, "head_movement": 8, "footwork": 8,
+  "fight_iq": 8, "aggression": -5, "takedown_offense": -5}` (was
+  punch_accuracy=15, head_movement=15, footwork=15, fight_iq=15,
+  aggression=-10, takedown_offense=-10). Flagged as D3; NOT modified
+  per CONVENTIONS §11.
+- Net effect: `test_fighter_attributes.py` goes from 260/260 to
+  247/260 (13 stale assertions). The new acceptance test
+  `scripts/test_pre_b1_fixes.py` covers the same ground (case B
+  verifies the new bias values exactly; case A verifies the new
+  migration name exactly) so the supervisor can update
+  `test_fighter_attributes.py`'s stale constants during sign-off
+  without losing coverage.
+
+## [2.0.0] - 2026-07-21
+
+### Added
 - 68 new columns across 6 existing tables + 2 archetype tables in the
   largest single schema expansion since the project started (Task ID
   14.5+14.6+14.7, schema 2.0.0 MAJOR). This is the depth-of-sim

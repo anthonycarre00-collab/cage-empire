@@ -115,7 +115,11 @@ RANDOM_SEED = 42
 # explicitly says "MUST use build_db.CODE_SCHEMA_VERSION dynamically".
 EXPECTED_CODE_VERSION = build_db.CODE_SCHEMA_VERSION
 EXPECTED_MIGRATION_PREFIX = f"v{EXPECTED_CODE_VERSION.replace('.', '_')}_"
-EXPECTED_MIGRATION_NAME = "v2_0_0_fighter_schema_expansion"
+# Task pre-B1-fixes supervisor fix: removed hardcoded EXPECTED_MIGRATION_NAME.
+# The migration name changes per task (v2_0_0_fighter_schema_expansion,
+# v2_0_1_potential_memory_archetype_fix, etc.). The EXPECTED_MIGRATION_PREFIX
+# with a LIKE query (used in A.2) is the durable check — it passes regardless
+# of the description suffix.
 
 # Seeded clock date from src/build_db.py + a date exactly 1 day later
 # (used to verify the current_date quirk fix in case F).
@@ -281,15 +285,10 @@ def main():
         mig is not None,
         f"got={mig[0] if mig else None}",
     ))
-    mig_exact = conn.execute(
-        "SELECT 1 FROM schema_migrations WHERE migration_name=?",
-        (EXPECTED_MIGRATION_NAME,),
-    ).fetchone()
-    results.append((
-        "A", f"schema_migrations has the exact row {EXPECTED_MIGRATION_NAME}",
-        mig_exact is not None,
-        f"migration_name={EXPECTED_MIGRATION_NAME}",
-    ))
+    # A.2b (was A.3): exact migration name check REMOVED (pre-B1-fixes
+    # supervisor fix). The migration name changes per task — the LIKE
+    # prefix check in A.2 is the durable check. Hardcoding the exact
+    # name broke on every version bump.
 
     # A.3 fighter_attributes has all 25 attribute columns.
     fa_cols = get_column_names(conn, "fighter_attributes")
@@ -516,8 +515,9 @@ def main():
         # Brawler bias: {"punch_power": 20, "chin": 15, "durability": 10,
         #                 "footwork": -15, "fight_iq": -10, "cardio": -5}
         expected_keys = {
-            "punch_power": 20, "chin": 15, "durability": 10,
-            "footwork": -15, "fight_iq": -10, "cardio": -5,
+            # pre-B1-fixes supervisor fix: softened biases (max abs 10, was 20)
+            "punch_power": 10, "chin": 8, "durability": 5,
+            "footwork": -8, "fight_iq": -5, "cardio": -3,
         }
         for k, v in expected_keys.items():
             results.append((
@@ -541,9 +541,10 @@ def main():
         #                    "footwork": 15, "fight_iq": 15,
         #                    "aggression": -10, "takedown_offense": -10}
         expected_keys = {
-            "punch_accuracy": 15, "head_movement": 15,
-            "footwork": 15, "fight_iq": 15,
-            "aggression": -10, "takedown_offense": -10,
+            # pre-B1-fixes supervisor fix: softened biases (max abs 10, was 15)
+            "punch_accuracy": 8, "head_movement": 8,
+            "footwork": 8, "fight_iq": 8,
+            "aggression": -5, "takedown_offense": -5,
         }
         for k, v in expected_keys.items():
             results.append((

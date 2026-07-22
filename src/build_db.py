@@ -9,6 +9,39 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.0.1 (Task pre-B1-fixes) — MINOR bump. Two new columns added to
+# `fighter_career` (`potential` and `title_reigns`), neither of which
+# removes or renames existing data — purely additive. The two new
+# columns unblock three design fixes the supervisor flagged before
+# the beat-level fight engine (Task B1) can begin:
+#   1. `potential` (INTEGER NOT NULL DEFAULT 50 CHECK 0-100) is the
+#      fighter's growth ceiling. Without it, every fighter has
+#      unlimited growth potential and the Talent Hunter fantasy
+#      (CAGE_EMPIRE_SOUL.md Fantasy 1) collapses — a journeyman could
+#      theoretically train every attribute to 100. With `potential`,
+#      training camps (Task 16, future) will push attributes toward
+#      this ceiling with diminishing returns as they approach it.
+#      Scarcity makes elite prospects exciting to find.
+#   2. `title_reigns` (INTEGER NOT NULL DEFAULT 0 CHECK >= 0) counts
+#      how many title reigns this fighter has had. It is incremented
+#      by `_resolve_title_after_fight()` in app.py every time the
+#      fighter wins a title (vacant title claimed OR reigning champion
+#      dethroned). It is the clean, reliable signal the retirement
+#      path uses to decide whether to create a `fighter_memory_links`
+#      "successor" row — only fighters who held a title get the
+#      "reminiscent of former champion {name}" treatment. Reserving
+#      memory resurfacing for champions makes the comparison
+#      meaningful: "reminiscent of former champion John Vale" means
+#      something because Vale was a champion.
+#
+# Archetype biases in `seed_data.py` are also softened ~40-50% in the
+# same task (max absolute bias drops from 20 to 10). Modern MMA
+# fighters at the highest level are well-rounded; archetypes should
+# be tendencies, not extremes. The bias softening is a data change
+# only (no schema change to `style_archetypes` or
+# `personality_archetypes` — the `attribute_bias` / `trait_bias`
+# columns stay TEXT JSON).
+#
 # v2.0.0 (Task 14.5+14.6+14.7) — MAJOR bump. First major version,
 # marking the transition from the thin skeleton (4 attributes, 3
 # personality traits, coin-flip-equivalent resolver) to real
@@ -21,7 +54,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.0.0"
+CODE_SCHEMA_VERSION = "2.0.1"
 
 
 def _parse_version(v):
@@ -430,6 +463,26 @@ CREATE TABLE IF NOT EXISTS fighter_career (
     win_streak INTEGER NOT NULL DEFAULT 0,
     loss_streak INTEGER NOT NULL DEFAULT 0,
     career_health INTEGER NOT NULL DEFAULT 100,
+    -- v2.0.1 (Task pre-B1-fixes): `potential` is the fighter's growth
+    -- ceiling. Training camps (Task 16, future) will push attributes
+    -- toward this ceiling with diminishing returns as they approach
+    -- it. Without this column, every fighter has unlimited growth
+    -- potential and the Talent Hunter fantasy (CAGE_EMPIRE_SOUL.md
+    -- Fantasy 1) collapses — a journeyman could theoretically train
+    -- every attribute to 100. The DEFAULT 50 keeps existing rows
+    -- valid; new fighters get potential from
+    -- fighter_gen.generate_potential() (10% elite 70-90, 30% solid
+    -- 50-69, 60% limited 25-49).
+    potential INTEGER NOT NULL DEFAULT 50 CHECK (potential BETWEEN 0 AND 100),
+    -- v2.0.1 (Task pre-B1-fixes): `title_reigns` counts how many
+    -- title reigns this fighter has had. Incremented by
+    -- _resolve_title_after_fight() in app.py every time the fighter
+    -- wins a title (vacant title claimed OR reigning champion
+    -- dethroned). The retirement path reads this to decide whether
+    -- to create a fighter_memory_links 'successor' row — only
+    -- fighters who held a title get the "reminiscent of former
+    -- champion {name}" treatment.
+    title_reigns INTEGER NOT NULL DEFAULT 0 CHECK (title_reigns >= 0),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -780,7 +833,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_fighter_schema_expansion",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_potential_memory_archetype_fix",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

@@ -866,6 +866,24 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
             "WHERE title_id = ?",
             (winner_id, fight_date, title_id),
         )
+        # v2.0.1 (Task pre-B1-fixes): increment the new champion's
+        # fighter_career.title_reigns counter. This is the fighter-
+        # level reign counter (separate from titles.title_reigns_count
+        # which is the title-level reign counter). The retirement
+        # path reads fighter_career.title_reigns to decide whether to
+        # create a fighter_memory_links 'successor' row — only
+        # fighters who held a title get the "reminiscent of former
+        # champion {name}" treatment. The INSERT OR IGNORE pattern
+        # is defensive: if a future task adds a fighter_career row
+        # lazily (e.g., on first fight), this UPDATE is a no-op
+        # until the row exists. In practice the seed always creates
+        # the row at fighter creation time.
+        conn.execute(
+            "UPDATE fighter_career SET title_reigns = title_reigns + 1, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE fighter_id = ?",
+            (winner_id,),
+        )
         return title_id
     else:
         # HELD title. current_champ is the reigning champion.
@@ -892,6 +910,15 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
                 "is_vacant = 0, updated_at = CURRENT_TIMESTAMP "
                 "WHERE title_id = ?",
                 (winner_id, fight_date, title_id),
+            )
+            # v2.0.1 (Task pre-B1-fixes): increment the new champion's
+            # fighter_career.title_reigns counter (the contender just
+            # started a NEW reign by dethroning the previous champion).
+            conn.execute(
+                "UPDATE fighter_career SET title_reigns = title_reigns + 1, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE fighter_id = ?",
+                (winner_id,),
             )
             return title_id
 
@@ -2108,7 +2135,27 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         (fid,) + tuple(pers[c] for c in pers_cols),
     )
 
-    conn.execute("INSERT INTO fighter_career (fighter_id) VALUES (?)", (fid,))
+    # v2.0.1 (Task pre-B1-fixes): set `potential` for the new fighter
+    # via fighter_gen.generate_potential(). The distribution is 10%
+    # elite (70-90), 30% solid (50-69), 60% limited (25-49). The
+    # fighter_career row INSERT now specifies `potential` explicitly
+    # (was `INSERT INTO fighter_career (fighter_id) VALUES (?)` which
+    # used the DEFAULT 50). All other fighter_career columns (record,
+    # streaks, career_health, title_reigns) use their schema DEFAULTs
+    # (0-0-0, 100, 0) — sensible for a fresh prospect.
+    #
+    # Why potential matters: without a growth ceiling, every fighter
+    # has unlimited growth potential and the Talent Hunter fantasy
+    # collapses (CAGE_EMPIRE_SOUL.md Fantasy 1). With potential,
+    # training camps (Task 16, future) will push attributes toward
+    # this ceiling with diminishing returns as they approach it. The
+    # rare-elite distribution makes "that kid from Mexico" prospects
+    # genuinely rare — ~1 in 10 regen fighters has elite potential.
+    potential = fighter_gen.generate_potential()
+    conn.execute(
+        "INSERT INTO fighter_career (fighter_id, potential) VALUES (?, ?)",
+        (fid, potential),
+    )
 
     # 11. NO rankings row at generation time. See D2 above — the
     #     rankings table requires a promotion_id (NOT NULL), and the

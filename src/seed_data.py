@@ -249,74 +249,92 @@ def _seed_name_pools(conn):
 
 
 # ----------------------------------------------------------------
-# Archetype seeder (added v2.0.0, Task 14.5). Seeds 7 style
-# archetypes + 5 personality archetypes with bias JSON. The bias
-# JSON is consumed by fighter_gen.generate_attribute_block /
+# Archetype seeder (added v2.0.0, Task 14.5; softened v2.0.1,
+# Task pre-B1-fixes). Seeds 7 style archetypes + 5 personality
+# archetypes with bias JSON. The bias JSON is consumed by
+# fighter_gen.generate_attribute_block /
 # generate_personality_block to produce archetype-distinct fighters.
 #
 # Existing archetypes (Balanced, Calm) get their bias JSON added via
 # UPDATE; new archetypes are INSERTed. INSERT OR IGNORE makes the
 # seeder idempotent across re-runs.
 #
-# Bias values per docs/STAGES.md §14.5 — DO NOT modify these without
-# supervisor approval (the new acceptance test test_fighter_attributes.py
-# case D asserts that "Brawler" averages higher on punch_power/chin
-# and lower on footwork/fight_iq than "Counter-Striker"; changing
-# the bias values could break that statistical assertion).
+# Bias values were SOFTENED ~40-50% in v2.0.1 (Task pre-B1-fixes):
+# the maximum absolute bias dropped from 20 (Brawler punch_power,
+# Wrestler takedown_offense, Submission Specialist submission_offense,
+# Showman charisma/attention_seeking) to 10 (Brawler punch_power,
+# Aggressive aggression, Showman charisma/attention_seeking). Modern
+# MMA fighters at the highest level are well-rounded; archetypes
+# should be tendencies, not extremes — a Brawler should hit a bit
+# harder and take a better shot, but not be helpless on the feet or
+# gas after 1 round.
+#
+# The new acceptance test scripts/test_pre_b1_fixes.py case D asserts
+# that the maximum absolute bias across all 12 archetypes is <= 10.
+# The existing test_fighter_attributes.py case D statistical check
+# (Brawler averages higher on punch_power/chin and lower on
+# footwork/fight_iq than Counter-Striker, with a > 5 threshold) STILL
+# passes with the softened biases (margins of 10, 8, 16, 13 — all
+# > 5). The case B.7 / B.8 exact-value assertions in
+# test_fighter_attributes.py DO break with the softened biases; per
+# CONVENTIONS §11 these are flagged as D2 / D3 in the worklog and
+# left for the supervisor to fix.
 # ----------------------------------------------------------------
 
 # (name, description, bias_json_str). 7 rows = 1 existing (Balanced)
 # + 6 new. The names match the brief verbatim — the new acceptance
-# test looks up style_archetypes by name.
+# test looks up style_archetypes by name. SOFTENED bias values per
+# Task pre-B1-fixes brief.
 STYLE_ARCHETYPES = [
     ("Balanced", "Well-rounded",
-     json.dumps({"punch_power": 5, "cardio": 5, "fight_iq": 5})),
+     json.dumps({"punch_power": 3, "cardio": 3, "fight_iq": 3})),
     ("Striker", "Stand-up specialist",
-     json.dumps({"punch_power": 15, "kick_power": 15,
-                 "punch_accuracy": 10, "head_movement": 10,
-                 "takedown_defense": -10, "submission_offense": -10})),
+     json.dumps({"punch_power": 8, "kick_power": 8,
+                 "punch_accuracy": 5, "head_movement": 5,
+                 "takedown_defense": -5, "submission_offense": -5})),
     ("Grappler", "Ground fighter",
-     json.dumps({"takedown_offense": 15, "top_control": 15,
-                 "submission_offense": 15,
-                 "punch_power": -5, "kick_power": -5,
-                 "head_movement": -5})),
+     json.dumps({"takedown_offense": 8, "top_control": 8,
+                 "submission_offense": 8,
+                 "punch_power": -3, "kick_power": -3,
+                 "head_movement": -3})),
     ("Wrestler", "Takedown-and-control artist",
-     json.dumps({"takedown_offense": 20, "top_control": 15,
-                 "cage_wrestling": 15, "strength": 10,
-                 "submission_offense": -10, "kick_power": -10})),
+     json.dumps({"takedown_offense": 10, "top_control": 8,
+                 "cage_wrestling": 8, "strength": 5,
+                 "submission_offense": -5, "kick_power": -5})),
     ("Brawler", "Pressure puncher with a chin",
-     json.dumps({"punch_power": 20, "chin": 15, "durability": 10,
-                 "footwork": -15, "fight_iq": -10, "cardio": -5})),
+     json.dumps({"punch_power": 10, "chin": 8, "durability": 5,
+                 "footwork": -8, "fight_iq": -5, "cardio": -3})),
     ("Counter-Striker", "Evasive sharpshooter",
-     json.dumps({"punch_accuracy": 15, "head_movement": 15,
-                 "footwork": 15, "fight_iq": 15,
-                 "aggression": -10, "takedown_offense": -10})),
+     json.dumps({"punch_accuracy": 8, "head_movement": 8,
+                 "footwork": 8, "fight_iq": 8,
+                 "aggression": -5, "takedown_offense": -5})),
     ("Submission Specialist", "Tap-or-pass specialist",
-     json.dumps({"submission_offense": 20, "bottom_game": 15,
-                 "flexibility": 15,
-                 "punch_power": -10, "chin": -5})),
+     json.dumps({"submission_offense": 10, "bottom_game": 8,
+                 "flexibility": 8,
+                 "punch_power": -5, "chin": -3})),
 ]
 
 # (name, description, bias_json_str). 5 rows = 1 existing (Calm) +
 # 4 new. Note the brief says "5 total, 2 existing + 3 new" but the
 # actual v1.9.0 seed only had 1 personality archetype (Calm); we add
 # 4 new for a total of 5. This matches the brief's "5 personality
-# archetypes" count.
+# archetypes" count. SOFTENED bias values per Task pre-B1-fixes
+# brief — max absolute bias is now 10 (was 20).
 PERSONALITY_ARCHETYPES = [
     ("Calm", "Composed",
-     json.dumps({"composure": 15, "aggression": -10, "patience": 10})),
+     json.dumps({"composure": 8, "aggression": -5, "patience": 5})),
     ("Aggressive", "High-pressure, finish-hunting",
-     json.dumps({"aggression": 20, "killer_instinct": 15,
-                 "patience": -15, "discipline": -5})),
+     json.dumps({"aggression": 10, "killer_instinct": 8,
+                 "patience": -8, "discipline": -3})),
     ("Methodical", "Patient game-planner",
-     json.dumps({"discipline": 15, "patience": 20,
-                 "fight_iq": 10, "risk_taking": -10})),
+     json.dumps({"discipline": 8, "patience": 10,
+                 "fight_iq": 5, "risk_taking": -5})),
     ("Showman", "Crowd-pleaser with an ego",
-     json.dumps({"charisma": 20, "attention_seeking": 20,
-                 "ego": 10, "sportsmanship": -10})),
+     json.dumps({"charisma": 10, "attention_seeking": 10,
+                 "ego": 5, "sportsmanship": -5})),
     ("Quiet Professional", "Let-the-work-speak type",
-     json.dumps({"coachability": 15, "professionalism": 15,
-                 "discipline": 10, "attention_seeking": -15})),
+     json.dumps({"coachability": 8, "professionalism": 8,
+                 "discipline": 5, "attention_seeking": -8})),
 ]
 
 
@@ -489,6 +507,77 @@ def _backfill_fighter_v2(conn, fighter_id, style_archetype_id,
         (physical["height_cm"], physical["reach_cm"],
          physical["stance"], physical["handedness"], fighter_id),
     )
+
+
+# ----------------------------------------------------------------
+# Potential + title_reigns backfill (added v2.0.1, Task pre-B1-fixes).
+# The 5 existing seeded fighters get a hand-picked `potential` value
+# (not random) so the starting roster has a known, sensible shape:
+#   - John Vale + Marcus Reed (AC, the player's starting roster):
+#     higher potential (70-75) — these are the fighters the player
+#     sees first and develops. Giving them solid-to-elite potential
+#     makes the first ~50 hours of playthrough rewarding rather
+#     than punishing.
+#   - Dario Knox, Eli Storm, Cole Briggs (RFL, the inert rival
+#     promotion's roster): medium potential (45-55) — these are
+#     journeymen-of-the-rival-promotion caliber. When RFL becomes
+#     AI-controlled in Task 25, the player will face these (and
+#     sign them as free agents when their contracts expire) — the
+#     medium potential means they're useful but not stars.
+#
+# `title_reigns` is left at the schema DEFAULT 0 for all 5 seeded
+# fighters — none of them have actually won a title yet (both AC
+# and RFL Lightweight titles are seeded VACANT). The first title
+# fight the player resolves will increment the winner's
+# title_reigns via _resolve_title_after_fight() in app.py.
+#
+# The backfill uses a hand-picked (deterministic) value per fighter
+# rather than calling fighter_gen.generate_potential() because the
+# seed should produce the SAME world every time (idempotent). Random
+# potential in the seed would mean a fresh rebuild changes which
+# seeded fighters are "elite" — that's bad for testing and bad for
+# the player's mental model. Random potential is reserved for the
+# regen path (app.generate_fighter) where each new prospect SHOULD
+# be a surprise.
+# ----------------------------------------------------------------
+
+# Fighter ID -> potential value for the 5 seeded fighters.
+# John Vale (1) and Marcus Reed (2): 70-75 (solid-to-elite).
+# Dario Knox (3), Eli Storm (4), Cole Briggs (5): 45-55 (limited-
+# to-solid). Hand-picked deterministic values within the brief's
+# ranges so the seed is idempotent across rebuilds.
+_SEEDED_FIGHTER_POTENTIAL = {
+    1: 72,  # John Vale — solid-to-elite (in [70, 75])
+    2: 71,  # Marcus Reed — solid-to-elite (in [70, 75])
+    3: 50,  # Dario Knox — medium (in [45, 55])
+    4: 47,  # Eli Storm — medium (in [45, 55])
+    5: 53,  # Cole Briggs — medium (in [45, 55])
+}
+
+
+def _backfill_potential_title_reigns(conn):
+    """Backfill `potential` for the 5 seeded fighters.
+
+    Sets `fighter_career.potential` for each of the 5 seeded fighters
+    (fighter_ids 1-5) to the hand-picked value in
+    _SEEDED_FIGHTER_POTENTIAL. `title_reigns` is left at the schema
+    DEFAULT 0 — none of the seeded fighters have won a title yet.
+
+    Idempotent: safe to call multiple times. Uses UPDATE which is a
+    no-op if the value is already correct.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+
+    Returns:
+        None. Side effects: 5 UPDATEs to fighter_career.
+    """
+    for fighter_id, potential in _SEEDED_FIGHTER_POTENTIAL.items():
+        conn.execute(
+            "UPDATE fighter_career SET potential=?, "
+            "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+            (potential, fighter_id),
+        )
 
 def main():
     with sqlite3.connect(DB_PATH) as conn:
@@ -671,6 +760,16 @@ def main():
         # ----------------------------------------------------------------
         _seed_name_pools(conn)  # Task ID 14
 
+        # ----------------------------------------------------------------
+        # Backfill `potential` for the 5 seeded fighters (v2.0.1,
+        # Task pre-B1-fixes). John Vale + Marcus Reed get solid-to-
+        # elite potential (72, 71); the 3 RFL fighters get medium
+        # potential (50, 47, 53). `title_reigns` is left at the
+        # schema DEFAULT 0 (none have won a title yet). Runs AFTER
+        # all 5 fighters' fighter_career rows have been INSERTed.
+        # ----------------------------------------------------------------
+        _backfill_potential_title_reigns(conn)  # Task pre-B1-fixes
+
         conn.commit()
         print("Seeded database.")
         print(f"  Promotions: 2 (Alpha Combat [player, regional_tv, ai_aggression=30], "
@@ -690,6 +789,9 @@ def main():
         print(f"  Backfill: {len(fighter_ids) + len(rfl_fighter_ids)} existing fighters "
               f"backfilled with archetype-biased attributes (21 new attrs + 17 new traits "
               f"+ 4 physical columns per fighter); existing 4 attrs + 3 traits PRESERVED")
+        print(f"  Potential (v2.0.1): {len(fighter_ids) + len(rfl_fighter_ids)} fighters "
+              f"backfilled — AC starters (John Vale, Marcus Reed) get solid-to-elite (70-75); "
+              f"RFL roster gets medium (45-55)")
 
 if __name__ == "__main__":
     main()
