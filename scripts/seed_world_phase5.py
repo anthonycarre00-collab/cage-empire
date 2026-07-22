@@ -135,13 +135,109 @@ def _bio_cult_hero(f):
     return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
+def _bio_unproven_prospect(f):
+    """Bio for a young fighter with few fights — potential unknown.
+    This is the DEFAULT tone for prospects. Crucially, it does NOT
+    reveal whether the fighter has elite or limited potential — the
+    bio reads the same either way. This preserves the scouting
+    challenge: the player has to actually scout (Task 18) or watch
+    the fighter fight to learn their ceiling.
+    """
+    name = f"{f['first_name']} {f['last_name']}"
+    if f['nickname']:
+        name += f" '{f['nickname']}'"
+    wins = f['record_wins']
+    losses = f['record_losses']
+    total = wins + losses
+    variants = [
+        f"{name} is {f['age']} years old with a {wins}-{losses} record and everything still to prove. The {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has shown flashes in 'his' early fights, but the sample size is small and the competition hasn't been elite. Whether 'he' develops into a contender or settles into the mid-card is an open question — one that only time and fights will answer.",
+        f"Early career. {total} fights. {wins}-{losses}. That's the entire resume for {f['first_name']} {f['last_name']}, a {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} training out of {f['gym_name']}. The tools are there — whether they translate against better opposition is what the next few years will determine. Right now, 'he' is a question mark with potential.",
+        f"There's a version of the future where {name} is a champion. There's also a version where 'he' flames out by 25. At {f['age']} with a {wins}-{losses} record, the {_archetype_noun(f['style_archetype_name'])} from {f['gym_name']} is at the career crossroads every young fighter hits — the jump from prospect to contender is the hardest one to make.",
+        f"{f['first_name']} {f['last_name']} has the look of a fighter who could go either way. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} is {wins}-{losses} in 'his' young career — not enough data to know if 'he' is a future title challenger or a career gatekeeper. The next few fights will tell us which.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
+
+
+def _bio_mid_carder(f):
+    """Bio for a solid-but-unspectacular mid-card fighter. The
+    backbone of any promotion — good enough to stick around, not
+    good enough to break through.
+    """
+    name = f"{f['first_name']} {f['last_name']}"
+    wins = f['record_wins']
+    losses = f['record_losses']
+    variants = [
+        f"{name} is the kind of fighter who fills out a card and makes the better fighters earn 'their' money. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has put together a {wins}-{losses} record that's good enough to stay employed but not quite good enough to crack the top 15. There's no shame in that — someone has to be the fight before the fight.",
+        f"Solid. Dependable. Unspectacular. {f['first_name']} {f['last_name']} is the definition of a mid-card roster filler — and that's not a knock. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} from {f['gym_name']} is {wins}-{losses}, shows up on weight, and gives the prospects a test without embarrassing 'himself'. Every promotion needs fighters like this.",
+        f"Not every fighter is a contender. {name} knows that better than anyone. At {f['age']}, the {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has settled into a role: beat the fighters 'he' should beat, lose to the fighters 'he' shouldn't, and keep the card moving. A {wins}-{losses} record built on that reality.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he").replace("'himself'", "himself").replace("'their'", "their")
+
+
+def _bio_late_bloomer(f):
+    """Bio for an older fighter who's hitting their stride late."""
+    name = f"{f['first_name']} {f['last_name']}"
+    wins = f['record_wins']
+    losses = f['record_losses']
+    return (
+        f"They said {name} was done. They were wrong. The {f['age']}-year-old "
+        f"{_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has found "
+        f"another gear late in 'his' career, putting together a run that has the division "
+        f"re-evaluating what 'he' is capable of. At {wins}-{losses}, the late-career surge "
+        f"is real — the question is how far it goes."
+    ).replace("'his'", "his").replace("'he'", "he")
+
+
+def _bio_enforcer(f):
+    """Bio for a tough, intimidating fighter who wins through pressure."""
+    name = f"{f['first_name']} {f['last_name']}"
+    if f['nickname']:
+        name += f" '{f['nickname']}'"
+    wins = f['record_wins']
+    losses = f['record_losses']
+    return (
+        f"{name} doesn't win pretty. {f['first_name']} wins ugly, wins tired, wins "
+        f"through attrition. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} "
+        f"out of {f['gym_name']} has built a {wins}-{losses} record on the back of pressure, "
+        f"toughness, and the kind of relentless forward motion that breaks lesser fighters. "
+        f"Style points don't matter when the referee raises your hand."
+    )
+
+
+def _bio_neutral(f):
+    """Generic bio tone — used when no other tone fits. Reads as a
+    straightforward career summary without revealing potential.
+    """
+    name = f"{f['first_name']} {f['last_name']}"
+    if f['nickname']:
+        name += f" '{f['nickname']}'"
+    wins = f['record_wins']
+    losses = f['record_losses']
+    draws = f['record_draws']
+    total = wins + losses + draws
+    return (
+        f"{name} is a {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} "
+        f"out of {f['gym_name']}. With a professional record of {wins}-{losses}"
+        f"{f'-{draws}' if draws > 0 else ''} across {total} fights, {f['first_name']} "
+        f"has been a steady presence in the {f['weight_class_name']} division. "
+        f"The {f['promotion_name']} roster fighter continues to compete against the "
+        f"best the division has to offer."
+    )
+
+
 BIO_TEMPLATES = {
-    "champion_reign":    _bio_champion_reign,
-    "hype_prospect":     _bio_hype_prospect,
-    "grizzled_veteran":  _bio_grizzled_veteran,
-    "fallen_contender":  _bio_fallen_contender,
-    "journeyman":        _bio_journeyman,
-    "cult_hero":         _bio_cult_hero,
+    "champion_reign":     _bio_champion_reign,
+    "unproven_prospect":  _bio_unproven_prospect,
+    "grizzled_veteran":   _bio_grizzled_veteran,
+    "fallen_contender":   _bio_fallen_contender,
+    "journeyman":         _bio_journeyman,
+    "cult_hero":          _bio_cult_hero,
+    "mid_carder":         _bio_mid_carder,
+    "late_bloomer":       _bio_late_bloomer,
+    "enforcer":           _bio_enforcer,
+    "neutral":            _bio_neutral,
 }
 
 
@@ -167,25 +263,71 @@ def _archetype_noun(name):
 
 
 def _pick_bio_tone(f):
-    """Pick the appropriate bio_tone for a fighter based on their stats."""
-    # Current champion?
+    """Pick the appropriate bio_tone for a fighter based on their stats.
+
+    CRITICAL DESIGN RULE: the bio tone must NOT reveal the fighter's
+    hidden `potential` value. A limited-potential prospect and an elite-
+    potential prospect get the SAME tone ('unproven_prospect') — the
+    bio reads identically either way. This preserves the scouting
+    challenge: the player has to actually scout (Task 18) or watch the
+    fighter fight to learn their ceiling.
+
+    Tone selection is based on OBSERVABLE career state only:
+    - Is the fighter a current champion? → champion_reign
+    - Is the fighter young with few fights? → unproven_prospect
+    - Is the fighter old with many fights? → grizzled_veteran
+    - Is the fighter on a losing streak with a good record? → fallen_contender
+    - Is the fighter on a win streak late in career? → late_bloomer
+    - Does the fighter have high fan_friendliness? → cult_hero
+    - Does the fighter have high aggression + durability? → enforcer
+    - Is the fighter mid-career with a .500-ish record? → mid_carder
+    - Default → journeyman (if many fights) or neutral (if few)
+    """
+    total_fights = f['record_wins'] + f['record_losses'] + f['record_draws']
+
+    # Current champion — always champion_reign (observable: they hold a belt)
     if f.get('is_champion'):
         return "champion_reign"
-    # Top prospect (young + high potential + few fights)?
-    if f['age'] <= 23 and f['potential'] >= 70 and (f['record_wins'] + f['record_losses']) <= 6:
-        return "hype_prospect"
-    # Veteran with many fights?
-    total_fights = f['record_wins'] + f['record_losses']
+
+    # Young fighter with few fights — unproven_prospect REGARDLESS of
+    # potential. This is the key: an elite 20-year-old and a limited
+    # 20-year-old both get 'unproven_prospect'. The bio says "could go
+    # either way" — true for both.
+    if f['age'] <= 24 and total_fights <= 8:
+        return "unproven_prospect"
+
+    # Old fighter with many fights — grizzled_veteran
     if f['age'] >= 36 and total_fights >= 30:
         return "grizzled_veteran"
-    # Fallen contender (losing streak)?
+
+    # Fallen contender — good record but on a losing streak (observable)
     if f.get('loss_streak', 0) >= 3 and f['record_wins'] >= 10:
         return "fallen_contender"
-    # High fan_friendliness but not champion → cult hero
+
+    # Late bloomer — older fighter on a win streak (observable)
+    if f['age'] >= 33 and f.get('win_streak', 0) >= 3:
+        return "late_bloomer"
+
+    # Cult hero — high fan_friendliness (observable personality trait)
     if f.get('fan_friendliness', 50) >= 75:
         return "cult_hero"
-    # Default: journeyman
-    return "journeyman"
+
+    # Enforcer — high aggression (observable personality trait)
+    if f.get('aggression', 50) >= 75:
+        return "enforcer"
+
+    # Mid-carder — mid-career, .500-ish record, not on a streak
+    if 25 <= f['age'] <= 35 and total_fights >= 10:
+        win_rate = f['record_wins'] / max(1, total_fights)
+        if 0.35 <= win_rate <= 0.65:
+            return "mid_carder"
+
+    # Journeyman — veteran with many fights, mediocre record
+    if total_fights >= 15:
+        return "journeyman"
+
+    # Default — neutral (for anyone who doesn't fit above)
+    return "neutral"
 
 
 def main():
@@ -205,10 +347,21 @@ def main():
     rng = random.Random(20260725)
 
     # ----------------------------------------------------------------
-    # 1. Fighter bios for the top ~200 featured fighters.
-    #    Featured = champions + top contenders + top prospects + notable veterans.
+    # 1. Fighter bios for ALL active fighters (not just top 200).
+    #
+    # CRITICAL: every active fighter gets a bio. The previous approach
+    # (top 200 only) created a scouting tell — the player could identify
+    # "featured" fighters by the presence of a bio. Now all 4000 active
+    # fighters + 60 retired legends get one.
+    #
+    # The bio TONE is selected based on OBSERVABLE career state only
+    # (champion, age, record, streaks, fan_friendliness, aggression).
+    # It NEVER reveals the fighter's hidden `potential` — a limited-
+    # potential prospect and an elite-potential prospect both get
+    # 'unproven_prospect' with identical bio text. This preserves the
+    # scouting challenge per the user's directive.
     # ----------------------------------------------------------------
-    print("Generating fighter bios for top ~200 featured fighters...")
+    print("Generating fighter bios for ALL active fighters...")
 
     # Get current champions
     champions = conn.execute(
@@ -218,8 +371,8 @@ def main():
     ).fetchall()
     champion_ids = {r[0]: (r[1], r[2]) for r in champions}
 
-    # Get top 100 by rating (contenders + prospects + veterans)
-    top_fighters = conn.execute(
+    # Get ALL active fighters (not just top 200)
+    all_fighters = conn.execute(
         "SELECT f.fighter_id, f.first_name, f.last_name, f.nickname, "
         "f.gender, f.date_of_birth, f.fight_style_archetype_id, "
         "f.current_gym_id, f.current_promotion_id, f.weight_class_id, "
@@ -228,7 +381,7 @@ def main():
         "fc.win_streak, fc.loss_streak, fc.potential, fc.title_reigns, "
         "r.rating, sa.name AS style_archetype_name, "
         "wc.name AS weight_class_name, p.name AS promotion_name, "
-        "g.name AS gym_name "
+        "g.name AS gym_name, fp.aggression "
         "FROM fighters f "
         "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
         "LEFT JOIN rankings r ON r.fighter_id=f.fighter_id "
@@ -236,14 +389,16 @@ def main():
         "LEFT JOIN weight_classes wc ON wc.weight_class_id=f.weight_class_id "
         "LEFT JOIN promotions p ON p.promotion_id=f.current_promotion_id "
         "LEFT JOIN gyms g ON g.gym_id=f.current_gym_id "
-        "ORDER BY r.rating DESC LIMIT 200"
+        "LEFT JOIN fighter_personality fp ON fp.fighter_id=f.fighter_id "
+        "WHERE f.is_retired = 0"
     ).fetchall()
 
     n_bios = 0
-    for row in top_fighters:
+    BATCH = 500
+    for row in all_fighters:
         (fid, first, last, nick, gender, dob, sa_id, gym_id, promo_id, wc_id,
          market, fan_friend, w, l, d, ws, ls, pot, reigns, rating,
-         sa_name, wc_name, promo_name, gym_name) = row
+         sa_name, wc_name, promo_name, gym_name, aggression) = row
         # Compute age
         try:
             dob_dt = datetime.strptime(dob, "%Y-%m-%d")
@@ -269,9 +424,10 @@ def main():
             'style_archetype_name': sa_name or 'Balanced',
             'weight_class_name': wc_name or 'Lightweight',
             'promotion_name': promo_name or 'Alpha Combat Federation',
-            'gym_name': gym_name or 'Ironhouse Gym',
+            'gym_name': gym_name or 'an independent camp',
             'fan_friendliness': fan_friend or 50,
             'marketability': market or 50,
+            'aggression': aggression or 50,
         }
         bio_tone = _pick_bio_tone(f_data)
         bio_fn = BIO_TEMPLATES[bio_tone]
@@ -283,8 +439,11 @@ def main():
             (fid, bio_text, bio_tone),
         )
         n_bios += 1
+        if n_bios % BATCH == 0:
+            conn.commit()
+            print(f"  ...{n_bios} bios generated")
     conn.commit()
-    print(f"  Fighter bios: {n_bios}")
+    print(f"  Fighter bios: {n_bios} (all active fighters)")
 
     # ----------------------------------------------------------------
     # 2. Retired legends in the Hall of Fame (~60).

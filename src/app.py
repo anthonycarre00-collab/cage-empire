@@ -4762,11 +4762,23 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         if nicks:
             nickname = random.choice(nicks)[0]
 
-    # 5. Determine style archetype (style DNA). If a retiring fighter
-    #    was specified, inherit their fight_style_archetype_id.
-    #    Otherwise pick a random archetype.
+    # 5. Determine style archetype (style DNA).
+    #
+    #    v2.6.2 (user directive): DNA inheritance is OCCASIONAL, not
+    #    always. Previously the regen always copied the retiring fighter's
+    #    archetype, which makes the DB repeat itself over time — the same
+    #    archetypes cycle through the same weight classes forever. Now:
+    #      - 30% chance: inherit the retiring fighter's archetype (style
+    #        DNA continuity — "the new generation Wrestler from Dagestan")
+    #      - 70% chance: pick a random archetype (weighted by the retiring
+    #        fighter's nation, so a Brazilian replacement is still likely
+    #        to be a Grappler even if not the same archetype as the retiree)
+    #
+    #    This produces realistic variety: some successors carry the torch,
+    #    most are new fighters with their own style.
     style_archetype_id = None
-    if style_dna_source_id is not None:
+    if style_dna_source_id is not None and random.random() < 0.30:
+        # 30% chance: inherit style DNA
         row = conn.execute(
             "SELECT fight_style_archetype_id FROM fighters WHERE fighter_id = ?",
             (style_dna_source_id,),
@@ -4774,12 +4786,86 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         if row:
             style_archetype_id = row[0]
     if style_archetype_id is None:
-        # Pick a random archetype (defensive: if no archetypes exist,
-        # style_archetype_id stays None — the column is nullable).
-        row = conn.execute(
-            "SELECT style_archetype_id FROM style_archetypes ORDER BY RANDOM() LIMIT 1"
-        ).fetchone()
-        style_archetype_id = row[0] if row else None
+        # 70% chance (or no source fighter): pick a random archetype.
+        # v2.6.2: if we know the retiring fighter's nation, weight the
+        # archetype selection by national tendency (a Brazilian successor
+        # is more likely to be a Grappler, a Dagestani more likely to be
+        # a Wrestler). This keeps national identity even when the
+        # archetype isn't directly inherited.
+        nation_name = None
+        if style_dna_source_id is not None:
+            loc_row = conn.execute(
+                "SELECT n.name FROM fighters f JOIN nations n ON n.nation_id=f.birth_nation_id "
+                "WHERE f.fighter_id = ?",
+                (style_dna_source_id,),
+            ).fetchone()
+            if loc_row:
+                nation_name = loc_row[0]
+        # Use the nation-archetype weighting from Phase 3 (imported lazily
+        # to avoid circular imports at module load). If nation_name is
+        # None or the nation has no overrides, fall back to uniform random.
+        if nation_name:
+            try:
+                # Lazy import — the seed scripts are in scripts/, not src/,
+                # so we can't import them directly. Instead, replicate the
+                # NATION_ARCHETYPE_OVERRIDES logic inline (small dict).
+                # This is a known duplication — if the overrides change in
+                # Phase 3, they must be updated here too. Documented in
+                # the worklog as decision D7.
+                from collections import defaultdict
+                _BASE_WEIGHTS = {
+                    "Balanced": 25, "Striker": 18, "Grappler": 15,
+                    "Wrestler": 15, "Brawler": 10, "Counter-Striker": 10,
+                    "Submission Specialist": 7,
+                }
+                _NATION_OVERRIDES = {
+                    "Brazil":       {"Grappler": 20, "Submission Specialist": 15, "Striker": 5},
+                    "Dagestan":     {"Wrestler": 30, "Grappler": 10},
+                    "Russia":       {"Wrestler": 15, "Grappler": 10, "Submission Specialist": 5},
+                    "Japan":        {"Striker": 10, "Wrestler": 5, "Submission Specialist": 8},
+                    "Netherlands":  {"Striker": 20, "Counter-Striker": 10},
+                    "Cuba":         {"Striker": 15, "Wrestler": 10},
+                    "Mexico":       {"Striker": 10, "Brawler": 15},
+                    "United States":{"Wrestler": 10, "Striker": 5, "Balanced": 5},
+                    "United Kingdom":{"Striker": 12, "Brawler": 8},
+                    "Ireland":      {"Striker": 15, "Brawler": 10},
+                    "Nigeria":      {"Striker": 12, "Brawler": 8},
+                    "South Korea":  {"Striker": 8, "Wrestler": 8, "Submission Specialist": 5},
+                    "Australia":    {"Striker": 8, "Grappler": 5, "Balanced": 5},
+                    "Canada":       {"Wrestler": 8, "Balanced": 5},
+                    "France":       {"Striker": 10, "Submission Specialist": 8},
+                    "Germany":      {"Wrestler": 10, "Striker": 5},
+                    "Poland":       {"Striker": 8, "Brawler": 8},
+                    "Sweden":       {"Wrestler": 10, "Striker": 5},
+                    "China":        {"Striker": 8, "Wrestler": 8, "Submission Specialist": 5},
+                    "Argentina":    {"Grappler": 10, "Striker": 8},
+                }
+                weights = dict(_BASE_WEIGHTS)
+                if nation_name in _NATION_OVERRIDES:
+                    for arch, bonus in _NATION_OVERRIDES[nation_name].items():
+                        weights[arch] = weights.get(arch, 0) + bonus
+                # Fetch all archetype names + IDs
+                archetypes = conn.execute(
+                    "SELECT style_archetype_id, name FROM style_archetypes"
+                ).fetchall()
+                # Build weighted list
+                names = [a[1] for a in archetypes]
+                w = [weights.get(n, 1) for n in names]
+                chosen_name = random.choices(names, weights=w, k=1)[0]
+                style_archetype_id = next(
+                    (a[0] for a in archetypes if a[1] == chosen_name), None
+                )
+            except Exception:
+                # Fallback: uniform random
+                row = conn.execute(
+                    "SELECT style_archetype_id FROM style_archetypes ORDER BY RANDOM() LIMIT 1"
+                ).fetchone()
+                style_archetype_id = row[0] if row else None
+        else:
+            row = conn.execute(
+                "SELECT style_archetype_id FROM style_archetypes ORDER BY RANDOM() LIMIT 1"
+            ).fetchone()
+            style_archetype_id = row[0] if row else None
 
     # 6. Determine personality archetype (random).
     row = conn.execute(
@@ -4849,12 +4935,18 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         if loc_row:
             birth_city_id, birth_nation_id = loc_row
 
-    # v2.6.1: assign a gym in the retiring fighter's nation (so the
-    # new prospect can participate in training camps immediately,
-    # per Task 16's requirement). Falls back to a random gym if no
-    # gym exists in the nation.
+    # v2.6.2 (user directive): NOT all regen fighters get a gym. The
+    # user wants some fighters to enter with current_gym_id=NULL —
+    # young prospects who haven't settled at a gym yet, or free agents
+    # who train independently. Future gym-joining logic will use
+    # personality + attributes + age to decide whether a fighter joins
+    # a gym and which one. For now:
+    #   - 50% chance: assign a gym in the retiring fighter's nation
+    #     (if one exists)
+    #   - 50% chance: leave gym NULL (the fighter trains independently
+    #     until signed + the future gym-joining logic runs)
     gym_id = None
-    if birth_nation_id is not None:
+    if random.random() < 0.50 and birth_nation_id is not None:
         gym_row = conn.execute(
             "SELECT gym_id FROM gyms WHERE nation_id = ? "
             "ORDER BY RANDOM() LIMIT 1",
@@ -4862,12 +4954,6 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         ).fetchone()
         if gym_row:
             gym_id = gym_row[0]
-    if gym_id is None:
-        # Fallback: any gym
-        gym_row = conn.execute(
-            "SELECT gym_id FROM gyms ORDER BY RANDOM() LIMIT 1"
-        ).fetchone()
-        gym_id = gym_row[0] if gym_row else None
 
     # v2.6.1: randomized meta-columns (was all 50).
     injury_proneness = random.randint(20, 80)
@@ -5019,50 +5105,43 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         (src_id, headline, body, "neutral", "prospect", fid, published_at),
     )
 
-    # 13. v2.6.1 (forensic audit fix): generate a bio for the new
-    #     prospect IF they have elite potential (70+). This ensures
-    #     that future champions (who emerge from the regen pool) have
-    #     a bio the UI can display, matching the seeded world's top
-    #     200 featured fighters. Solid/limited-potential regen fighters
-    #     don't get a bio — the UI will show "no bio available" and
-    #     the voice layer (Task 19) can generate a short procedural
-    #     descriptor on the fly.
-    if potential >= 70:
-        # Build a hype_prospect bio — the new fighter is a young
-        # prospect with elite potential. This is the same tone used
-        # for seeded top prospects.
-        # Inherit gym name + style archetype name for the bio.
-        gym_name = "an unknown gym"
-        if gym_id is not None:
-            g_row = conn.execute(
-                "SELECT name FROM gyms WHERE gym_id=?", (gym_id,)
-            ).fetchone()
-            if g_row:
-                gym_name = g_row[0]
-        sa_name = "well-rounded fighter"
-        if style_archetype_id is not None:
-            sa_row = conn.execute(
-                "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
-                (style_archetype_id,),
-            ).fetchone()
-            if sa_row:
-                sa_name = sa_row[0]
-        # Compute age from DOB
-        age_years = age_years  # already computed above
-        nick_str = f' "{nickname}"' if nickname else ''
-        bio_text = (
-            f"The buzz around {chosen_first} {chosen_last}{nick_str} started "
-            f"before he ever stepped into a major promotion's cage. At "
-            f"{age_years} years old with elite potential, the {sa_name.lower()} "
-            f"out of {gym_name} is the kind of prospect that makes matchmakers "
-            f"salivate. The ceiling is high — the question is how quickly he "
-            f"reaches it."
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO fighter_bios (fighter_id, bio_text, bio_tone) "
-            "VALUES (?, ?, ?)",
-            (fid, bio_text, "hype_prospect"),
-        )
+    # 13. v2.6.2 (user directive): generate a bio for EVERY regen
+    #     fighter, not just elite-potential ones. This matches the
+    #     Phase 5 change where all 4000 active fighters get bios.
+    #     The bio tone is 'unproven_prospect' for all regen fighters
+    #     (they're young, few fights, unknown ceiling) — this does NOT
+    #     reveal potential. A limited-potential regen and an elite-
+    #     potential regen get identical bios.
+    gym_name = "an independent camp"
+    if gym_id is not None:
+        g_row = conn.execute(
+            "SELECT name FROM gyms WHERE gym_id=?", (gym_id,)
+        ).fetchone()
+        if g_row:
+            gym_name = g_row[0]
+    sa_name = "well-rounded fighter"
+    if style_archetype_id is not None:
+        sa_row = conn.execute(
+            "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
+            (style_archetype_id,),
+        ).fetchone()
+        if sa_row:
+            sa_name = sa_row[0]
+    nick_str = f' "{nickname}"' if nickname else ''
+    total_fights = 0  # regen fighters start at 0-0-0
+    import random as _bio_rng
+    bio_variants = [
+        f"{chosen_first} {chosen_last}{nick_str} is {age_years} years old with a {total_fights}-{total_fights} record and everything still to prove. The {sa_name.lower()} out of {gym_name} has shown flashes in 'his' early training, but the sample size is small and the competition hasn't been elite. Whether 'he' develops into a contender or settles into the mid-card is an open question — one that only time and fights will answer.",
+        f"Early career. That's the entire resume for {chosen_first} {chosen_last}{nick_str}, a {age_years}-year-old {sa_name.lower()} training out of {gym_name}. The tools are there — whether they translate against real opposition is what the next few years will determine. Right now, 'he' is a question mark with potential.",
+        f"There's a version of the future where {chosen_first} {chosen_last}{nick_str} is a champion. There's also a version where 'he' flames out by 25. At {age_years} with no professional fights, the {sa_name.lower()} from {gym_name} is at the starting line every young fighter hits — the jump from prospect to contender is the hardest one to make.",
+        f"{chosen_first} {chosen_last}{nick_str} has the look of a fighter who could go either way. The {age_years}-year-old {sa_name.lower()} out of {gym_name} is just starting 'his' career — not enough data to know if 'he' is a future title challenger or a career gatekeeper. The next few fights will tell us which.",
+    ]
+    bio_text = _bio_rng.choice(bio_variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
+    conn.execute(
+        "INSERT OR REPLACE INTO fighter_bios (fighter_id, bio_text, bio_tone) "
+        "VALUES (?, ?, ?)",
+        (fid, bio_text, "unproven_prospect"),
+    )
 
     # 14. Return the new fighter_id. The caller (tick_processor's
     #     _check_retirements) writes the regen_lineage row linking the

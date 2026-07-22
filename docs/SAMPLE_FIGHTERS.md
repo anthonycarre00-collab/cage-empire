@@ -4,6 +4,12 @@
 > through `seed_world_phase5.py`). These are REAL fighters from the seeded
 > world, not fabricated examples.
 > **Generated:** 2026-07-23 (schema v2.6.0, 4,000 active fighters + 60 HoF legends)
+>
+> **v2.6.2 update:** ALL 4,000 active fighters now have bios (was top 200 only).
+> The bio tone is selected from OBSERVABLE career state only and NEVER reveals
+> the fighter's hidden `potential` — a limited-potential prospect and an
+> elite-potential prospect get identical `unproven_prospect` bios. This
+> preserves the scouting challenge per the user's directive.
 
 ---
 
@@ -284,23 +290,34 @@ When a fighter retires (age 40+ with declining health, or age 45
 mandatory), the `_check_retirements()` function in `tick_processor.py`
 calls `app.generate_fighter()` to spawn a replacement. The new fighter:
 
-1. **Inherits the retiring fighter's style archetype** (style DNA) — a
-   retiring Wrestler spawns a young Wrestler prospect
+1. **OCCASIONALLY inherits the retiring fighter's style archetype**
+   (30% chance — style DNA continuity). 70% of the time, picks a random
+   archetype weighted by the retiring fighter's nation (a Brazilian
+   successor is still likely to be a Grappler, but not guaranteed to
+   match the retiree). This prevents the DB from repeating itself over
+   time — the same archetypes don't cycle through the same weight
+   classes forever.
 2. **Inherits the retiring fighter's birth nation** (region-aware regen) —
    a retiring Brazilian spawns a Brazilian replacement
 3. **Gets a region-appropriate name** from the name pool (Brazilian
    fighter → Brazilian name)
-4. **Is assigned to a gym in the retiring fighter's nation** — can
-   participate in training camps immediately (Task 16)
+4. **MAY OR MAY NOT be assigned a gym** (50% chance) — young prospects
+   who haven't settled at a gym yet enter with `current_gym_id=NULL`.
+   Future gym-joining logic will use personality + attributes + age to
+   decide whether a fighter joins a gym and which one.
 5. **Has widened personality variation** (matches Phase 3's approach) —
    not bland 50-everything
 6. **Has randomized meta-columns** (injury_proneness, marketability, etc.)
-7. **Gets a bio IF elite potential (70+)** — future champions have bios
+7. **Gets a bio** (unproven_prospect tone) — does NOT reveal potential.
+   A limited-potential regen and an elite-potential regen get identical
+   bios. The player must scout (Task 18) or watch them fight to learn
+   their ceiling.
 8. **Enters as a free agent** (no promotion) — the player or AI signs them
 9. **Has potential from the 10/30/60 distribution** — most regen fighters
    are limited, ~10% are elite
 
 This maintains DB balance: when a 40-year-old veteran retires, a 18-26
 year old prospect enters the free agent pool. The total fighter count
-stays stable, the age distribution stays realistic, and the style DNA of
-the retiring fighter lives on in their successor.
+stays stable, the age distribution stays realistic, and the style DNA
+of the retiring fighter SOMETIMES lives on in their successor (30% of
+the time) but usually a new style emerges.

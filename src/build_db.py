@@ -1236,12 +1236,11 @@ CREATE TABLE IF NOT EXISTS fighter_bios (
     fighter_id  INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,
     bio_text    TEXT NOT NULL,
     bio_tone    TEXT NOT NULL DEFAULT 'neutral'
-                CHECK (bio_tone IN ('neutral', 'hype_prospect',
+                CHECK (bio_tone IN ('neutral', 'unproven_prospect',
                                     'grizzled_veteran', 'champion_reign',
                                     'fallen_contender', 'journeyman',
-                                    'cult_hero', 'tragic_figure',
-                                    'late_bloomer', 'enforcer',
-                                    'fan_favorite', 'villain')),
+                                    'cult_hero', 'mid_carder',
+                                    'late_bloomer', 'enforcer')),
     created_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1909,12 +1908,11 @@ def _migrate_v2_6_0_world_seed_prep(conn):
             "    fighter_id  INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
             "    bio_text    TEXT NOT NULL,\n"
             "    bio_tone    TEXT NOT NULL DEFAULT 'neutral'\n"
-            "                CHECK (bio_tone IN ('neutral', 'hype_prospect',\n"
+            "                CHECK (bio_tone IN ('neutral', 'unproven_prospect',\n"
             "                                    'grizzled_veteran', 'champion_reign',\n"
             "                                    'fallen_contender', 'journeyman',\n"
-            "                                    'cult_hero', 'tragic_figure',\n"
-            "                                    'late_bloomer', 'enforcer',\n"
-            "                                    'fan_favorite', 'villain')),\n"
+            "                                    'cult_hero', 'mid_carder',\n"
+            "                                    'late_bloomer', 'enforcer')),\n"
             "    created_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
             "    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
             ")"

@@ -474,24 +474,45 @@ def main():
                 pers[k] = max(10, min(95, widened))
 
             # Scale attributes UP toward potential for prime/declining/veteran
-            # (a 32-year-old prime fighter has grown into their potential)
+            # (a 32-year-old prime fighter has grown into their potential).
+            # v2.6.2: tightened growth factors so veterans diverge MORE
+            # from their potential — an elite veteran (potential 85) should
+            # have attributes in the 68-81 range, a limited veteran
+            # (potential 30) should stay around 25-30. This makes the
+            # career arc visible: by prime, you can read a fighter's
+            # ceiling from their attributes (but by then they have a
+            # fight record too).
             if stage in ("prime", "declining", "veteran"):
-                growth_factor = 0.7 + rng.uniform(0, 0.25)  # 70-95% of potential reached
+                growth_factor = 0.80 + rng.uniform(0, 0.15)  # 80-95% of potential reached
                 for k in attrs:
-                    target = int(potential * growth_factor + rng.randint(-5, 5))
+                    target = int(potential * growth_factor + rng.randint(-4, 4))
                     attrs[k] = max(attrs[k], min(100, target))
             elif stage == "developing":
-                growth_factor = 0.5 + rng.uniform(0, 0.2)
+                growth_factor = 0.55 + rng.uniform(0, 0.20)  # 55-75% of potential reached
                 for k in attrs:
                     target = int(potential * growth_factor + rng.randint(-3, 3))
                     attrs[k] = max(attrs[k], min(100, target))
-            # prospects keep their base attributes (haven't grown yet)
+            # prospects keep their base attributes (haven't grown yet) —
+            # this is the KEY scouting mechanic: an 18-year-old elite
+            # prospect and an 18-year-old limited prospect have the same
+            # attributes. You can't tell them apart without scouting.
 
             # Career record
             wins, losses, draws = _gen_record_for_stage(stage, potential, rng)
 
-            # Pick gym
-            gym_id = _pick_gym(nation_id, rng, conn)
+            # Pick gym — NOT all fighters get one. Per user directive,
+            # some fighters enter without a home gym (they train
+            # independently or are between gyms). Future gym-joining
+            # logic will use personality + attributes + age to decide.
+            # For now:
+            #   - Signed fighters: 85% get a gym (15% are between gyms)
+            #   - Free agents: 50% get a gym (50% train independently)
+            if promo_id is None:
+                # Free agent
+                gym_id = _pick_gym(nation_id, rng, conn) if rng.random() < 0.50 else None
+            else:
+                # Signed fighter
+                gym_id = _pick_gym(nation_id, rng, conn) if rng.random() < 0.85 else None
 
             # Birth location
             birth_city_id, birth_nation_id = _pick_birth_location(nation_name, rng, conn)

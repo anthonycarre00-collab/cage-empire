@@ -292,9 +292,136 @@ def main():
 """)
 
     # ----------------------------------------------------------------
-    # 12. Sample fighters (for the doc)
+    # 12. Potential vs Current Ability Balance (user concern)
     # ----------------------------------------------------------------
-    print("\n--- 12. Sample Fighters (for documentation) ---")
+    print("\n--- 12. Potential vs Current Ability Balance ---")
+    print("""
+  Design intent: young fighters (prospects) should have SIMILAR attributes
+  regardless of potential — you can't tell a future champion from a future
+  journeyman by looking at an 18-year-old's stats. As fighters age and
+  fight, their attributes diverge toward their potential. By prime (28-32),
+  attributes strongly correlate with potential — but by then the fighter
+  has a track record the player can read.
+""")
+
+    # Average attribute value by age group × potential tier
+    print("  Average overall attribute (mean of 25 attrs) by age × potential:")
+    print(f"  {'Age group':<25} {'Limited (25-49)':<20} {'Solid (50-69)':<20} {'Elite (70-90)':<20}")
+    for label, lo, hi in [
+        ("18-22 (prospect)", 18, 22),
+        ("23-27 (developing)", 23, 27),
+        ("28-32 (prime)", 28, 32),
+        ("33-37 (declining)", 33, 37),
+        ("38-43 (veteran)", 38, 43),
+    ]:
+        row = []
+        for pot_lo, pot_hi in [(25, 49), (50, 69), (70, 90)]:
+            r = conn.execute(
+                "SELECT AVG((fa.punch_power + fa.punch_accuracy + fa.kick_power + "
+                "fa.kick_accuracy + fa.head_movement + fa.footwork + fa.clinch_striking + "
+                "fa.clinch_offense + fa.clinch_defense + fa.takedown_offense + "
+                "fa.takedown_defense + fa.top_control + fa.bottom_game + "
+                "fa.submission_offense + fa.submission_defense + fa.scramble_ability + "
+                "fa.cage_wrestling + fa.recovery_rate + fa.speed_explosiveness + "
+                "fa.strength + fa.durability + fa.flexibility + fa.adaptability + "
+                "fa.cardio + fa.fight_iq + fa.chin) / 26.0) "
+                "FROM fighters f "
+                "JOIN fighter_attributes fa ON fa.fighter_id=f.fighter_id "
+                "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
+                "WHERE f.date_of_birth BETWEEN ? AND ? "
+                "AND fc.potential BETWEEN ? AND ? "
+                "AND f.is_retired = 0",
+                (f"{2026-hi}-01-01", f"{2026-lo}-12-31", pot_lo, pot_hi),
+            ).fetchone()
+            row.append(r[0] if r[0] else 0)
+        print(f"  {label:<25} {row[0]:<20.1f} {row[1]:<20.1f} {row[2]:<20.1f}")
+
+    # Check: do prospects (18-22) have similar attributes across potential tiers?
+    print("\n  Scouting difficulty check (prospects 18-22):")
+    prospect_attrs = {}
+    for tier, pot_lo, pot_hi in [("limited", 25, 49), ("solid", 50, 69), ("elite", 70, 90)]:
+        r = conn.execute(
+            "SELECT AVG((fa.punch_power + fa.cardio + fa.fight_iq + fa.chin) / 4.0) "
+            "FROM fighters f "
+            "JOIN fighter_attributes fa ON fa.fighter_id=f.fighter_id "
+            "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
+            "WHERE f.date_of_birth >= '2004-01-01' "
+            "AND fc.potential BETWEEN ? AND ? AND f.is_retired = 0",
+            (pot_lo, pot_hi),
+        ).fetchone()
+        prospect_attrs[tier] = r[0] if r[0] else 0
+        print(f"    {tier} prospects: avg of key attrs = {prospect_attrs[tier]:.1f}")
+    spread = max(prospect_attrs.values()) - min(prospect_attrs.values())
+    if spread < 8:
+        print(f"    ✓ SPREAD = {spread:.1f} (< 8) — prospects are hard to distinguish by attributes alone. Scouting challenge preserved.")
+    else:
+        print(f"    ⚠️  SPREAD = {spread:.1f} (>= 8) — prospects may be too easy to distinguish by attributes. Consider tightening.")
+
+    # Check: do veterans (38-43) have attributes that correlate with potential?
+    print("\n  Veteran reveal check (veterans 38-43):")
+    vet_attrs = {}
+    for tier, pot_lo, pot_hi in [("limited", 25, 49), ("solid", 50, 69), ("elite", 70, 90)]:
+        r = conn.execute(
+            "SELECT AVG((fa.punch_power + fa.cardio + fa.fight_iq + fa.chin) / 4.0) "
+            "FROM fighters f "
+            "JOIN fighter_attributes fa ON fa.fighter_id=f.fighter_id "
+            "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
+            "WHERE f.date_of_birth <= '1988-12-31' "
+            "AND fc.potential BETWEEN ? AND ? AND f.is_retired = 0",
+            (pot_lo, pot_hi),
+        ).fetchone()
+        vet_attrs[tier] = r[0] if r[0] else 0
+        print(f"    {tier} veterans: avg of key attrs = {vet_attrs[tier]:.1f}")
+    vet_spread = max(vet_attrs.values()) - min(vet_attrs.values())
+    if vet_spread >= 15:
+        print(f"    ✓ SPREAD = {vet_spread:.1f} (>= 15) — veterans reveal their potential through attributes. Realistic.")
+    else:
+        print(f"    ⚠️  SPREAD = {vet_spread:.1f} (< 15) — veterans don't diverge enough by potential.")
+
+    # Bio coverage check (user concern: all fighters should have bios)
+    print("\n  Bio coverage (user directive: ALL fighters must have bios):")
+    total_active = conn.execute(
+        "SELECT COUNT(*) FROM fighters WHERE is_retired = 0"
+    ).fetchone()[0]
+    with_bio = conn.execute(
+        "SELECT COUNT(*) FROM fighters f JOIN fighter_bios fb ON fb.fighter_id=f.fighter_id "
+        "WHERE f.is_retired = 0"
+    ).fetchone()[0]
+    pct = 100 * with_bio / total_active if total_active > 0 else 0
+    print(f"    Active fighters: {total_active}")
+    print(f"    With bio: {with_bio} ({pct:.1f}%)")
+    if pct >= 99:
+        print(f"    ✓ All fighters have bios — no scouting tell.")
+    else:
+        print(f"    ⚠️  {total_active - with_bio} fighters missing bios — creates a scouting tell.")
+
+    # Bio tone vs potential correlation (should be LOW — tone must not reveal potential)
+    print("\n  Bio tone vs potential correlation (should be WEAK):")
+    for r in conn.execute(
+        "SELECT fb.bio_tone, AVG(fc.potential), COUNT(*) "
+        "FROM fighter_bios fb "
+        "JOIN fighter_career fc ON fc.fighter_id=fb.fighter_id "
+        "GROUP BY fb.bio_tone ORDER BY AVG(fc.potential) DESC"
+    ).fetchall():
+        print(f"    {r[0]:<25} avg_potential={r[1]:.1f} n={r[2]}")
+
+    # Gym coverage check (user directive: not all fighters should have gyms)
+    print("\n  Gym coverage (user directive: some fighters should have NULL gym):")
+    with_gym = conn.execute(
+        "SELECT COUNT(*) FROM fighters WHERE current_gym_id IS NOT NULL AND is_retired = 0"
+    ).fetchone()[0]
+    without_gym = total_active - with_gym
+    print(f"    With gym: {with_gym} ({100*with_gym/total_active:.1f}%)")
+    print(f"    Without gym (NULL): {without_gym} ({100*without_gym/total_active:.1f}%)")
+    if without_gym > 0:
+        print(f"    ✓ Some fighters have no gym — future gym-joining logic will handle this.")
+    else:
+        print(f"    ⚠️  All fighters have gyms — user wants some NULL for future logic.")
+
+    # ----------------------------------------------------------------
+    # 13. Sample fighters (for the doc)
+    # ----------------------------------------------------------------
+    print("\n--- 13. Sample Fighters (for documentation) ---")
     # Pick one of each: champion, top prospect, journeyman, veteran, free agent
     samples = {
         "Current Champion": conn.execute(
