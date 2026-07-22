@@ -938,13 +938,43 @@ exist), Task 21 (social media callouts feed rivalries).
 
 ### Task ID 23 — News engine (template-based)
 
-**Brief (needs expansion).** New module `src/news.py`. Function
-`generate_news(event_type, context)` picks a template and fills slots
-using the voice layer. Replaces the current hardcoded "X defeats Y"
-strings with varied, context-aware headlines and bodies.
+**Status: DONE (no schema change).** New module `src/news.py`,
+entirely event-bus-driven (subscribes to FIGHT_RESOLVED,
+TITLE_CHANGED, TICK_ADVANCED per CONVENTIONS §15.4). Writes
+voice-layer-driven news items to the existing `news_items` table
+with topic='news_engine' and source='CAGE Wire'. NO raw numbers
+in any news text (CONVENTIONS §14) — round numbers use word forms
+("first round"), finish times use descriptive phrases ("opening
+minute"), career stats use word forms ("three-time champion").
 
-**Dependencies:** Task 19 (voice layer), Task 14.8 (fight_rounds for
-round-level commentary).
+Four generator functions:
+  - `generate_fight_news` (FIGHT_RESOLVED subscriber) — 6 headline
+    variants per result type (KO, submission, decision, draw,
+    doctor stoppage, other) × 4 body variants. Uses career stage
+    + top-2 attribute descriptors per fighter.
+  - `generate_title_news` (TITLE_CHANGED subscriber) — 5 headline
+    variants × 2 branches (vacant claim vs dethroning) × 3 body
+    variants. Includes anticipation phrasing ("contenders are
+    already lining up").
+  - `generate_injury_news` (FIGHT_RESOLVED subscriber) — 5
+    headline variants × 3 body variants. Severity mapped to
+    minor/moderate/serious/severe (no raw 1-10 numbers).
+  - `generate_retirement_news` (TICK_ADVANCED subscriber) — 5
+    headline variants × 3 body variants. Polls for newly retired
+    fighters via the existing 'retirement' topic news written by
+    tick_processor._check_retirements.
+
+Acceptance test: `scripts/test_news.py` — 30 sub-checks across 8
+cases. All PASS.
+
+**Original brief.** New module `src/news.py`. Function
+`generate_news(event_type, context)` picks a template and fills
+slots using the voice layer. Replaces the current hardcoded "X
+defeats Y" strings with varied, context-aware headlines and
+bodies.
+
+**Dependencies:** Task 19 (voice layer), Task 14.8 (fight_rounds
+for round-level commentary).
 
 ### Task ID 24 — Punditry / matchup analysis
 

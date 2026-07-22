@@ -5682,6 +5682,23 @@ class App(tk.Tk):
         self.geometry("1280x760")
         self.conn = sqlite3.connect(DB_PATH)
         self.conn.execute("PRAGMA foreign_keys = ON;")
+        # v3.0.0 (Task 23): register the news engine subscribers on
+        # the global event bus. The news engine writes rich, voice-
+        # layer-driven news items in response to FIGHT_RESOLVED,
+        # TITLE_CHANGED, and TICK_ADVANCED events (CONVENTIONS §15.4
+        # — additive, no inline side effects added to resolve_next_
+        # fight). Lazy-import to avoid importing news at module load
+        # (news.py imports voice + event_bus; keeping the import
+        # inside __init__ means a missing news.py wouldn't break the
+        # rest of the app for unrelated reasons). The register call
+        # is idempotent at the bus level — subscribe() just appends
+        # to a list; calling it multiple times would add duplicate
+        # subscribers but App is only instantiated once per session.
+        try:
+            from news import register_subscribers as _register_news
+            _register_news()
+        except ImportError:
+            pass  # news.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

@@ -8,6 +8,52 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task 23 — News Engine, no schema change)
+- New `src/news.py` — the news engine, entirely event-bus-driven
+  (subscribes to FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED per
+  CONVENTIONS §15.4):
+  * `generate_fight_news` — varied fight result headlines + bodies
+    using voice descriptors (career stage + top-2 attributes).
+    6 headline variants × 6 result types (KO, submission, decision,
+    draw, doctor stoppage, other) + 4 body variants.
+  * `generate_title_news` — title change news with vacant-vs-dethrone
+    branches. 5 headline variants × 2 branches + 3 body variants.
+  * `generate_injury_news` — injury news using voice health
+    descriptors. Severity mapped to "minor/moderate/serious/severe"
+    (no raw 1-10 numbers). 5 headline + 3 body variants.
+  * `generate_retirement_news` — career-summary retirement news
+    triggered by TICK_ADVANCED. Polls for newly retired fighters
+    via the existing 'retirement' topic news written by
+    tick_processor._check_retirements. 5 headline + 3 body variants.
+  * All news items use topic='news_engine' and source='CAGE Wire'.
+  * NO raw numbers in any news text (CONVENTIONS §14). Round numbers
+    use word forms ("first round", not "round 1"); finish times use
+    descriptive phrases ("opening minute", "deep into the round");
+    career stats use word forms ("three-time champion", "over a
+    dozen wins").
+- App `__init__` now calls `news.register_subscribers()` so the UI
+  starts with the news engine wired to the event bus. Lazy import
+  inside __init__ keeps a missing news.py from breaking the app.
+- New acceptance test `scripts/test_news.py` — 30 sub-checks across
+  8 cases (A imports, B variety, C no raw numbers, D FIGHT_RESOLVED
+  triggers, E TITLE_CHANGED triggers, F voice descriptors, G Design
+  Law, X TICK_ADVANCED→retirement bonus). All PASS.
+- All 25 acceptance tests pass (24 existing + 1 new). 1500+ sub-checks.
+
+### Notes
+- No schema change (in-memory pub/sub + writes to existing
+  news_items table). Schema version stays at 3.0.0.
+- Existing `write_news()` calls in app.py and tick_processor.py are
+  preserved (CONVENTIONS §15.4 — event bus is ADDITIVE, not a
+  replacement). The news engine supplements them with richer
+  voice-layer-driven items.
+- Decision D1: pre-existing flakiness in `scripts/test_event_lifecycle.py`
+  case E (career sum vs fight_history rows). Intermittent — passes
+  ~80% of runs, fails when one of the 3 seeded fights resolves as a
+  draw or NC (career counters don't increment but fight_history row
+  is written). Verified pre-existing by stashing Task 23 changes
+  and reproducing the same flake. NOT introduced by Task 23. Flagged
+  for supervisor follow-up.
 
 ## [3.0.0] - 2026-07-23
 
