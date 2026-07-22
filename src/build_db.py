@@ -9,6 +9,44 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.1.0 (Task B1) — MINOR bump. First beat-level fight engine release.
+# Adds two new tables that the rewritten `resolve_next_fight()` in
+# app.py populates as it simulates each round:
+#   1. `fight_beats` — one row per discrete exchange within a round
+#      (12-28 beats per round, pace-driven). Each beat records the
+#      phase (standing / clinch / cage / ground_top / ground_bottom /
+#      scramble), the action type, the initiator + target fighter IDs,
+#      the outcome (landed / missed / blocked / defended / reversed),
+#      the damage dealt, the control time delta, and the momentum shift.
+#      This is the raw substrate that future Task B2 (fatigue +
+#      momentum + finishes) and Task 23 (commentary beat selection)
+#      build on. Per CONVENTIONS §14, the beat engine stores RAW
+#      numbers — the interpretation layer (Task 19) is what eventually
+#      translates them into prose.
+#   2. `fight_rounds` — one row per round, holding the per-round
+#      aggregates computed from that round's fight_beats rows (damage,
+#      control time, knockdowns, takedowns, strikes landed, momentum
+#      state, round winner). Knockdowns are always 0 in B1 (no
+#      mid-round finishes — that's B2). The aggregate is populated by
+#      a SUM-over-fight_beats query so the two tables never drift.
+#
+# The pure `_resolve_outcome()` function from Task 3 is REPLACED by
+# `resolve_round()` in app.py. The new resolver generates beats,
+# writes them to fight_beats, then writes the per-round aggregate to
+# fight_rounds. After all scheduled rounds complete, decision scoring
+# (10-point must, unanimous / split / draw) picks the fight winner.
+# B1 does NOT have mid-round finishes — every fight goes to decision.
+# B2 will add fatigue, momentum, KO/submission/doctor/corner/DQ.
+#
+# All existing side effects of resolve_next_fight() are PRESERVED
+# (fight_history, rankings, titles, event lifecycle, schedule_next_event,
+# news, commentary). Only the resolution mechanism changes. The
+# `fights` table's winner_fighter_id / loser_fighter_id / result_type /
+# finish_round / finish_time / performance_rating / fan_reaction_rating
+# columns are populated exactly as before — just with decision-flavored
+# values (result_type in {'unanimous_decision', 'split_decision',
+# 'draw'}, finish_round = scheduled_rounds, finish_time = '5:00').
+#
 # v2.0.1 (Task pre-B1-fixes) — MINOR bump. Two new columns added to
 # `fighter_career` (`potential` and `title_reigns`), neither of which
 # removes or renames existing data — purely additive. The two new
@@ -54,7 +92,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.0.1"
+CODE_SCHEMA_VERSION = "2.1.0"
 
 
 def _parse_version(v):
@@ -793,6 +831,96 @@ CREATE TABLE IF NOT EXISTS fighter_memory_links (
     created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_id, linked_fighter_id, link_type)
 );
+
+-- ----------------------------------------------------------------
+-- Beat-level fight engine (added in v2.1.0, Task B1).
+--
+-- Two tables that the rewritten `resolve_next_fight()` in app.py
+-- populates as it simulates each round beat-by-beat. The pure
+-- `_resolve_outcome()` function from Task 3 is REPLACED by
+-- `resolve_round()` — the new resolver generates beats, writes them
+-- to `fight_beats`, then writes the per-round aggregate to
+-- `fight_rounds` via a SUM-over-fight_beats query (so the two tables
+-- can never drift). After all scheduled rounds complete, decision
+-- scoring (10-point must, unanimous / split / draw) picks the fight
+-- winner. B1 does NOT have mid-round finishes — every fight goes to
+-- decision. B2 will add fatigue, momentum, KO/submission/doctor/
+-- corner/DQ.
+--
+-- `fight_beats` is the raw substrate that future Task B2 (fatigue +
+-- momentum + finishes + commentary beat selection) and Task 23
+-- (commentary beat selection) build on. Per CONVENTIONS §14, the
+-- beat engine stores RAW numbers — the interpretation layer (Task
+-- 19) is what eventually translates them into prose. Until Task 19
+-- lands, the beat engine also produces hardcoded commentary text via
+-- the existing _format_fight_commentary() function.
+--
+-- `fight_rounds` is the per-round aggregate that future Task 23
+-- (commentary beats — "round 2 was all Vale, he landed 15
+-- significant strikes"), Task 24 (punditry — round-by-round
+-- analysis), and Task 26 (show rating — round-by-round drama is a
+-- key input) will read from. The aggregate columns are computed
+-- sums over the round's `fight_beats` rows; the
+-- `round_winner_fighter_id` is set by the engine after each round
+-- using the 10-point must scoring rule.
+--
+-- All existing side effects of `resolve_next_fight()` are PRESERVED
+-- (fight_history, rankings, titles, event lifecycle,
+-- schedule_next_event, news, commentary). Only the resolution
+-- mechanism changes — the `fights` table's winner_fighter_id /
+-- loser_fighter_id / result_type / finish_round / finish_time /
+-- performance_rating / fan_reaction_rating columns are populated
+-- exactly as before, just with decision-flavored values
+-- (result_type in {'unanimous_decision', 'split_decision', 'draw'},
+-- finish_round = scheduled_rounds, finish_time = '5:00').
+--
+-- See docs/STAGES.md Stage 2.5 "Detailed task brief: B1" for the
+-- full brief and acceptance checklist. See
+-- docs/STAGE3_EXPANSION_PLAN.md Part 2 for the engine mechanics
+-- spec (beat count formula, phase-to-attribute mapping, phase
+-- transitions, decision scoring).
+-- ----------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS fight_beats (
+    fight_beat_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fight_id               INTEGER NOT NULL REFERENCES fights(fight_id) ON DELETE CASCADE,
+    round_number           INTEGER NOT NULL,
+    beat_number            INTEGER NOT NULL,
+    phase                  TEXT NOT NULL CHECK (phase IN
+                             ('standing','clinch','cage','ground_top','ground_bottom','scramble')),
+    action_type            TEXT NOT NULL,
+    initiator_fighter_id   INTEGER NOT NULL REFERENCES fighters(fighter_id),
+    target_fighter_id      INTEGER NOT NULL REFERENCES fighters(fighter_id),
+    outcome                TEXT NOT NULL CHECK (outcome IN
+                             ('landed','missed','blocked','defended','reversed')),
+    damage_dealt           INTEGER NOT NULL DEFAULT 0,
+    control_time_delta     INTEGER NOT NULL DEFAULT 0,
+    momentum_shift         INTEGER NOT NULL DEFAULT 0,
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fight_id, round_number, beat_number)
+);
+
+CREATE TABLE IF NOT EXISTS fight_rounds (
+    fight_round_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fight_id                    INTEGER NOT NULL REFERENCES fights(fight_id) ON DELETE CASCADE,
+    round_number                INTEGER NOT NULL CHECK (round_number > 0),
+    fighter_a_id                INTEGER NOT NULL REFERENCES fighters(fighter_id),
+    fighter_b_id                INTEGER NOT NULL REFERENCES fighters(fighter_id),
+    fighter_a_damage            INTEGER NOT NULL DEFAULT 0,
+    fighter_b_damage            INTEGER NOT NULL DEFAULT 0,
+    fighter_a_control_time      INTEGER NOT NULL DEFAULT 0,
+    fighter_b_control_time      INTEGER NOT NULL DEFAULT 0,
+    fighter_a_knockdowns        INTEGER NOT NULL DEFAULT 0,
+    fighter_b_knockdowns        INTEGER NOT NULL DEFAULT 0,
+    fighter_a_takedowns         INTEGER NOT NULL DEFAULT 0,
+    fighter_b_takedowns         INTEGER NOT NULL DEFAULT 0,
+    fighter_a_strikes_landed    INTEGER NOT NULL DEFAULT 0,
+    fighter_b_strikes_landed    INTEGER NOT NULL DEFAULT 0,
+    momentum_state              TEXT,
+    round_winner_fighter_id     INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+    created_at                  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fight_id, round_number)
+);
 """
 
 def main():
@@ -833,7 +961,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_potential_memory_archetype_fix",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_beat_engine",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

@@ -280,16 +280,10 @@ def main():
         f"got={mig[0] if mig else None}",
     ))
 
-    # A.3 schema_migrations contains the EXACT migration name from the brief.
-    mig_exact = conn.execute(
-        "SELECT 1 FROM schema_migrations WHERE migration_name=?",
-        (EXPECTED_MIGRATION_NAME,),
-    ).fetchone()
-    results.append((
-        "A", f"schema_migrations has the exact row {EXPECTED_MIGRATION_NAME}",
-        mig_exact is not None,
-        f"migration_name={EXPECTED_MIGRATION_NAME}",
-    ))
+    # A.3 exact migration name check REMOVED (B1 supervisor fix). build_db.py
+    # only records the CURRENT version's migration, not all past migrations.
+    # The LIKE-prefix check in A.2 is the durable check. Hardcoding the exact
+    # name breaks on every version bump (same pattern as CONVENTIONS §10.4).
 
     # A.4 fighter_career has a `potential` column.
     fc_cols = get_column_names(conn, "fighter_career")

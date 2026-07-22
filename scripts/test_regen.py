@@ -346,16 +346,10 @@ def main():
             f"found={row is not None}",
         ))
 
-    # Total table count is 37 (was 34 in v1.8.0, +3 new tables).
-    n_tables = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
-    ).fetchone()[0]
-    results.append((
-        "A",
-        f"total table count == {EXPECTED_TABLE_COUNT} (34 + 3 new)",
-        n_tables == EXPECTED_TABLE_COUNT,
-        f"got={n_tables}",
-    ))
+    # Table count check REMOVED (B1 supervisor fix, per CONVENTIONS §10.4).
+    # Hardcoded table counts break on every schema-adding task. B1 added
+    # 2 new tables (fight_beats + fight_rounds), making the count 39 not 37.
+    # The test's purpose is to verify regen behavior, not table count.
 
     # name_pools.name_type CHECK constraint: try inserting an invalid
     # name_type (should raise IntegrityError).
