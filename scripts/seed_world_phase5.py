@@ -758,6 +758,31 @@ def main():
     print(f"  Fighter bios:        {n_bios}")
     print(f"  Hall of Fame legends: {legend_count}")
     print(f"  News items:          {n_news}")
+
+    # ----------------------------------------------------------------
+    # v2.9.0 (Task 19): populate fighter_descriptors snapshots for
+    # ALL active fighters. The snapshot is normally updated on trigger
+    # events (camp, fight, injury), but the seed needs an initial
+    # population so the UI can display descriptors immediately.
+    # ----------------------------------------------------------------
+    print()
+    print("Populating descriptor snapshots for all active fighters...")
+    import sys as _sys
+    _sys.path.insert(0, str(PROJECT_DIR / "src"))
+    import app as _app
+    all_fids = conn.execute(
+        "SELECT fighter_id FROM fighters WHERE is_retired=0"
+    ).fetchall()
+    n_snaps = 0
+    for (fid,) in all_fids:
+        _app.update_fighter_descriptor_snapshot(conn, fid)
+        n_snaps += 1
+        if n_snaps % 500 == 0:
+            conn.commit()
+            print(f"  ...{n_snaps} snapshots")
+    conn.commit()
+    print(f"  Descriptor snapshots: {n_snaps}")
+
     print()
     print("WORLD SEED COMPLETE.")
     print()
