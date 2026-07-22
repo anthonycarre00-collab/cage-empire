@@ -4753,14 +4753,11 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         print("Warning: all name combinations exhausted — cannot generate unique fighter.")
         return None
 
-    # 4. Pick a nickname (50% chance of having one).
-    nickname = None
-    if random.random() < 0.5:
-        nicks = conn.execute(
-            "SELECT name_value FROM name_pools WHERE name_type = 'nickname'"
-        ).fetchall()
-        if nicks:
-            nickname = random.choice(nicks)[0]
+    # 4. Nickname — deferred to step 10.5 (after attrs + pers are
+    #    generated, so the nickname can be based on the fighter's
+    #    actual attributes/personality/style via fighter_gen.generate_
+    #    nickname). v2.6.3: replaced the old fixed-pool approach.
+    nickname = None  # will be set in step 10.5
 
     # 5. Determine style archetype (style DNA).
     #
@@ -4919,7 +4916,16 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     #    a src/ on sys.path (e.g., the existing tests that import
     #    app directly).
     import fighter_gen  # noqa: E402 — local import, see comment above
-    physical = fighter_gen.generate_physical_block()
+    # v2.6.3: pass weight class max_weight_kg + gender for height scaling
+    wc_max_kg = None
+    if wc_id is not None:
+        wc_row = conn.execute(
+            "SELECT max_weight_kg FROM weight_classes WHERE weight_class_id=?",
+            (wc_id,),
+        ).fetchone()
+        if wc_row:
+            wc_max_kg = wc_row[0]
+    physical = fighter_gen.generate_physical_block(wc_max_kg, gender)
 
     # v2.6.1: inherit birth location from retiring fighter (region-
     # aware regen — a retiring Brazilian fighter spawns a Brazilian
@@ -5014,6 +5020,39 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         scale = random.uniform(1.3, 2.0)
         widened = int(50 + dist_from_50 * scale + random.randint(-5, 5))
         pers[k] = max(10, min(95, widened))
+
+    # 10.5. v2.6.3: generate nickname dynamically based on the fighter's
+    #      actual attributes, personality, style, and nation. Replaces
+    #      the old fixed-pool-of-38 approach.
+    style_arch_name_for_nick = None
+    if style_archetype_id is not None:
+        sa_row = conn.execute(
+            "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
+            (style_archetype_id,),
+        ).fetchone()
+        if sa_row:
+            style_arch_name_for_nick = sa_row[0]
+    nation_name_for_nick = None
+    if birth_nation_id is not None:
+        n_row = conn.execute(
+            "SELECT name FROM nations WHERE nation_id=?",
+            (birth_nation_id,),
+        ).fetchone()
+        if n_row:
+            nation_name_for_nick = n_row[0]
+    nickname = fighter_gen.generate_nickname(
+        attrs=attrs, pers=pers,
+        style_archetype_name=style_arch_name_for_nick,
+        nation_name=nation_name_for_nick, rng=random,
+    )
+
+    # v2.6.3: UPDATE the fighter row with the generated nickname (was
+    # inserted as NULL in step 9 because attrs/pers weren't available yet).
+    if nickname is not None:
+        conn.execute(
+            "UPDATE fighters SET nickname=? WHERE fighter_id=?",
+            (nickname, fid),
+        )
 
     attr_cols = fighter_gen.ATTRIBUTE_NAMES
     attr_placeholders = ", ".join(["?"] * len(attr_cols))

@@ -440,8 +440,8 @@ def main():
             dob_day = rng.randint(1, 28)
             date_of_birth = f"{dob_year}-{dob_month:02d}-{dob_day:02d}"
 
-            # Pick name
-            first, last, nickname, gender_str = _pick_name(
+            # Pick name (first + last only — nickname generated separately)
+            first, last, _, gender_str = _pick_name(
                 nation_name, gender, rng, conn, used_names
             )
 
@@ -454,11 +454,28 @@ def main():
             if wc_id is None:
                 continue  # skip if no matching WC (shouldn't happen)
 
+            # Get weight class max_weight_kg for height scaling
+            wc_max_kg = conn.execute(
+                "SELECT max_weight_kg FROM weight_classes WHERE weight_class_id=?",
+                (wc_id,),
+            ).fetchone()[0]
+
             # Generate attribute + personality blocks (uses archetype bias)
             attrs = fighter_gen.generate_attribute_block(style_arch_id, conn)
             pers = fighter_gen.generate_personality_block(pers_arch_id, conn)
-            physical = fighter_gen.generate_physical_block()
+            physical = fighter_gen.generate_physical_block(wc_max_kg, gender_str)
             potential = fighter_gen.generate_potential()
+
+            # Generate nickname dynamically (v2.6.3 — was from fixed pool of 38)
+            style_arch_name = conn.execute(
+                "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
+                (style_arch_id,),
+            ).fetchone()[0]
+            nickname = fighter_gen.generate_nickname(
+                attrs=attrs, pers=pers,
+                style_archetype_name=style_arch_name,
+                nation_name=nation_name, rng=rng,
+            )
 
             # Widen personality variation — fighter_gen produces values in
             # ~32-68 range (50 + ±10 bias + ±8 noise). Real fighters have

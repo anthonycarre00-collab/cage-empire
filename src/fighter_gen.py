@@ -280,28 +280,39 @@ def generate_personality_block(archetype_id=None, conn=None):
     return _generate_block(PERSONALITY_NAMES, bias)
 
 
-def generate_physical_block():
+def generate_physical_block(weight_class_max_kg=None, gender='male'):
     """Generate height_cm, reach_cm, stance, handedness for a fighter.
 
-    Per the task brief (STAGES.md §14.5):
-      - Height: normal distribution around 178cm, bounded to [165, 195].
-        Uses random.gauss(178, 7) and clamps to the bounds. The std of
-        7 means ~68% of fighters fall in [171, 185], ~95% in [164, 192]
-        — close to a real-life MMA roster distribution.
-      - Reach: height_cm + random.randint(-5, 10). Most fighters have
-        a reach close to their height (apes-index ~0); the +10/-5
-        skew lets the occasional long-armed outlier emerge.
-      - Stance: 80% orthodox, 15% southpaw, 5% switch. Matches the
-        real-world MMA distribution.
-      - Handedness: 85% right, 10% left, 5% ambidextrous.
+    v2.6.3: height is now scaled by weight class. A Heavyweight (max
+    120kg) averages ~191cm; a Flyweight (max 57kg) averages ~170cm.
+    This produces realistic height-vs-weight-class distributions —
+    previously every weight class used the same 178cm average, which
+    meant 195cm Flyweights and 165cm Heavyweights (both unrealistic).
+
+    The formula: base_height scales linearly with max_weight_kg from
+    a minimum of 168cm (at 47kg, Atomweight) to a maximum of 193cm
+    (at 120kg, Heavyweight). Female fighters are ~7cm shorter on
+    average than their male equivalents (real-world UFC data).
+
+    Args:
+        weight_class_max_kg: the weight class's max_weight_kg. If None,
+            defaults to 75kg (Welterweight-ish, the old behavior).
+        gender: 'male' or 'female'. Female fighters are ~7cm shorter.
 
     Returns:
-        dict with keys: height_cm (int 165-195), reach_cm (int),
-        stance (str), handedness (str). reach_cm is computed from
-        height_cm and may fall outside [165, 195] — that's correct
-        (a 165cm fighter with a long reach could have reach=175).
+        dict with keys: height_cm (int), reach_cm (int), stance (str),
+        handedness (str).
     """
-    height_cm = _clamp(int(round(random.gauss(178, 7))), 165, 195)
+    if weight_class_max_kg is None:
+        weight_class_max_kg = 75.0  # default: Welterweight
+    # Scale height from weight: 47kg→168cm, 120kg→193cm (male)
+    # Linear interpolation: height = 168 + (weight - 47) * (193-168)/(120-47)
+    base_height = 168 + (weight_class_max_kg - 47) * (25.0 / 73.0)
+    if gender == 'female':
+        base_height -= 7  # women are ~7cm shorter on average
+    # Gaussian noise with std=5 (tighter than before since base is
+    # now weight-class-specific, not universal)
+    height_cm = _clamp(int(round(random.gauss(base_height, 5))), 155, 210)
     reach_cm = height_cm + random.randint(-5, 10)
     stance = random.choices(
         ['orthodox', 'southpaw', 'switch'], weights=[80, 15, 5]
@@ -318,7 +329,189 @@ def generate_physical_block():
 
 
 # ----------------------------------------------------------------
-# Potential distribution (added v2.0.1, Task pre-B1-fixes).
+# Nickname generator (added v2.6.3, forensic audit fix).
+#
+# The old approach used a fixed pool of 38 nicknames from the
+# name_pools table, which meant each nickname was shared by ~43
+# fighters. The new generator produces thousands of unique
+# combinations based on the fighter's attributes, style, personality,
+# and nation — producing relevant, varied, believable nicknames.
+# ----------------------------------------------------------------
+
+# Nickname components — combined to produce thousands of unique nicknames.
+# Each component list is large enough that the cartesian product produces
+# far more combinations than the 4000-fighter roster.
+
+# Adjective + noun combos: "The Iron Hammer", "The Silent Viper", etc.
+_NICK_ADJECTIVES = [
+    "Iron", "Steel", "Stone", "Granite", "Brass", "Bronze", "Copper",
+    "Silent", "Quiet", "Loud", "Wild", "Savage", "Brutal", "Ruthless",
+    "Merciless", "Relentless", "Fearless", "Reckless", "Calm", "Cold",
+    "Frozen", "Burning", "Blazing", "Dark", "Shadow", "Midnight", "Crimson",
+    "Golden", "Silver", "Diamond", "Velvet", "Thunder", "Lightning", "Storm",
+    " Desert", "Arctic", "Solar", "Lunar", "Cosmic", "Electric", "Magnetic",
+    "Ancient", "Eternal", "Immortal", "Forbidden", "Hidden", "Lost", "Broken",
+    "Rising", "Falling", "Sleeping", "Waking", "Hungry", "Starving", "Thirsty",
+    "Young", "Old", "Bold", "Sly", "Swift", "Quick", "Slow", "Heavy", "Light",
+    "Giant", "Tiny", "Massive", "Slender", "Broad", "Narrow", "Tall", "Short",
+    "Proud", "Humble", "Noble", "Royal", "Common", "Sacred", "Cursed", "Blessed",
+    "Forgotten", "Remembered", "Unnamed", "Nameless", "Faceless", "Timeless",
+]
+
+_NICK_NOUNS_ANIMAL = [
+    "Viper", "Cobra", "Python", "Boa", "Wolf", "Bear", "Lion", "Tiger",
+    "Panther", "Leopard", "Cheetah", "Jaguar", "Bull", "Stallion", "Mustang",
+    "Falcon", "Hawk", "Eagle", "Owl", "Raven", "Crow", "Shark", "Barracuda",
+    "Piranha", "Octopus", "Spider", "Scorpion", "Wasp", "Hornet", "Bee",
+    "Mantis", "Dragon", "Phoenix", "Griffin", "Hydra", "Cerberus", "Minotaur",
+    "Gargoyle", "Golem", "Titan", "Colossus", "Gladiator", "Centurion",
+    "Samurai", "Ronin", "Bushi", "Berserker", "Marauder", "Raider", "Reaper",
+    "Phantom", "Ghost", "Specter", "Wraith", "Demon", "Devil", "Fiend",
+    "Machine", "Engine", "Hammer", "Anvil", "Forge", "Blade", "Edge",
+    "Axe", "Mace", "Shield", "Wall", "Tower", "Fortress", "Castle",
+    "Storm", "Hurricane", "Tornado", "Cyclone", "Typhoon", "Quake", "Avalanche",
+    "Volcano", "Inferno", "Wildfire", "Frost", "Ice", "Stone", "Rock",
+    "Mountain", "Cliff", "Peak", "Summit", "Abyss", "Void", "Eclipse",
+]
+
+# Single-word nicknames (no "The"): "Ice", "Venom", "Havoc"
+_NICK_SINGLE_WORDS = [
+    "Ice", "Venom", "Havoc", "Chaos", "Mayhem", "Riot", "Tumult", "Clamor",
+    "Echo", "Static", "Noise", "Silence", "Hush", "Whisper", "Roar", "Growl",
+    "Snarl", "Bite", "Sting", "Strike", "Smash", "Crash", "Bash", "Clash",
+    "Spark", "Flash", "Flare", "Glow", "Blaze", "Ember", "Ash", "Smoke",
+    "Mist", "Fog", "Haze", "Dusk", "Dawn", "Noon", "Midnight", "Twilight",
+    "Jinx", "Hex", "Curse", "Doom", "Ruin", "Wreck", "Scrap", "Junk",
+    "Ace", "King", "Queen", "Jack", "Joker", "Deuce", "Trey", "Knave",
+    "Zen", "Tao", "Karma", "Dharma", "Chi", "Ki", "Do", "Way",
+    "Vibe", "Groove", "Flow", "Rhythm", "Beat", "Pulse", "Heart", "Soul",
+    "Prime", "Apex", "Peak", "Crest", "Crown", "Throne", "Scepter", "Orb",
+]
+
+# Style-based nicknames: a Wrestler might be "The Takedown", a Striker "The Punch"
+_NICK_STYLE_BASED = {
+    "Wrestler": ["The Takedown", "The Grind", "The Smother", "The Slam", "The Throw", "The Pin", "The Cradle", "The Switch"],
+    "Striker": ["The Punch", "The Kick", "The Combo", "The Cross", "The Jab", "The Hook", "The Uppercut", "The Headkick"],
+    "Grappler": ["The Sweep", "The Pass", "The Mount", "The Roll", "The Flow", "The Transition", "The Scramble", "The Reverse"],
+    "Submission Specialist": ["The Choke", "The Lock", "The Tap", "The Crank", "The Squeeze", "The Twist", "The Kimura", "The Guillotine"],
+    "Brawler": ["The Brawl", "The Slugfest", "The War", "The Firefight", "The exchange", "The Scrap", "The Donnybrook", "The Ruckus"],
+    "Counter-Striker": ["The Counter", "The Parry", "The Slip", "The Roll-Out", "The Pivot", "The Fade", "The Check", "The Catch"],
+    "Balanced": ["The All-Rounder", "The Complete", "The Total", "The Well-Rounded", "The Versatile", "The Adaptable", "The Fluid", "The Seamless"],
+}
+
+# Nation-flavored nickname prefixes/suffixes (used 10% of the time for
+# cultural flavor)
+_NICK_NATION_FLAVOR = {
+    "Brazil": ["Capoeira", "Berimbau", "Ginga", "Malicia", "Axé"],
+    "Japan": ["Bushido", "Ronin", "Samurai", "Kamikaze", "Tatami"],
+    "Russia": ["Siberian", "Taiga", "Frost", "Hammer", "Sickle"],
+    "Dagestan": ["Eagle", "Mountain", "Wolf", "Caucasus", "Highlander"],
+    "Mexico": ["Lucha", "Azteca", "Maya", "Lobo", "Guerrero"],
+    "Ireland": ["Celtic", "Shamrock", "Gael", "Fenian", "Wolfhound"],
+    "Netherlands": ["Tulip", "Dyke", "Windmill", "Lion", "Orange"],
+    "Cuba": ["Havana", "Salsa", "Cigar", "Revolution", "Malecon"],
+}
+
+
+def generate_nickname(attrs=None, pers=None, style_archetype_name=None,
+                      nation_name=None, rng=None):
+    """Generate a unique, relevant nickname for a fighter.
+
+    The nickname is chosen based on the fighter's attributes, personality,
+    style archetype, and nation — producing relevant, varied nicknames
+    instead of the old fixed-pool approach.
+
+    Selection logic (in priority order):
+      1. 15% chance: style-based nickname (e.g. Wrestler → "The Takedown")
+      2. 10% chance: nation-flavored nickname (e.g. Brazil → "Ginga")
+      3. 25% chance: attribute-based nickname (high punch_power → "The Hammer")
+      4. 20% chance: personality-based (high aggression → "The Predator")
+      5. 30% chance: adjective + animal noun ("The Iron Viper")
+
+    40% of fighters get NO nickname (None) — not every fighter has one
+    in real life.
+
+    Args:
+        attrs: dict of fighter_attributes (25 keys). If None, skip
+            attribute-based nicknames.
+        pers: dict of fighter_personality (20 keys). If None, skip
+            personality-based nicknames.
+        style_archetype_name: str like "Wrestler", "Striker". If None,
+            skip style-based nicknames.
+        nation_name: str like "Brazil". If None, skip nation-flavored.
+        rng: random.Random instance. If None, use the global random.
+
+    Returns:
+        A nickname string, or None (no nickname).
+    """
+    import random as _r
+    rng = rng or _r
+
+    # 40% of fighters get no nickname
+    if rng.random() < 0.40:
+        return None
+
+    # 15% chance: style-based
+    if style_archetype_name and style_archetype_name in _NICK_STYLE_BASED and rng.random() < 0.15:
+        return rng.choice(_NICK_STYLE_BASED[style_archetype_name])
+
+    # 10% chance: nation-flavored
+    if nation_name and nation_name in _NICK_NATION_FLAVOR and rng.random() < 0.10:
+        flavor = rng.choice(_NICK_NATION_FLAVOR[nation_name])
+        return f"The {flavor}"
+
+    # 25% chance: attribute-based (requires attrs dict)
+    if attrs and rng.random() < 0.25:
+        # Find the fighter's standout attribute (highest above 60)
+        standout = None
+        standout_val = 0
+        attr_nick_map = {
+            "punch_power": ["The Hammer", "The Fist", "The Knuckle", "The Sledgehammer"],
+            "kick_power": ["The Kick", "The Boot", "The Shin", "The Baseball Bat"],
+            "submission_offense": ["The Choker", "The Trap", "The Python", "The Anaconda"],
+            "takedown_offense": ["The Takedown", "The Dump", "The Lift", "The Slam"],
+            "chin": ["The Chin", "The Iron Jaw", "The Concrete Head", "The Anvil"],
+            "durability": ["The Tank", "The Wall", "The Fortress", "The Bunker"],
+            "cardio": ["The Engine", "The Machine", "The Energizer", "The Marathon"],
+            "speed_explosiveness": ["The Flash", "The Bolt", "The Spark", "The Comet"],
+            "fight_iq": ["The Brain", "The Professor", "The Architect", "The Chessmaster"],
+            "head_movement": ["The Ghost", "The Shadow", "The Mirage", "The Phantom"],
+            "footwork": ["The Dancer", "The Ballerina", "The Tap Dancer", "The Prancer"],
+            "strength": ["The Ox", "The Bull", "The Beast", "The Titan"],
+            "recovery_rate": ["The Phoenix", "The Comeback Kid", "The Survivor", "The Indestructible"],
+        }
+        for attr_name, nick_list in attr_nick_map.items():
+            val = attrs.get(attr_name, 50)
+            if val > standout_val and val >= 65:
+                standout = attr_name
+                standout_val = val
+        if standout:
+            return rng.choice(attr_nick_map[standout])
+
+    # 20% chance: personality-based (requires pers dict)
+    if pers and rng.random() < 0.20:
+        pers_nick_map = {
+            "aggression": [("The Predator", 75), ("The Berserker", 80), ("The aggressor", 70)],
+            "composure": [("Ice", 75), ("The Cool Hand", 80), ("The Stoic", 70)],
+            "killer_instinct": [("The Finisher", 75), ("The Killer", 80), ("The Executioner", 85)],
+            "discipline": [("The Methodical", 75), ("The Technician", 80), ("The Perfectionist", 85)],
+            "charisma": [("The Showman", 75), ("The Star", 80), ("The Spotlight", 85)],
+            "grit": [("The Grinder", 75), ("The Iron Will", 80), ("The Indomitable", 85)],
+        }
+        for trait_name, options in pers_nick_map.items():
+            val = pers.get(trait_name, 50)
+            for nick, threshold in options:
+                if val >= threshold:
+                    return nick
+
+    # 30% chance: adjective + animal noun ("The Iron Viper")
+    if rng.random() < 0.30:
+        adj = rng.choice(_NICK_ADJECTIVES).strip()
+        noun = rng.choice(_NICK_NOUNS_ANIMAL)
+        return f"The {adj} {noun}"
+
+    # Fallback: single word
+    return rng.choice(_NICK_SINGLE_WORDS)
 #
 # `generate_potential()` returns the fighter's growth ceiling. The
 # distribution makes elite prospects rare and exciting to find:

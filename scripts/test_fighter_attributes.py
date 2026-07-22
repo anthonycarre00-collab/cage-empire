@@ -1068,24 +1068,21 @@ def main():
                 False, f"no row for fighter_id={new_fid}",
             ))
 
-        # G.3 The new fighter's kick_power is NOT 50 (Brawler has no
-        #     kick_power bias, but the noise is random.randint(-8, 8),
-        #     so it COULD be 50 by coincidence. We check the attribute
-        #     block has been written, not whether it's exactly 50. The
-        #     punch_power check above is the strong bias check; this
-        #     is a weak "data is present" check.)
-        # Actually, let's check that the new fighter's CHIN is biased
-        # +15 (Brawler bias: chin=+15). So chin should be in
-        # [clamp(50 + 15 - 8), clamp(50 + 15 + 8)] = [57, 73].
+        # G.3 v2.6.2: DNA inheritance is now occasional (30%), not
+        #     always. The regen fighter may or may not be a Brawler.
+        #     We can't assert chin is biased +15 (Brawler-specific)
+        #     because the fighter might have a different archetype.
+        #     Instead, assert the attribute block was written (chin
+        #     is not NULL and is in valid range 0-100).
         new_chin = conn.execute(
             "SELECT chin FROM fighter_attributes WHERE fighter_id=?",
             (new_fid,),
         ).fetchone()
         if new_chin:
             results.append((
-                "G", f"regen fighter's chin ({new_chin[0]}) is NOT 50 (Brawler bias=+15)",
-                new_chin[0] != 50,
-                f"got={new_chin[0]}, expected: not 50 (range ~[57,73])",
+                "G", f"regen fighter's chin ({new_chin[0]}) is in valid range (v2.6.2: archetype is 30% inherit, 70% random)",
+                new_chin[0] is not None and 0 <= new_chin[0] <= 100,
+                f"got={new_chin[0]}",
             ))
 
         # G.4 The new fighter's height_cm, reach_cm, stance, handedness
