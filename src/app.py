@@ -5748,6 +5748,26 @@ class App(tk.Tk):
             _register_punditry()
         except ImportError:
             pass  # punditry.py not available — legacy behavior
+        # Phase A (Task A1+A10): register the morale + dynamic-fields
+        # subscribers on the global event bus. The morale system
+        # updates fighter_personality.morale (which the fight engine
+        # reads via _load_fighter_stats) and the fighters.* meta-fields
+        # (marketability, fan_friendliness, consistency, clutch_factor,
+        # promo_boost, injury_proneness, weight_cut_difficulty) in
+        # response to FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED,
+        # CAMP_COMPLETED, CAMP_INJURY, and FIGHT_CANCELLED events
+        # (CONVENTIONS §15.4 — additive, no inline side effects added
+        # to resolve_next_fight or run_tick). Lazy import for the same
+        # reasons as news.py / social.py / rivalries.py / punditry.py
+        # above. Before this task, fighter_personality.morale was set
+        # at seed time and never updated — breaking the dopamine loop
+        # the Soul document mandates (wins boost morale → next fight
+        # gets a boost → more wins). Now the loop is closed.
+        try:
+            from morale import register_subscribers as _register_morale
+            _register_morale()
+        except ImportError:
+            pass  # morale.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

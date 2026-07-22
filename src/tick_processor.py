@@ -485,6 +485,27 @@ def _progress_training_camp(conn, camp_id, fighter_id, fatigue, morale,
         # reduced by the training injury. Lazy-import to avoid circular dep.
         from app import update_fighter_descriptor_snapshot
         update_fighter_descriptor_snapshot(conn, fighter_id)
+        # Phase A (Task A1): publish CAMP_INJURY event so the morale
+        # system can apply its -5 morale penalty for training setbacks
+        # (CONVENTIONS §15.4 — event-bus-driven, no inline morale
+        # write here). The event carries the fighter_id + injury_type
+        # + severity so future subscribers (news engine, social media)
+        # can react to training injuries too.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.CAMP_INJURY,
+                'training_camp_id': camp_id,
+                'fighter_id': fighter_id,
+                'injury_type': injury_type,
+                'severity': severity,
+                'event_id': event_id,
+                'fight_id': fight_id,
+                'current_date': current_date,
+            })
+        except ImportError:
+            pass  # event_bus not available (defensive)
         return "injured"
 
     # Normal progression — update the camp's tracking columns and
@@ -719,6 +740,28 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
     # v2.9.0 (Task 18): mark scouting reports stale — fighter changed.
     from scouting import mark_stale_reports
     mark_stale_reports(conn, fighter_id)
+
+    # Phase A (Task A1): publish CAMP_COMPLETED event so the morale
+    # system can apply its +3 morale bump for training going well
+    # (CONVENTIONS §15.4 — event-bus-driven, no inline morale write
+    # here). The event carries the fighter_id + attribute_changes +
+    # camp_focus so future subscribers (news engine, social media)
+    # can react to camp completions too.
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.CAMP_COMPLETED,
+            'training_camp_id': camp_id,
+            'fighter_id': fighter_id,
+            'camp_focus': camp_focus,
+            'attribute_changes': attribute_changes,
+            'event_id': None,  # camps aren't tied to a specific event
+            'fight_id': None,  # camps aren't tied to a specific fight
+            'current_date': current_date,
+        })
+    except ImportError:
+        pass  # event_bus not available (defensive)
 
     return "completed"
 
