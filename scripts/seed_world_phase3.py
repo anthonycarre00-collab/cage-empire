@@ -83,7 +83,10 @@ WC_DISTRIBUTION_WEIGHTS_FEMALE = {
 # Gender split: 88% male, 12% female (real-world UFC ratio is ~85/15)
 GENDER_MALE_PCT = 0.88
 
-# Archetype distribution — weighted toward balanced, fewer specialists
+# Archetype distribution — weighted toward balanced, fewer specialists.
+# These are the BASE weights; national tendency overrides adjust them
+# per-fighter based on birth nation (Brazil → more Grapplers, Dagestan
+# → more Wrestlers, etc.).
 ARCHETYPE_WEIGHTS = {
     "Balanced":              25,
     "Striker":               18,
@@ -92,6 +95,36 @@ ARCHETYPE_WEIGHTS = {
     "Brawler":               10,
     "Counter-Striker":       10,
     "Submission Specialist":  7,
+}
+
+# National tendency overrides. Each nation gets a dict of archetype →
+# weight bonus (added to the base weight). A nation with strong BJJ
+# culture (Brazil) gets +20 to Grappler + +15 to Submission Specialist.
+# A nation with strong wrestling culture (Dagestan, Russia) gets +25 to
+# Wrestler. This produces realistic national tendencies: ~30% of
+# Brazilian fighters are Grapplers (vs ~15% baseline), ~35% of Dagestani
+# fighters are Wrestlers (vs ~15% baseline).
+NATION_ARCHETYPE_OVERRIDES = {
+    "Brazil":       {"Grappler": 20, "Submission Specialist": 15, "Striker": 5},
+    "Dagestan":     {"Wrestler": 30, "Grappler": 10},
+    "Russia":       {"Wrestler": 15, "Grappler": 10, "Submission Specialist": 5},
+    "Japan":        {"Striker": 10, "Wrestler": 5, "Submission Specialist": 8},
+    "Netherlands":  {"Striker": 20, "Counter-Striker": 10},
+    "Cuba":         {"Striker": 15, "Wrestler": 10},
+    "Mexico":       {"Striker": 10, "Brawler": 15},
+    "United States":{"Wrestler": 10, "Striker": 5, "Balanced": 5},
+    "United Kingdom":{"Striker": 12, "Brawler": 8},
+    "Ireland":      {"Striker": 15, "Brawler": 10},
+    "Nigeria":      {"Striker": 12, "Brawler": 8},
+    "South Korea":  {"Striker": 8, "Wrestler": 8, "Submission Specialist": 5},
+    "Australia":    {"Striker": 8, "Grappler": 5, "Balanced": 5},
+    "Canada":       {"Wrestler": 8, "Balanced": 5},
+    "France":       {"Striker": 10, "Submission Specialist": 8},
+    "Germany":      {"Wrestler": 10, "Striker": 5},
+    "Poland":       {"Striker": 8, "Brawler": 8},
+    "Sweden":       {"Wrestler": 10, "Striker": 5},
+    "China":        {"Striker": 8, "Wrestler": 8, "Submission Specialist": 5},
+    "Argentina":    {"Grappler": 10, "Striker": 8},
 }
 
 # Personality archetype distribution
@@ -167,11 +200,17 @@ def _gen_record_for_stage(stage, potential, rng):
     return (wins, max(0, losses), draws)
 
 
-def _pick_archetype(rng, conn):
-    """Pick a style_archetype_id based on the weighted distribution."""
-    names = list(ARCHETYPE_WEIGHTS.keys())
-    weights = list(ARCHETYPE_WEIGHTS.values())
-    chosen_name = rng.choices(names, weights=weights, k=1)[0]
+def _pick_archetype(rng, conn, nation_name=None):
+    """Pick a style_archetype_id based on the weighted distribution,
+    adjusted by national tendency overrides if nation_name is provided.
+    """
+    weights = dict(ARCHETYPE_WEIGHTS)
+    if nation_name and nation_name in NATION_ARCHETYPE_OVERRIDES:
+        for arch, bonus in NATION_ARCHETYPE_OVERRIDES[nation_name].items():
+            weights[arch] = weights.get(arch, 0) + bonus
+    names = list(weights.keys())
+    w = list(weights.values())
+    chosen_name = rng.choices(names, weights=w, k=1)[0]
     row = conn.execute(
         "SELECT style_archetype_id FROM style_archetypes WHERE name=?",
         (chosen_name,),
@@ -406,8 +445,8 @@ def main():
                 nation_name, gender, rng, conn, used_names
             )
 
-            # Archetypes
-            style_arch_id = _pick_archetype(rng, conn)
+            # Archetypes — style archetype weighted by national tendency
+            style_arch_id = _pick_archetype(rng, conn, nation_name)
             pers_arch_id = _pick_personality_archetype(rng, conn)
 
             # Weight class

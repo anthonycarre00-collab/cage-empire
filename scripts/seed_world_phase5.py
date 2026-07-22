@@ -370,18 +370,34 @@ def main():
         )
         # Hall of Fame row
         inducted_date = (SIM_DATE - timedelta(days=rng.randint(30, 3650))).strftime("%Y-%m-%d")
-        # Career summary
+        # Career summary — 8 variants for variety
         summaries = [
-            f"{first} {last} retired as one of the most respected fighters of 'his' era, "
+            f"{first} {last} retired as one of the most respected fighters of his era, "
             f"finishing with a {wins}-{losses}-{draws} record and {title_reigns} title reign"
             f"{'s' if title_reigns != 1 else ''}.",
             f"A {nation_name} legend, {first} {last} compiled a {wins}-{losses} record "
             f"over a decorated career that included {title_reigns} championship reign"
             f"{'s' if title_reigns != 1 else ''}.",
-            f"{first} {last} was a cornerstone of the sport's growth, finishing "
-            f"{wins}-{losses}-{draws} with {title_reigns} title runs.",
+            f"Over a career spanning {wins + losses + draws} fights, {first} {last} "
+            f"established himself as one of the sport's most consistent competitors, "
+            f"capturing {title_reigns} title{'s' if title_reigns != 1 else ''} along the way.",
+            f"The {nation_name}-born {first} {last} walked away from the sport with a "
+            f"{wins}-{losses}-{draws} record and a legacy built on {title_reigns} title run"
+            f"{'s' if title_reigns != 1 else ''}.",
+            f"{first} {last}'s name was synonymous with excellence in the cage. The "
+            f"{nation_name} veteran retired at {wins}-{losses}-{draws} with {title_reigns} "
+            f"championship reign{'s' if title_reigns != 1 else ''} to his credit.",
+            f"Few fighters embodied their nation's fighting spirit like {first} {last}. "
+            f"The {nation_name} icon finished {wins}-{losses}-{draws} with {title_reigns} "
+            f"title reign{'s' if title_reigns != 1 else ''} in a career that inspired a generation.",
+            f"{first} {last} didn't just fight — he defined an era. The {nation_name} star "
+            f"hung up the gloves at {wins}-{losses}-{draws} with {title_reigns} championship "
+            f"reign{'s' if title_reigns != 1 else ''}, cementing his place among the greats.",
+            f"From {nation_name} to the top of the sport, {first} {last}'s journey ended "
+            f"with a {wins}-{losses}-{draws} record and {title_reigns} title reign"
+            f"{'s' if title_reigns != 1 else ''}. The kind of career that gets remembered.",
         ]
-        summary = rng.choice(summaries).replace("'his'", "his")
+        summary = rng.choice(summaries)
         # Career highlights
         highlights = []
         if title_reigns >= 1:

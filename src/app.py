@@ -4817,24 +4817,84 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     #    v2.0.0 (Task 14.5): also insert the 4 physical columns
     #    (height_cm, reach_cm, stance, handedness) from
     #    fighter_gen.generate_physical_block() so regen prospects
-    #    arrive with a body, not just a name. The meta columns
-    #    (injury_proneness, marketability, etc.) use schema defaults.
+    #    arrive with a body, not just a name.
+    #
+    #    v2.6.1 (forensic audit fix): also insert the 7 meta-columns
+    #    (injury_proneness, weight_cut_difficulty, consistency,
+    #    clutch_factor, marketability, fan_friendliness, promo_boost)
+    #    with randomized values (was using schema defaults of 50).
+    #    Also insert birth_city_id + birth_nation_id inherited from
+    #    the retiring fighter (region-aware regen). Also assign a
+    #    gym in the retiring fighter's nation (so the new prospect
+    #    can participate in training camps immediately).
+    #
     #    Lazy-import fighter_gen here (not at module top) so app.py
     #    can still be imported in headless contexts that don't have
     #    a src/ on sys.path (e.g., the existing tests that import
     #    app directly).
     import fighter_gen  # noqa: E402 — local import, see comment above
     physical = fighter_gen.generate_physical_block()
+
+    # v2.6.1: inherit birth location from retiring fighter (region-
+    # aware regen — a retiring Brazilian fighter spawns a Brazilian
+    # replacement, not a random nationality).
+    birth_city_id = None
+    birth_nation_id = None
+    if style_dna_source_id is not None:
+        loc_row = conn.execute(
+            "SELECT birth_city_id, birth_nation_id FROM fighters "
+            "WHERE fighter_id = ?",
+            (style_dna_source_id,),
+        ).fetchone()
+        if loc_row:
+            birth_city_id, birth_nation_id = loc_row
+
+    # v2.6.1: assign a gym in the retiring fighter's nation (so the
+    # new prospect can participate in training camps immediately,
+    # per Task 16's requirement). Falls back to a random gym if no
+    # gym exists in the nation.
+    gym_id = None
+    if birth_nation_id is not None:
+        gym_row = conn.execute(
+            "SELECT gym_id FROM gyms WHERE nation_id = ? "
+            "ORDER BY RANDOM() LIMIT 1",
+            (birth_nation_id,),
+        ).fetchone()
+        if gym_row:
+            gym_id = gym_row[0]
+    if gym_id is None:
+        # Fallback: any gym
+        gym_row = conn.execute(
+            "SELECT gym_id FROM gyms ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+        gym_id = gym_row[0] if gym_row else None
+
+    # v2.6.1: randomized meta-columns (was all 50).
+    injury_proneness = random.randint(20, 80)
+    weight_cut_diff = random.randint(20, 80)
+    consistency = random.randint(40, 80)
+    clutch_factor = random.randint(40, 80)
+    marketability = random.randint(30, 90)
+    fan_friendliness = random.randint(30, 90)
+    promo_boost = random.randint(20, 80)
+
     fid = conn.execute(
         "INSERT INTO fighters (first_name, last_name, nickname, gender, "
-        "date_of_birth, weight_class_id, current_gym_id, current_promotion_id, "
+        "date_of_birth, birth_city_id, birth_nation_id, "
+        "weight_class_id, current_gym_id, current_promotion_id, "
         "fight_style_archetype_id, personality_archetype_id, "
-        "is_active, is_retired, height_cm, reach_cm, stance, handedness) "
-        "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, 0, ?, ?, ?, ?)",
-        (chosen_first, chosen_last, nickname, gender, dob, wc_id,
+        "is_active, is_retired, height_cm, reach_cm, stance, handedness, "
+        "injury_proneness, weight_cut_difficulty, consistency, "
+        "clutch_factor, marketability, fan_friendliness, promo_boost) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, 0, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?)",
+        (chosen_first, chosen_last, nickname, gender, dob,
+         birth_city_id, birth_nation_id, wc_id, gym_id,
          style_archetype_id, pers_archetype_id,
          physical["height_cm"], physical["reach_cm"],
-         physical["stance"], physical["handedness"]),
+         physical["stance"], physical["handedness"],
+         injury_proneness, weight_cut_diff, consistency,
+         clutch_factor, marketability, fan_friendliness, promo_boost),
     ).lastrowid
 
     # 10. Insert attributes, personality, career rows. v2.0.0
@@ -4846,6 +4906,12 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     #     (0-0-0, career_health=100) — Stage 3 training camps will
     #     give them growth potential.
     #
+    #     v2.6.1 (forensic audit fix): widen personality variation
+    #     the same way Phase 3 does — fighter_gen produces 32-68
+    #     range; we scale away from 50 by 1.3-2.0x + ±5 noise,
+    #     clamped to [10, 95]. Without this, regen fighters have
+    #     bland personalities compared to seeded fighters.
+    #
     #     The 25 attribute columns are INSERTed explicitly (not via
     #     `INSERT INTO fighter_attributes (fighter_id) VALUES (?)`
     #     which would give all-50 defaults). Same for the 20
@@ -4854,6 +4920,14 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     #     future column addition doesn't require touching this code.
     attrs = fighter_gen.generate_attribute_block(style_archetype_id, conn)
     pers = fighter_gen.generate_personality_block(pers_archetype_id, conn)
+
+    # v2.6.1: widen personality variation (matches Phase 3's approach).
+    for k in pers:
+        base = pers[k]
+        dist_from_50 = base - 50
+        scale = random.uniform(1.3, 2.0)
+        widened = int(50 + dist_from_50 * scale + random.randint(-5, 5))
+        pers[k] = max(10, min(95, widened))
 
     attr_cols = fighter_gen.ATTRIBUTE_NAMES
     attr_placeholders = ", ".join(["?"] * len(attr_cols))
@@ -4945,7 +5019,52 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         (src_id, headline, body, "neutral", "prospect", fid, published_at),
     )
 
-    # 13. Return the new fighter_id. The caller (tick_processor's
+    # 13. v2.6.1 (forensic audit fix): generate a bio for the new
+    #     prospect IF they have elite potential (70+). This ensures
+    #     that future champions (who emerge from the regen pool) have
+    #     a bio the UI can display, matching the seeded world's top
+    #     200 featured fighters. Solid/limited-potential regen fighters
+    #     don't get a bio — the UI will show "no bio available" and
+    #     the voice layer (Task 19) can generate a short procedural
+    #     descriptor on the fly.
+    if potential >= 70:
+        # Build a hype_prospect bio — the new fighter is a young
+        # prospect with elite potential. This is the same tone used
+        # for seeded top prospects.
+        # Inherit gym name + style archetype name for the bio.
+        gym_name = "an unknown gym"
+        if gym_id is not None:
+            g_row = conn.execute(
+                "SELECT name FROM gyms WHERE gym_id=?", (gym_id,)
+            ).fetchone()
+            if g_row:
+                gym_name = g_row[0]
+        sa_name = "well-rounded fighter"
+        if style_archetype_id is not None:
+            sa_row = conn.execute(
+                "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
+                (style_archetype_id,),
+            ).fetchone()
+            if sa_row:
+                sa_name = sa_row[0]
+        # Compute age from DOB
+        age_years = age_years  # already computed above
+        nick_str = f' "{nickname}"' if nickname else ''
+        bio_text = (
+            f"The buzz around {chosen_first} {chosen_last}{nick_str} started "
+            f"before he ever stepped into a major promotion's cage. At "
+            f"{age_years} years old with elite potential, the {sa_name.lower()} "
+            f"out of {gym_name} is the kind of prospect that makes matchmakers "
+            f"salivate. The ceiling is high — the question is how quickly he "
+            f"reaches it."
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO fighter_bios (fighter_id, bio_text, bio_tone) "
+            "VALUES (?, ?, ?)",
+            (fid, bio_text, "hype_prospect"),
+        )
+
+    # 14. Return the new fighter_id. The caller (tick_processor's
     #     _check_retirements) writes the regen_lineage row linking the
     #     retiring fighter to this replacement.
     return fid

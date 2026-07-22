@@ -327,28 +327,44 @@ def main():
     ).fetchall()
     n_titles = 0
     for promo_id, wc_id in combos:
-        # Top fighter in this WC + promo by rating
-        top = conn.execute(
-            "SELECT f.fighter_id, r.rating FROM fighters f "
+        # Top 5 fighters in this WC + promo by rating — pick from these
+        # but skip anyone on a 3+ losing streak (a champion shouldn't
+        # be on a bad skid). If all top 5 are on losing streaks, the
+        # title is vacant.
+        top5 = conn.execute(
+            "SELECT f.fighter_id, r.rating, fc.loss_streak, fc.win_streak "
+            "FROM fighters f "
             "JOIN rankings r ON r.fighter_id=f.fighter_id "
+            "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
             "WHERE f.current_promotion_id=? AND f.weight_class_id=? "
-            "ORDER BY r.rating DESC LIMIT 1",
+            "ORDER BY r.rating DESC LIMIT 5",
             (promo_id, wc_id),
-        ).fetchone()
-        if top is None:
+        ).fetchall()
+        if not top5:
             continue
-        # 80% held, 20% vacant
-        is_vacant = rng.random() < 0.20
+        # Filter out fighters on 3+ losing streaks
+        eligible = [t for t in top5 if t[2] < 3]
+        # 80% held, 20% vacant (or vacant if no eligible fighters)
+        is_vacant = rng.random() < 0.20 or not eligible
         if is_vacant:
             champion_id = None
             champion_since = None
             reigns = 0
             defenses = 0
         else:
-            champion_id = top[0]
+            # Pick from top 3 eligible (adds variety — not always the #1)
+            champ_choice = rng.choice(eligible[:min(3, len(eligible))])
+            champion_id = champ_choice[0]
             champion_since = (SIM_DATE - timedelta(days=rng.randint(30, 900))).strftime("%Y-%m-%d")
             reigns = rng.randint(1, 3)
             defenses = rng.randint(0, 8)
+            # Ensure the champion has a positive win streak (champions
+            # don't usually lose their last fight before winning the title)
+            conn.execute(
+                "UPDATE fighter_career SET win_streak=?, loss_streak=0 "
+                "WHERE fighter_id=?",
+                (rng.randint(1, 6), champion_id),
+            )
         # Check if title already exists
         existing = conn.execute(
             "SELECT title_id FROM titles WHERE promotion_id=? AND weight_class_id=?",
@@ -388,8 +404,25 @@ def main():
     n_contracts = 0
     for fid, promo_id, rating in signed_fighters:
         rating = rating or 1000
-        # Salary: $5k-$500k per fight, based on rating
-        salary = max(5000, min(500000, int((rating - 900) * 2000)))
+        # Salary: realistic MMA pay structure.
+        # Entry-level (rating < 950): $5k-$15k per fight
+        # Lower-tier (950-1000): $10k-$30k
+        # Mid-tier (1000-1100): $20k-$80k
+        # Upper-mid (1100-1200): $50k-$150k
+        # Star (1200-1300): $100k-$300k
+        # Elite (1300+): $200k-$500k
+        if rating < 950:
+            salary = rng.randint(5000, 15000)
+        elif rating < 1000:
+            salary = rng.randint(10000, 30000)
+        elif rating < 1100:
+            salary = rng.randint(20000, 80000)
+        elif rating < 1200:
+            salary = rng.randint(50000, 150000)
+        elif rating < 1300:
+            salary = rng.randint(100000, 300000)
+        else:
+            salary = rng.randint(200000, 500000)
         # Start date: 1-12 months ago
         start_date = (SIM_DATE - timedelta(days=rng.randint(30, 365))).strftime("%Y-%m-%d")
         end_date = (datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=365)).strftime("%Y-%m-%d")
