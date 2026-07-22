@@ -17,6 +17,139 @@ from app import _vacate_title_on_retirement, generate_fighter  # noqa: E402
 
 
 # ----------------------------------------------------------------
+# Injury recovery checking (Task ID 15).
+#
+# Fighters get injured (Task 15's _maybe_create_injury in app.py,
+# called at the end of resolve_next_fight). Each injury has a
+# projected_return_date. On every tick, this helper checks all
+# active injuries: if current_date >= projected_return_date, the
+# injury is marked as recovered (is_active=0, actual_return_date=
+# current_date), the temporary career_health penalty (severity * 2)
+# is restored, and a clearance news item is written.
+#
+# The permanent long_term_damage and any permanent attribute
+# reduction are NOT restored — they represent lasting consequences.
+# This matches the Soul document's mandate: a torn ACL at age 32
+# should haunt the fighter's career even after they're cleared to
+# return.
+#
+# This function runs on every tick (called from run_tick AFTER
+# _check_contract_expiry, so the order is: clock advance →
+# _check_retirements → _check_contract_expiry → _check_injury_
+# recovery → commit). It does NOT commit — the caller commits.
+# ----------------------------------------------------------------
+
+def _check_injury_recovery(conn, current_date):
+    """Advance recovery on active injuries that have reached their projected return date.
+
+    Rules (Task ID 15):
+      - For each injury with is_active=1 AND projected_return_date <=
+        current_date:
+        (a) Set is_active = 0, actual_return_date = current_date,
+            updated_at = CURRENT_TIMESTAMP.
+        (b) Restore fighter_career.career_health by severity * 2
+            (the temporary penalty that was applied at injury
+            creation time). The MIN(100, ...) cap keeps career_health
+            within the 0-100 range (the column has no CHECK but values
+            >100 would be nonsensical — a fighter at peak health
+            before the injury shouldn't end up over 100 after
+            recovery).
+        (c) Write a clearance news item: "{Fighter} cleared to
+            return from {injury_type}" with topic='injury', fighter_id
+            set, published_at=current_date.
+      - Returns the list of (injury_id, fighter_id) tuples that were
+        recovered on this tick.
+
+    The permanent long_term_damage (stored on the injuries row) and
+    any permanent attribute reduction (applied to fighter_attributes
+    at injury creation) are NOT restored — they represent lasting
+    consequences of severe injuries.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        current_date: ISO date string 'YYYY-MM-DD' (the current sim date).
+
+    Returns:
+        List of (injury_id, fighter_id) tuples for injuries that were
+        recovered on this tick.
+    """
+    # Fetch active injuries whose projected return date has arrived.
+    # We need fighter_id + injury_type + severity for the news item
+    # and the career_health restoration.
+    rows = conn.execute(
+        "SELECT injury_id, fighter_id, injury_type, severity "
+        "FROM injuries WHERE is_active = 1 AND projected_return_date <= ?",
+        (current_date,),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Get or create the "System Feed" news source (same pattern as
+    # app.write_news, _check_retirements, _check_contract_expiry).
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    recovered = []
+    for injury_id, fighter_id, injury_type, severity in rows:
+        # (a) Mark the injury as recovered.
+        conn.execute(
+            "UPDATE injuries SET is_active = 0, actual_return_date = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE injury_id = ?",
+            (current_date, injury_id),
+        )
+
+        # (b) Restore the temporary career_health penalty (severity * 2).
+        # The permanent long_term_damage penalty is NOT restored.
+        # MIN(100, ...) keeps career_health at or below the natural max.
+        conn.execute(
+            "UPDATE fighter_career SET career_health = MIN(100, career_health + ?), "
+            "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+            (severity * 2, fighter_id),
+        )
+
+        # (c) Write the clearance news item. The fighter's name is
+        # fetched fresh (defensive — if the fighter was somehow deleted
+        # between injury creation and recovery, the news item still
+        # gets written with a placeholder name).
+        name_row = conn.execute(
+            "SELECT first_name || ' ' || last_name FROM fighters "
+            "WHERE fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()
+        fighter_name_str = name_row[0] if name_row else f"Fighter {fighter_id}"
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                src_id,
+                f"{fighter_name_str} cleared to return from {injury_type}",
+                f"{fighter_name_str} has been medically cleared to return "
+                f"from {injury_type} and is eligible to compete again.",
+                "positive",
+                "injury",
+                fighter_id,
+                current_date,
+            ),
+        )
+
+        recovered.append((injury_id, fighter_id))
+
+    return recovered
+
+
+# ----------------------------------------------------------------
 # Retirement checking (Task ID 12, extended in Task ID 14).
 #
 # Fighters age. When a fighter crosses age 40 with declining
@@ -553,6 +686,22 @@ def run_tick(conn, tick_type="day", steps=1):
         if expired:
             print(f"  Expired {len(expired)} contract(s) on "
                   f"{dt.strftime('%Y-%m-%d')}: {expired}")
+        # Task ID 15: check for injury recovery on every tick. Runs
+        # AFTER _check_contract_expiry so the order is: clock advance →
+        # _check_retirements → _check_contract_expiry →
+        # _check_injury_recovery → commit. For each active injury whose
+        # projected_return_date <= current_date: sets is_active=0,
+        # actual_return_date=current_date, restores career_health by
+        # severity*2 (the temporary penalty), and writes a clearance
+        # news item. The function does NOT commit — the conn.commit()
+        # below covers both the clock UPDATE and any injury-recovery
+        # side effects (injuries UPDATE, fighter_career UPDATE,
+        # news_items INSERTs). Prints a one-line log per tick if any
+        # injuries were recovered.
+        recovered = _check_injury_recovery(conn, dt.strftime("%Y-%m-%d"))
+        if recovered:
+            print(f"  Recovered {len(recovered)} injur(ies) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {recovered}")
         conn.commit()
 
 def main():

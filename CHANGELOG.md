@@ -8,6 +8,96 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task 15 — Injuries + medical recovery, schema 2.4.0 MINOR)
+- New `injuries` table (Task 15, schema 2.4.0 MINOR) — 15 columns. One
+  row per injury a fighter suffers. The CHECK constraints enforce
+  `severity` 1-10 (DEFAULT 5), `long_term_damage` 0-100 (DEFAULT 0),
+  `career_risk` 0-100 (DEFAULT 0), `is_active` 0/1 (DEFAULT 1), and
+  `body_area` restricted to the 18 anatomical regions enumerated in
+  the brief (head, face, jaw, nose, eye, neck, shoulder, arm, elbow,
+  wrist, hand, ribs, back, hip, knee, ankle, foot, general). The
+  schema sketch in `docs/STAGES.md` Task ID 15 had `body_area TEXT
+  NOT NULL` without a CHECK; the brief's expanded "Injury types by
+  body area" section enumerates the 18 allowed values, so the CHECK
+  is added to enforce them (the brief's expanded section is the
+  authoritative spec). FKs: `fighter_id` NOT NULL ON DELETE CASCADE
+  (clean up when a fighter is deleted); `event_id` and `fight_id` ON
+  DELETE SET NULL (preserve injury history when an event/fight is
+  deleted — the injury record survives with NULL FK). Per CONVENTIONS
+  §1.1, adding a new table is a MINOR bump. Per CONVENTIONS §5, the
+  `injuries` table is the single logical group added in this task (a
+  career & medical group — `training_camps` is deferred to Task 16).
+  Per CONVENTIONS §5.3, the table ships with both a writer
+  (`_maybe_create_injury` + `_check_post_fight_injuries` in app.py)
+  and a reader (`_pick_matchup` in app.py, `_check_injury_recovery` in
+  tick_processor.py).
+- Injury creation in `app.resolve_next_fight()` (Task 15, schema 2.4.0)
+  — runs at the END of fight resolution as the LAST side effect (after
+  fight_history, rankings, titles, event lifecycle, auto-scheduling,
+  news, commentary, commentary beat selection). For each fighter in
+  the resolved fight, the new helper `_maybe_create_injury()` rolls
+  against injury probability (varies by result_type — see the
+  `_INJURY_*` constants at the top of app.py):
+    * `doctor_stoppage`: guaranteed injury on the loser (the reason
+      the doctor stopped it — body area picked from a damage-weighted
+      pool: head/face/ribs/general).
+    * `ko_tko`: 30% chance of head injury (concussion) on the loser,
+      severity scaled by the finishing beat's `damage_dealt`.
+    * `submission`: 15% chance of joint injury (knee / elbow /
+      shoulder / ankle) on the loser — the submitted joint.
+    * `decision` / `draw` / `corner_stoppage` / `dq`: 5% base + damage-
+      scaled chance (cap +20% from damage), applied to BOTH fighters.
+  `injury_proneness` (fighters column) modifies the probability
+  (linear 0.5x at proneness=0 to 1.5x at proneness=100). `durability`
+  (fighter_attributes column) reduces severity (-2 at dur=100, +2 at
+  dur=0, clamped to [1,10]). `projected_return_date = start_date +
+  max(7, severity * 14 - int(recovery_rate * 0.1))` days. Severity 8+
+  injuries have a 30% chance of permanent attribute reduction (-2 to
+  -5 on a body-area-relevant attribute — head→chin, knee→speed_
+  explosiveness, etc. — clamped at 0). The reduction is stored as
+  `long_term_damage` on the injuries row AND applied to
+  `fighter_attributes` + permanently reduces
+  `fighter_career.career_health`. Each active injury also temporarily
+  reduces `career_health` by `severity * 2` (restored on recovery).
+  A news item is written: "{Fighter} suffers {injury_type}" with
+  `topic='injury'`, `fighter_id` set, `fight_id` + `event_id` set so
+  future UIs can group injury news by fight.
+- Injury recovery in `tick_processor._check_injury_recovery()` (Task
+  15, schema 2.4.0) — called from `run_tick()` AFTER
+  `_check_contract_expiry` (so the order is: clock advance →
+  `_check_retirements` → `_check_contract_expiry` →
+  `_check_injury_recovery` → commit). For each active injury whose
+  `projected_return_date <= current_date`: sets `is_active = 0`,
+  `actual_return_date = current_date`, restores `career_health` by
+  `severity * 2` (the temporary penalty lifted, MIN(100, ...) cap),
+  and writes a clearance news item ("{Fighter} cleared to return from
+  {injury_type}" with `topic='injury'`, `fighter_id` set). The
+  permanent `long_term_damage` and any permanent attribute reduction
+  are NOT restored (they represent lasting consequences — the Soul
+  document's "the story is the reward" mandate: a torn ACL at age 32
+  should haunt the fighter's career even after they're cleared).
+- `_pick_matchup` booking restriction (Task 15, schema 2.4.0) —
+  `_pick_matchup()` in app.py now filters out fighters with active
+  injuries (`AND fighter_id NOT IN (SELECT fighter_id FROM injuries
+  WHERE is_active = 1)`). Injured fighters cannot be booked — the
+  medical staff hasn't cleared them to return. This is the reader
+  required by CONVENTIONS §5.3.
+- Acceptance test `scripts/test_injuries.py` (Task 15) — new dynamic-
+  version acceptance test (72 sub-checks across 17 cases A-Q). Covers
+  schema (CHECK constraints, FK constraints, 18 body_area values),
+  defaults, `_pick_matchup` reader, doctor_stoppage guaranteed injury,
+  KO/TKO 30% head injury (binomial tolerance), submission 15% joint
+  injury (binomial tolerance), non-finish 5% base on both fighters
+  (binomial tolerance), `injury_proneness` modifier, `durability`
+  severity reduction, `projected_return_date` formula,
+  `career_health` reduction while active, severity-8+ long-term
+  damage, recovery on tick (5-day timeline), recovery news item,
+  permanent `long_term_damage` NOT restored on recovery, end-to-end
+  regression via `resolve_next_fight`, and body_area CHECK accepts all
+  18 enumerated values. Per CONVENTIONS §10, the test reads
+  `build_db.CODE_SCHEMA_VERSION` dynamically — no hardcoded version
+  string. Per CONVENTIONS §10.4, no hardcoded table count.
+
 ### Added (Task B2 — Beat Engine Depth, schema 2.3.0 MINOR)
 - `fight_beats.outcome` CHECK constraint extended (Task B2, schema 2.3.0
   MINOR) — added `'knockdown'` and `'near_finish'` to the allowed

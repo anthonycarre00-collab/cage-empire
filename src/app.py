@@ -654,6 +654,177 @@ _COMMENTARY_EXTENDED_THRESHOLD = 70
 _BIG_MOMENTUM_SWING_THRESHOLD = 50
 
 
+# ----------------------------------------------------------------
+# Injury system constants (v2.4.0, Task 15).
+#
+# Injury creation is a side effect of resolve_next_fight() that runs
+# AFTER all other side effects (fight_history, rankings, titles, event
+# lifecycle, schedule_next_event, news, commentary, commentary beat
+# selection). The helper _maybe_create_injury() rolls against injury
+# probability for each fighter, picks an injury type / body area,
+# computes severity + projected return date, applies long-term damage
+# if applicable, writes an injuries row + a news item, and reduces
+# fighter_career.career_health.
+#
+# The probabilities and severities below are tuned so that:
+#   - The base injury rate (decision fights, all-50 fighters) is ~5%
+#     per fight, per the brief's "5% base per fight (non-finish)".
+#   - KO/TKO losers have a 30% chance of a concussion (per the brief).
+#   - Submission losers have a 15% chance of a joint injury (per the
+#     brief).
+#   - Doctor stoppage produces a guaranteed injury on the loser (per
+#     the brief — "that's why the doctor stopped it").
+#   - injury_proneness (fighters column) modifies the probability
+#     (0.5x at 0, 1.5x at 100 — a 2x swing across the 0-100 range,
+#     matching the brief's "high proneness = more likely").
+#   - durability (fighter_attributes column) reduces severity
+#     (high durability = less severe — a -2 to +2 swing across 0-100).
+#
+# The recovery timeline (projected_return_date = start_date + severity
+# * 14 days, reduced by recovery_rate * 0.1 per day) gives:
+#   - sev 1 cut:           14 - 5 = 9 days  (~1.5 weeks)
+#   - sev 5 fractured rib: 70 - 5 = 65 days (~9 weeks)
+#   - sev 10 ACL tear:     140 - 5 = 135 days (~19 weeks / 4.5 months)
+# These ranges match real-world MMA injury timelines (a minor cut
+# keeps a fighter out 1-2 weeks; a torn ACL keeps them out 6-9
+# months in reality — we err slightly shorter because the sim has
+# accelerated aging and the player wants the fighter back in the
+# rotation within a year).
+# ----------------------------------------------------------------
+
+# Base injury probability per fight for non-finish outcomes (decision,
+# draw, corner_stoppage, dq). Per the brief: "5% base per fight
+# (non-finish)".
+_INJURY_BASE_PROB_NONFINISH = 0.05
+
+# Cap on the damage-scaled addition to injury probability. Damage
+# taken ranges 0-1000+ per fight; we scale it to a 0-20% probability
+# addition so a fighter who took 1000+ damage has up to 25% injury
+# chance (5% base + 20% damage). This matches the brief's "severity
+# scaled by cumulative damage_dealt to the fighter" — interpreted as
+# a 20% cap on the damage contribution.
+_INJURY_DAMAGE_SCALE_CAP = 0.20
+_INJURY_DAMAGE_SCALE_DIVISOR = 1000.0  # damage / this = probability add
+
+# KO/TKO loser injury probability (concussion). Per the brief: "30%
+# chance of head injury (concussion)".
+_INJURY_KO_HEAD_PROB = 0.30
+
+# Submission loser injury probability (joint injury). Per the brief:
+# "15% chance of joint injury (the submitted joint)".
+_INJURY_SUBMISSION_JOINT_PROB = 0.15
+
+# Doctor stoppage: guaranteed injury on the loser. Per the brief:
+# "guaranteed injury (that's why the doctor stopped it)".
+_INJURY_DOCTOR_GUARANTEED = 1.0
+
+# injury_proneness modifier range. The brief says "high proneness =
+# more likely". Implemented as a 0.5x-1.5x multiplier across 0-100
+# (linear). A fighter with proneness=0 has half the base chance; a
+# fighter with proneness=100 has 1.5x the base chance.
+_INJURY_PRONENESS_MIN_MULT = 0.5
+_INJURY_PRONENESS_MAX_MULT = 1.5
+
+# durability severity reduction. The brief says "high durability =
+# less severe". Implemented as a -2 to +2 severity adjustment across
+# 0-100 (linear): dur=0 → +2 severity (low durability = worse),
+# dur=50 → 0 (no change), dur=100 → -2 severity (high durability =
+# less severe). The adjustment is applied AFTER the random severity
+# roll and clamped to [1, 10].
+_INJURY_DURABILITY_SEVERITY_ADJUST = 2  # +/- at extremes
+
+# Recovery timeline. Per the brief: "projected_return_date =
+# start_date + severity * 14 days" and "reduce days by recovery_rate
+# * 0.1 per day". The recovery_rate adjustment is a flat reduction
+# (5 days at recovery_rate=50, the schema default).
+_INJURY_BASE_DAYS_PER_SEVERITY = 14
+_INJURY_RECOVERY_RATE_DAYS_PER_POINT = 0.1
+_INJURY_MIN_DAYS_OUT = 7  # even a sev-1 cut takes at least a week
+
+# Long-term damage: severity 8+ has 30% chance of permanent attribute
+# reduction. Per the brief: "severity 8+ injuries have 30% chance of
+# permanent attribute reduction (-2 to -5 on relevant attribute)".
+_INJURY_LONGTERM_SEVERITY_THRESHOLD = 8
+_INJURY_LONGTERM_PROB = 0.30
+_INJURY_LONGTERM_MIN = 2
+_INJURY_LONGTERM_MAX = 5
+
+# Career-health impact. Per the brief: "each active injury reduces
+# career_health by severity * 2 while active" and "long_term_damage
+# permanently reduces it [career_health]".
+_INJURY_CAREER_HEALTH_MULT = 2  # severity * this = temporary career_health hit
+
+# Injury type pools by body area (per the brief's "Injury types by
+# body area" section). Each entry is (injury_type, severity_min,
+# severity_max). The random roll picks one entry from the list, then
+# rolls a severity in [sev_min, sev_max].
+_INJURY_TYPES_BY_BODY_AREA = {
+    "head":     [("concussion", 5, 10), ("cut", 1, 3)],
+    "face":     [("laceration", 2, 5), ("broken nose", 3, 5), ("orbital fracture", 5, 8)],
+    "jaw":      [("broken jaw", 5, 8)],
+    "nose":     [("broken nose", 3, 5)],
+    "eye":      [("orbital fracture", 5, 8)],
+    "neck":     [("neck strain", 3, 6)],
+    "shoulder": [("shoulder dislocation", 4, 7), ("rotator cuff tear", 6, 9)],
+    "arm":      [("arm fracture", 4, 7)],
+    "elbow":    [("elbow hyperextension", 4, 7)],
+    "wrist":    [("wrist sprain", 2, 5)],
+    "hand":     [("broken hand", 4, 6)],
+    "ribs":     [("bruised ribs", 2, 4), ("fractured ribs", 5, 7)],
+    "back":     [("back spasms", 2, 5)],
+    "hip":      [("hip pointer", 3, 6)],
+    "knee":     [("ACL tear", 7, 10), ("meniscus tear", 4, 7), ("MCL sprain", 3, 6)],
+    "ankle":    [("ankle sprain", 2, 5), ("ankle fracture", 5, 8)],
+    "foot":     [("foot fracture", 3, 6)],
+    "general":  [("muscle tear", 3, 6), ("fatigue syndrome", 2, 4)],
+}
+
+# Body areas that can be rolled for non-finish injuries (decision /
+# draw / corner_stoppage / dq). Excludes the finish-specific areas
+# (head for KO, joints for submission) since those have their own
+# dedicated injury paths. The list is biased toward common fight
+# injuries (hand/ribs/face are the most common, knee is rare but
+# severe — matching real-world MMA injury distributions).
+_INJURY_BODY_AREAS_NONFINISH = [
+    "head", "head", "face", "face", "ribs", "ribs", "hand", "hand",
+    "knee", "foot", "ankle", "general", "general", "shoulder",
+]
+
+# Body areas that can be rolled for submission-finish joint injuries.
+# Per the brief: "15% chance of joint injury (the submitted joint)".
+# The "submitted joint" is ambiguous in the brief (depends on the
+# submission type — armbar = elbow, kneebar = knee, heel hook =
+# ankle, kimura = shoulder). We pick uniformly at random from the
+# 4 joint areas to keep the implementation simple; future
+# submissions-engine work can specialize this.
+_INJURY_SUBMISSION_JOINT_AREAS = ["knee", "elbow", "shoulder", "ankle"]
+
+# Mapping from body_area to the fighter_attribute that gets reduced
+# when a severity-8+ injury becomes long-term. The brief says "-2 to
+# -5 on relevant attribute" — "relevant" is interpreted as the
+# attribute most associated with that body area:
+#   - head/face/jaw/eye/nose → chin (taking punches to the head)
+#   - knee/ankle/foot → speed_explosiveness (leg-driven mobility)
+#   - shoulder/elbow/wrist/hand → punch_power (striking limb)
+#   - ribs/back → cardio (torso-driven breathing / rotation)
+#   - hip → strength (hip-driven power)
+#   - neck → strength
+#   - general → durability (overall resilience)
+# A body_area not in this map (shouldn't happen — all 18 are mapped)
+# falls back to durability as the safe default.
+_INJURY_LONGTERM_ATTR_BY_AREA = {
+    "head": "chin", "face": "chin", "jaw": "chin", "eye": "chin",
+    "nose": "chin", "neck": "strength",
+    "shoulder": "punch_power", "arm": "punch_power",
+    "elbow": "punch_power", "wrist": "punch_power", "hand": "punch_power",
+    "ribs": "cardio", "back": "cardio",
+    "hip": "strength",
+    "knee": "speed_explosiveness", "ankle": "speed_explosiveness",
+    "foot": "speed_explosiveness",
+    "general": "durability",
+}
+
+
 def _compute_beat_scores(phase, init_stats, target_stats,
                          init_gas=100.0, target_gas=100.0,
                          pressure_mod_init=0.0, pressure_mod_target=0.0,
@@ -2684,11 +2855,18 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
     add rivalry logic. The signature already accepts
     exclude_fighter_ids so those future enhancements can pass a
     fighter set without changing the call sites.
+
+    v2.4.0 (Task 15): also excludes fighters with active injuries
+    (`is_active = 1` in the injuries table). An injured fighter
+    cannot be booked — the medical staff hasn't cleared them to
+    return. This is the reader required by CONVENTIONS §5.3 (every
+    new table must ship with at least one reader).
     """
     sql = (
         "SELECT fighter_id FROM fighters "
         "WHERE current_promotion_id = ? AND is_active = 1 "
-        "AND weight_class_id = ?"
+        "AND weight_class_id = ? "
+        "AND fighter_id NOT IN (SELECT fighter_id FROM injuries WHERE is_active = 1)"
     )
     params = [promotion_id, weight_class_id]
     if exclude_fighter_ids:
@@ -2897,6 +3075,373 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     # matching the existing pattern (resolve_next_fight, advance_day,
     # etc.).
     return new_event_id
+
+
+# ----------------------------------------------------------------
+# Injury creation (v2.4.0, Task 15).
+#
+# `_maybe_create_injury()` is called at the END of
+# resolve_next_fight() — AFTER all existing side effects
+# (fight_history, rankings, titles, event lifecycle,
+# schedule_next_event, news, commentary, commentary beat selection).
+# It is the LAST side effect of fight resolution.
+#
+# For each fighter in the resolved fight, the helper:
+#   1. Computes cumulative damage_taken from fight_beats (sum of
+#      damage_dealt where target_fighter_id = fighter_id).
+#   2. Rolls against injury probability (varies by result_type — see
+#      _INJURY_* constants above).
+#   3. Modifies the probability by injury_proneness (0.5x-1.5x).
+#   4. If injured: picks injury_type + body_area + severity (with
+#      durability reducing severity), computes projected_return_date,
+#      rolls for long_term_damage (30% chance if sev >= 8), writes
+#      the injuries row + a news item, and reduces fighter_career.
+#      career_health by severity*2 (temporary) + long_term_damage
+#      (permanent).
+#
+# Returns the list of injury_ids created (0, 1, or 2 entries).
+# ----------------------------------------------------------------
+
+def _maybe_create_injury(conn, fighter_id, fight_id, event_id, event_date,
+                          result_type, is_loser, damage_taken,
+                          finishing_beat_id, stats, proneness):
+    """Roll for an injury on a single fighter and write the row if injured.
+
+    Args:
+        conn: sqlite3 connection (caller commits — same pattern as every
+            other side-effect helper in this module).
+        fighter_id: the fighter who may be injured.
+        fight_id: the fight that just resolved.
+        event_id: the event the fight belongs to.
+        event_date: 'YYYY-MM-DD' — used as the injury's start_date and
+            the basis for projected_return_date.
+        result_type: the fight's result_type (ko_tko / submission /
+            doctor_stoppage / corner_stoppage / dq /
+            unanimous_decision / split_decision / draw). Determines
+            which injury branch fires.
+        is_loser: True if this fighter lost the fight. Finish-based
+            injuries (KO concussion, submission joint, doctor
+            stoppage) only apply to the loser.
+        damage_taken: cumulative damage_dealt to this fighter across
+            all rounds (sum from fight_beats where
+            target_fighter_id = fighter_id). Used to scale the
+            non-finish injury probability.
+        finishing_beat_id: the fight_beat_id of the finishing exchange
+            (for KO/submission). None for decision / draw / doctor /
+            corner / DQ. The damage_dealt of this beat scales the KO
+            concussion severity per the brief.
+        stats: the fighter's full attribute+personality dict (from
+            _load_fighter_stats). Used for durability (severity
+            reduction), recovery_rate (recovery timeline).
+        proneness: the fighter's injury_proneness value (0-100, from
+            the fighters table). Modifies the injury probability.
+
+    Returns:
+        The new injury_id if an injury was created, else None.
+
+    Implementation notes:
+      - The injury probability is computed per the brief's rules
+        (see the _INJURY_* constants above). injury_proneness is a
+        linear 0.5x-1.5x multiplier.
+      - Severity is rolled in the [sev_min, sev_max] range from
+        _INJURY_TYPES_BY_BODY_AREA, then adjusted by durability
+        (-2 at dur=100, +2 at dur=0), clamped to [1, 10].
+      - projected_return_date = start_date + max(_INJURY_MIN_DAYS_OUT,
+        severity * 14 - int(recovery_rate * 0.1)).
+      - For severity >= _INJURY_LONGTERM_SEVERITY_THRESHOLD (8), roll
+        a 30% chance for long_term_damage in [2, 5]. If long-term,
+        reduce the body-area-relevant fighter_attribute by that
+        amount (clamped at 0 — attributes never go negative) and
+        permanently reduce career_health by the same amount.
+      - career_health is also reduced by severity * 2 (temporary —
+        restored on recovery by _check_injury_recovery in
+        tick_processor.py).
+      - A news item is written: "{Fighter} suffers {injury_type} —
+        projected return {date}" with topic='injury', fighter_id
+        set, fight_id + event_id set so future UIs can group injury
+        news by fight.
+    """
+    # ---- 1. Compute injury probability + body_area + type pool ----
+    if result_type == "doctor_stoppage":
+        # Guaranteed injury on the loser (the loser was taking the
+        # beating that triggered the stoppage). The winner of a
+        # doctor stoppage does not get injured (they were the one
+        # dealing damage, not taking it).
+        if not is_loser:
+            return None
+        injury_chance = _INJURY_DOCTOR_GUARANTEED
+        # Doctor stoppage is a one-sided beating — the loser's
+        # injuries tend to be in the high-damage areas: head (the
+        # doctor stopped it because of facial swelling / a cut /
+        # concussion risk), face (laceration), or general (body
+        # damage). Pick from a damage-weighted pool.
+        body_area = random.choice([
+            "head", "head", "head", "face", "face", "face",
+            "ribs", "general", "general",
+        ])
+    elif result_type == "ko_tko" and is_loser:
+        # 30% chance of head injury (concussion) on the loser.
+        injury_chance = _INJURY_KO_HEAD_PROB
+        body_area = "head"
+    elif result_type == "submission" and is_loser:
+        # 15% chance of joint injury on the loser.
+        injury_chance = _INJURY_SUBMISSION_JOINT_PROB
+        body_area = random.choice(_INJURY_SUBMISSION_JOINT_AREAS)
+    else:
+        # Non-finish (decision / draw / corner_stoppage / dq) AND
+        # any fighter (winner OR loser). 5% base + damage-scaled.
+        # The brief specifies the 5% base + damage-scaled chance
+        # applies to "non-finish" — interpreted here as all result
+        # types NOT explicitly listed above (so corner_stoppage and
+        # dq fall through to this branch, since neither is a finish
+        # in the KO/sub/doctor sense).
+        damage_scaled = min(
+            damage_taken / _INJURY_DAMAGE_SCALE_DIVISOR,
+            _INJURY_DAMAGE_SCALE_CAP,
+        )
+        injury_chance = _INJURY_BASE_PROB_NONFINISH + damage_scaled
+        body_area = random.choice(_INJURY_BODY_AREAS_NONFINISH)
+
+    # ---- 2. Modify probability by injury_proneness ----
+    # Linear 0.5x (proneness=0) to 1.5x (proneness=100).
+    proneness_mult = (
+        _INJURY_PRONENESS_MIN_MULT
+        + (proneness / 100.0)
+        * (_INJURY_PRONENESS_MAX_MULT - _INJURY_PRONENESS_MIN_MULT)
+    )
+    injury_chance *= proneness_mult
+
+    # Cap at 1.0 so a high-proneness + guaranteed injury case doesn't
+    # produce probability > 1.0 (which would still trigger, but the
+    # cap is defensive and makes the math cleaner for log/inspection).
+    injury_chance = min(injury_chance, 1.0)
+
+    # ---- 3. Roll against the probability ----
+    if random.random() > injury_chance:
+        return None
+
+    # ---- 4. Pick injury type + severity from the body_area pool ----
+    type_pool = _INJURY_TYPES_BY_BODY_AREA.get(body_area)
+    if not type_pool:
+        # Defensive: body_area should always be in the pool. Fall
+        # back to general if somehow not (keeps the function from
+        # crashing — the CHECK constraint would also catch an
+        # invalid body_area on INSERT).
+        type_pool = _INJURY_TYPES_BY_BODY_AREA["general"]
+        body_area = "general"
+    injury_type, sev_min, sev_max = random.choice(type_pool)
+    severity = random.randint(sev_min, sev_max)
+
+    # KO/TKO finish: scale severity by the finishing beat's damage.
+    # The brief says "severity scaled by damage in finishing
+    # sequence". The finishing beat is the knockdown beat — its
+    # damage_dealt is the damage of the finishing blow. We map
+    # damage 30-100+ to a +0 to +3 severity boost (clamped at 10).
+    if result_type == "ko_tko" and is_loser and finishing_beat_id is not None:
+        row = conn.execute(
+            "SELECT damage_dealt FROM fight_beats WHERE fight_beat_id=?",
+            (finishing_beat_id,),
+        ).fetchone()
+        if row and row[0] is not None:
+            # damage 30 → +0, damage 100 → +3 (linear, clamped).
+            finish_sev_boost = max(0, min(3, (row[0] - 30) // 24))
+            severity = min(10, severity + finish_sev_boost)
+
+    # ---- 5. Reduce severity by durability ----
+    # Linear: dur=0 → +2, dur=50 → 0, dur=100 → -2.
+    durability = stats.get("durability", 50)
+    durability_adj = int(round(
+        _INJURY_DURABILITY_SEVERITY_ADJUST
+        * (1.0 - durability / 50.0)
+    ))
+    severity = max(1, min(10, severity + durability_adj))
+
+    # ---- 6. Compute projected_return_date ----
+    recovery_rate = stats.get("recovery_rate", 50)
+    base_days = severity * _INJURY_BASE_DAYS_PER_SEVERITY
+    recovery_discount = int(recovery_rate * _INJURY_RECOVERY_RATE_DAYS_PER_POINT)
+    days_out = max(_INJURY_MIN_DAYS_OUT, base_days - recovery_discount)
+
+    start_dt = datetime.strptime(event_date, "%Y-%m-%d")
+    projected_dt = start_dt + timedelta(days=days_out)
+    start_date_str = event_date
+    projected_str = projected_dt.strftime("%Y-%m-%d")
+
+    # ---- 7. Long-term damage (severity 8+ only, 30% chance) ----
+    long_term_damage = 0
+    if severity >= _INJURY_LONGTERM_SEVERITY_THRESHOLD:
+        if random.random() < _INJURY_LONGTERM_PROB:
+            long_term_damage = random.randint(
+                _INJURY_LONGTERM_MIN, _INJURY_LONGTERM_MAX
+            )
+
+    # ---- 8. Career risk ----
+    # Cumulative risk: severity * 5 (max 50), +10 per point of
+    # long_term_damage (max +50). Capped at 100.
+    career_risk = min(100, severity * 5 + long_term_damage * 10)
+
+    # ---- 9. Insert the injuries row ----
+    cur = conn.execute(
+        "INSERT INTO injuries (fighter_id, event_id, fight_id, "
+        "injury_type, severity, body_area, start_date, "
+        "projected_return_date, long_term_damage, career_risk, "
+        "is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (fighter_id, event_id, fight_id, injury_type, severity,
+         body_area, start_date_str, projected_str, long_term_damage,
+         career_risk),
+    )
+    injury_id = cur.lastrowid
+
+    # ---- 10. Reduce fighter_career.career_health ----
+    # Two reductions:
+    #   (a) severity * _INJURY_CAREER_HEALTH_MULT (temporary — restored
+    #       on recovery by _check_injury_recovery in tick_processor.py).
+    #   (b) long_term_damage (permanent — NOT restored on recovery).
+    # Both are applied here as a single UPDATE; the recovery helper
+    # only restores the (a) part. The MAX(0, ...) keeps career_health
+    # non-negative (the column has no CHECK but a negative value
+    # would be nonsensical and could break retirement logic which
+    # checks career_health < 60).
+    health_reduction = severity * _INJURY_CAREER_HEALTH_MULT + long_term_damage
+    conn.execute(
+        "UPDATE fighter_career SET career_health = MAX(0, career_health - ?), "
+        "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+        (health_reduction, fighter_id),
+    )
+
+    # ---- 11. Long-term attribute reduction ----
+    # Per the brief: "-2 to -5 on relevant attribute". The relevant
+    # attribute is determined by _INJURY_LONGTERM_ATTR_BY_AREA. The
+    # reduction is applied to fighter_attributes directly (clamped
+    # at 0 — attributes never go negative). This is the permanent
+    # consequence the Soul document demands: a torn ACL at age 32
+    # permanently reduces the fighter's speed_explosiveness, which
+    # the player sees in their decline.
+    if long_term_damage > 0:
+        attr = _INJURY_LONGTERM_ATTR_BY_AREA.get(body_area, "durability")
+        # Whitelist the attribute name before interpolating into SQL
+        # (defensive — the map is hardcoded above, but the whitelist
+        # protects against a future bug if someone edits the map).
+        if attr not in _FIGHTER_ATTR_COLUMNS:
+            attr = "durability"
+        conn.execute(
+            f"UPDATE fighter_attributes SET {attr} = MAX(0, {attr} - ?), "
+            "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+            (long_term_damage, fighter_id),
+        )
+
+    # ---- 12. Write the injury news item ----
+    # Per the brief: "{Fighter name} suffers {injury_type} — projected
+    # return {date}". topic='injury' so future news-engine work can
+    # filter injury-themed items. fighter_id, fight_id, event_id all
+    # set so future UIs can group injury news by fighter / fight /
+    # event.
+    fighter_name_str = fighter_name(conn, fighter_id)
+    write_news(
+        conn,
+        f"{fighter_name_str} suffers {injury_type}",
+        f"{fighter_name_str} suffers {injury_type} (severity {severity}/10, "
+        f"{body_area}) during the fight. Projected return: {projected_str}.",
+        topic="injury",
+        event_id=event_id,
+        fight_id=fight_id,
+        fighter_id=fighter_id,
+    )
+
+    return injury_id
+
+
+def _check_post_fight_injuries(conn, fight_id, event_id, event_date,
+                                result_type, winner_id, loser_id,
+                                a_id, b_id, stats_a, stats_b,
+                                finishing_beat_id):
+    """Check both fighters in a resolved fight for injuries.
+
+    Called at the END of resolve_next_fight() (after all other side
+    effects). Computes the damage_taken per fighter from fight_beats,
+    fetches each fighter's injury_proneness, then calls
+    _maybe_create_injury() for each. Returns the list of injury_ids
+    created (0, 1, or 2 entries — typically at most 1 per fight, but
+    a non-finish can produce injuries on both fighters in rare cases).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fight_id, event_id, event_date: the resolved fight's metadata.
+        result_type: the fight's result_type.
+        winner_id, loser_id: winner and loser fighter_ids (loser_id
+            may be None for a draw — in that case both fighters are
+            treated as "not the loser" for finish-based injury
+            branches, which is correct: a draw has no finish so no
+            KO/sub/doctor injury branch fires).
+        a_id, b_id: the two fighter_ids in the fight.
+        stats_a, stats_b: the loaded stats dicts for fighters A and B
+            (from _load_fighter_stats — already loaded by
+            resolve_next_fight for the beat engine).
+        finishing_beat_id: the fight_beat_id of the finishing
+            exchange (for KO/submission), or None.
+
+    Returns:
+        List of injury_ids created (may be empty).
+    """
+    # Compute cumulative damage_taken per fighter from fight_beats.
+    # damage_dealt is the damage DEALT BY the initiator TO the target.
+    # So damage_taken by fighter X = SUM(damage_dealt) WHERE
+    # target_fighter_id = X.
+    dmg_a_row = conn.execute(
+        "SELECT COALESCE(SUM(damage_dealt), 0) FROM fight_beats "
+        "WHERE fight_id=? AND target_fighter_id=?",
+        (fight_id, a_id),
+    ).fetchone()
+    dmg_b_row = conn.execute(
+        "SELECT COALESCE(SUM(damage_dealt), 0) FROM fight_beats "
+        "WHERE fight_id=? AND target_fighter_id=?",
+        (fight_id, b_id),
+    ).fetchone()
+    dmg_a = dmg_a_row[0] if dmg_a_row else 0
+    dmg_b = dmg_b_row[0] if dmg_b_row else 0
+
+    # Fetch each fighter's injury_proneness (fighters table column —
+    # not loaded by _load_fighter_stats, which only loads
+    # clutch_factor / consistency / marketability from fighters).
+    # COALESCE(..., 50) is defensive: a fighter without a row
+    # (shouldn't happen with the seed) is treated as average
+    # proneness.
+    pron_a_row = conn.execute(
+        "SELECT COALESCE(injury_proneness, 50) FROM fighters "
+        "WHERE fighter_id=?",
+        (a_id,),
+    ).fetchone()
+    pron_b_row = conn.execute(
+        "SELECT COALESCE(injury_proneness, 50) FROM fighters "
+        "WHERE fighter_id=?",
+        (b_id,),
+    ).fetchone()
+    pron_a = pron_a_row[0] if pron_a_row else 50
+    pron_b = pron_b_row[0] if pron_b_row else 50
+
+    # For draws, both fighters are "not the loser" — finish-based
+    # injury branches (KO/sub/doctor) won't fire because result_type
+    # is 'draw' (not in those branches). The non-finish branch fires
+    # for both, which is correct: both fighters took damage and have
+    # a small chance of injury.
+    is_a_loser = (loser_id is not None and a_id == loser_id)
+    is_b_loser = (loser_id is not None and b_id == loser_id)
+
+    injury_ids = []
+    inj_a = _maybe_create_injury(
+        conn, a_id, fight_id, event_id, event_date, result_type,
+        is_a_loser, dmg_a, finishing_beat_id, stats_a, pron_a,
+    )
+    if inj_a is not None:
+        injury_ids.append(inj_a)
+    inj_b = _maybe_create_injury(
+        conn, b_id, fight_id, event_id, event_date, result_type,
+        is_b_loser, dmg_b, finishing_beat_id, stats_b, pron_b,
+    )
+    if inj_b is not None:
+        injury_ids.append(inj_b)
+
+    return injury_ids
 
 
 def resolve_next_fight(conn):
@@ -3481,6 +4026,43 @@ def resolve_next_fight(conn):
                   f"promotion_id={promo_id} (not enough available fighters?).")
         # else: scheduled is the new event_id. No print - the UI's
         # refresh_all() will display the new event in the Events tree.
+
+    # ----------------------------------------------------------------
+    # Injury creation (Task ID 15). This is the LAST side effect of
+    # fight resolution — runs AFTER event lifecycle, auto-scheduling,
+    # and all other side effects. For each fighter in the resolved
+    # fight, rolls against injury probability (varies by result_type —
+    # KO/sub/doctor/decision), picks an injury type / body area /
+    # severity, computes projected_return_date, applies long-term
+    # damage if applicable, writes an injuries row + a news item, and
+    # reduces fighter_career.career_health.
+    #
+    # The injuries table ships with this writer (here), a second
+    # writer (tick_processor._check_injury_recovery), and a reader
+    # (_pick_matchup above) per CONVENTIONS §5.3. The Soul document
+    # mandates that every system generate stories: the injury system
+    # produces the "torn ACL in the title shot" + "9-month comeback"
+    # narrative arc that the player remembers.
+    #
+    # finishing_beat_id is from finish_info (set for KO/submission
+    # finishes; None for decision/draw/doctor/corner/DQ). It's used
+    # to scale KO concussion severity by the finishing blow's damage.
+    # ----------------------------------------------------------------
+    finishing_beat_id = (finish_info or {}).get("finishing_beat_id")
+    _check_post_fight_injuries(
+        conn,
+        fight_id=fight_id,
+        event_id=event_id,
+        event_date=event_date,
+        result_type=result_type,
+        winner_id=winner_id if result_type != "draw" else None,
+        loser_id=loser_id if result_type != "draw" else None,
+        a_id=a_id,
+        b_id=b_id,
+        stats_a=stats_a,
+        stats_b=stats_b,
+        finishing_beat_id=finishing_beat_id,
+    )
 
     return fight_id
 

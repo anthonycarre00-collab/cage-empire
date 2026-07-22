@@ -9,6 +9,91 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.4.0 (Task 15 — Injuries + medical recovery) — MINOR bump. Adds
+# the new `injuries` table (one row per injury a fighter suffers).
+# Per CONVENTIONS §1.1, adding a new table is a MINOR bump. Per
+# CONVENTIONS §5 (one table-group per task), this task adds ONLY the
+# `injuries` table — it is a single logical group (career & medical)
+# even though the SCHEMA_DRIFT_AUDIT.md §H list also includes
+# `training_camps` (deferred to Task 16). The injuries table ships
+# with both a writer (resolve_next_fight in app.py, _check_injury_
+# recovery in tick_processor.py) and a reader (_pick_matchup in
+# app.py, plus the upcoming UI tab) per CONVENTIONS §5.3.
+#
+# Schema changes in this task (per the Task 15 brief):
+#   1. New `injuries` table — 15 columns. The CHECK constraints
+#      enforce severity 1-10, long_term_damage 0-100, career_risk
+#      0-100, is_active 0/1, and body_area restricted to the 18
+#      anatomical regions enumerated in the brief (head, face, jaw,
+#      nose, eye, neck, shoulder, arm, elbow, wrist, hand, ribs,
+#      back, hip, knee, ankle, foot, general). The schema sketch in
+#      STAGES.md had `body_area TEXT NOT NULL` without a CHECK; the
+#      brief's expanded Injury types by body area section enumerates
+#      the 18 allowed values, so the CHECK is added to enforce them
+#      (the brief's expanded section is the authoritative spec).
+#      ON DELETE CASCADE on fighter_id keeps the table clean when a
+#      fighter is deleted; ON DELETE SET NULL on event_id and
+#      fight_id preserves the injury record (with NULL event/fight
+#      FK) when an event or fight is deleted, so a fighter's injury
+#      history survives event/fight cleanup.
+#
+# Code changes in app.py (Task 15):
+#   - New `_maybe_create_injury()` helper called at the END of
+#     resolve_next_fight() AFTER all existing side effects
+#     (fight_history, rankings, titles, event lifecycle,
+#     schedule_next_event, news, commentary, commentary beat
+#     selection). For each fighter in the resolved fight, computes
+#     cumulative damage_taken from fight_beats, then rolls against
+#     injury probability:
+#       * doctor_stoppage: guaranteed injury on the loser (the
+#         reason the doctor stopped it).
+#       * ko_tko: 30% chance of head injury (concussion) on the
+#         loser, severity scaled by damage in the finishing beat.
+#       * submission: 15% chance of joint injury (knee/elbow/
+#         shoulder/ankle) on the loser.
+#       * decision / draw / corner_stoppage / dq: 5% base + damage-
+#         scaled chance, applied to BOTH fighters.
+#     injury_proneness (fighters column) modifies the probability
+#     (0.5x at proneness=0, 1.5x at proneness=100). durability
+#     (fighter_attributes column) reduces severity (high durability
+#     = less severe). projected_return_date = start_date + severity
+#     * 14 days, reduced by recovery_rate * 0.1 per day. Severity
+#     8+ injuries have a 30% chance of permanent attribute reduction
+#     (-2 to -5 on a body-area-relevant attribute) which is stored
+#     as long_term_damage on the injuries row AND applied to
+#     fighter_attributes + fighter_career.career_health. Each
+#     active injury reduces career_health by severity * 2 while
+#     active (restored on recovery).
+#   - `_pick_matchup()` now filters out fighters with active
+#     injuries (`AND fighter_id NOT IN (SELECT fighter_id FROM
+#     injuries WHERE is_active = 1)`) — injured fighters can't be
+#     booked. This is the reader required by CONVENTIONS §5.3.
+#
+# Code changes in tick_processor.py (Task 15):
+#   - New `_check_injury_recovery()` helper called from run_tick()
+#     after _check_contract_expiry. For each active injury where
+#     `current_date >= projected_return_date`: sets
+#     actual_return_date = current_date, is_active = 0, restores
+#     career_health by severity * 2 (the temporary penalty lifted),
+#     and writes a clearance news item ("{Fighter} cleared to
+#     return from {injury_type}"). The permanent long_term_damage
+#     and any permanent attribute reduction are NOT restored (they
+#     represent lasting consequences — the Soul document's "the
+#     story is the reward" mandate: a torn ACL at age 32 should
+#     haunt the fighter's career).
+#
+# News items written (Task 15):
+#   - Injury creation: "{Fighter} suffers {injury_type}" with
+#     topic='injury', fighter_id set, projected return in the body.
+#   - Recovery clearance: "{Fighter} cleared to return from
+#     {injury_type}" with topic='injury', fighter_id set. These
+#     are the narrative layer the Soul document demands — the
+#     player remembers "the prospect who tore his ACL in his title
+#     shot and came back 9 months later" because the news engine
+#     surfaced both moments.
+#
+# Migration name: v2_4_0_add_injuries.
+#
 # v2.3.0 (Task B2 — Beat Engine Depth) — MINOR bump. Modifies the
 # fight_beats.outcome CHECK constraint to add two new outcome values
 # ('knockdown' and 'near_finish') that the B2 engine uses to mark the
@@ -207,7 +292,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.3.0"
+CODE_SCHEMA_VERSION = "2.4.0"
 
 
 def _parse_version(v):
@@ -1100,6 +1185,76 @@ CREATE TABLE IF NOT EXISTS fight_rounds (
     created_at                  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fight_id, round_number)
 );
+
+-- ----------------------------------------------------------------
+-- Injuries + medical recovery (added in v2.4.0, Task ID 15).
+--
+-- One row per injury a fighter suffers. Injuries are created by
+-- `_maybe_create_injury()` in app.py at the end of
+-- resolve_next_fight() (after all other side effects — fight_history,
+-- rankings, titles, event lifecycle, schedule_next_event, news,
+-- commentary). Recovery is advanced by `_check_injury_recovery()` in
+-- tick_processor.py on every tick.
+--
+-- Injury creation rules (per the Task 15 brief):
+--   - doctor_stoppage: guaranteed injury on the loser (the reason
+--     the doctor stopped it).
+--   - ko_tko: 30% chance of head injury (concussion) on the loser,
+--     severity scaled by damage in the finishing beat.
+--   - submission: 15% chance of joint injury (knee / elbow /
+--     shoulder / ankle) on the loser.
+--   - decision / draw / corner_stoppage / dq: 5% base + damage-
+--     scaled chance, applied to BOTH fighters.
+-- `injury_proneness` (fighters column) modifies the probability;
+-- `durability` (fighter_attributes column) reduces severity.
+--
+-- Recovery:
+--   - projected_return_date = start_date + severity * 14 days,
+--     reduced by recovery_rate * 0.1 per day.
+--   - Tick processor advances recovery: if current_date >=
+--     projected_return_date, set actual_return_date = current_date,
+--     is_active = 0.
+--   - long_term_damage: severity 8+ injuries have 30% chance of
+--     permanent attribute reduction (-2 to -5 on a body-area-
+--     relevant attribute). Reduces fighter_career.career_health by
+--     the same amount (permanent — NOT restored on recovery).
+--   - career_health reduction while active: each active injury
+--     reduces career_health by severity * 2 (temporary — restored
+--     on recovery).
+--
+-- Booking restriction:
+--   - `_pick_matchup()` in app.py filters out fighters with active
+--     injuries (`AND fighter_id NOT IN (SELECT fighter_id FROM
+--     injuries WHERE is_active = 1)`) — injured fighters can't be
+--     booked.
+--
+-- News:
+--   - On injury creation: "{Fighter} suffers {injury_type} —
+--     projected return {date}" (topic='injury').
+--   - On recovery clearance: "{Fighter} cleared to return from
+--     {injury_type}" (topic='injury').
+--
+-- See docs/STAGES.md Task ID 15 for the brief and acceptance
+-- checklist. See docs/SCHEMA_DRIFT_AUDIT.md §H (injuries was the
+-- MISSING row this task upgrades to OK).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS injuries (
+    injury_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id             INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    event_id               INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    fight_id               INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,
+    injury_type            TEXT NOT NULL,
+    severity               INTEGER NOT NULL DEFAULT 5 CHECK (severity BETWEEN 1 AND 10),
+    body_area              TEXT NOT NULL CHECK (body_area IN ('head','face','jaw','nose','eye','neck','shoulder','arm','elbow','wrist','hand','ribs','back','hip','knee','ankle','foot','general')),
+    start_date             TEXT NOT NULL,
+    projected_return_date  TEXT NOT NULL,
+    actual_return_date     TEXT,
+    long_term_damage       INTEGER NOT NULL DEFAULT 0 CHECK (long_term_damage BETWEEN 0 AND 100),
+    career_risk            INTEGER NOT NULL DEFAULT 0 CHECK (career_risk BETWEEN 0 AND 100),
+    is_active              INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def main():
@@ -1140,7 +1295,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_beat_engine_depth",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_injuries",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
