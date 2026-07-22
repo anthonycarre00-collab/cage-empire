@@ -732,11 +732,48 @@ Inter / Segoe UI fonts.
 promotion / venue / contract editors. CSV + JSON import/export.
 Portrait pack folder support. Full database backup/restore.
 
-### Task ID 30 — Save / load + backup / restore
+### Task ID 18.5 — Event bus refactor
 
-**Brief (needs expansion).** Save game state to `saves/<save_name>.db`.
-Load on startup. Auto-backup every N ticks to `data/backups/`. Backup
-rotation (keep last 5).
+**Brief (needs expansion).** Refactor `resolve_next_fight()` and
+`_check_retirements()` from monolithic functions with hardcoded side
+effects into event-publishing functions. Each system subscribes to the
+events it cares about (FightResolved, TitleChanged, FighterRetired,
+ContractExpired, etc.). This decouples systems and makes adding new
+side effects (social media, rivalries, punditry, show rating) a matter
+of adding a subscriber, not editing the monolith.
+
+**Dependencies:** All Stage 3 tasks complete (injuries, camps, weight
+cuts, scouting, voice layer all in place — enough systems to justify
+the refactor).
+
+**Pillars served:** All (the event bus is infrastructure that supports
+every system).
+
+### Task ID 31 — Gameworld seed: living history
+
+**Brief (needs expansion).** Generate a believable gameworld with years
+of simulated history. Not just a starting state — a world that feels
+like it has existed for years:
+- 100+ fighters across multiple promotions with full career histories
+  (records, title reigns, injuries, rivalries)
+- 5+ promotions of varying sizes (small regional, mid-tier national,
+  major established)
+- Historical events (past cards with results, not just future scheduled)
+- Pre-existing rivalries and beefs
+- Retired legends in the hall of fame
+- Rankings that reflect career histories
+- News items covering past milestones
+- Gym ecosystems with developed talent pipelines
+
+**Dependencies:** All systems in place (Stage 5, after Task 30). The
+seed needs every table to be available so it can populate the full
+living history.
+
+**Pillars served:** All 5 — the living history seed is what makes the
+world feel alive from the first click. Without it, the player starts in
+an empty room. With it, the player inherits a world with stories
+already in motion — champions to dethrone, legends to remember,
+rivalries to continue.
 
 ---
 

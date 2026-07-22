@@ -559,3 +559,87 @@ Every agent (human or AI) working on CAGE EMPIRE MUST read
 `docs/CAGE_EMPIRE_SOUL.md` before starting any task. The Soul document
 is the prime directive. The CONVENTIONS.md rules are the mechanics;
 the Soul document is the purpose.
+
+---
+
+## 14. Interpretation Layer — Core Directive
+
+### 14.1 The Rule
+
+**No raw attribute values, potential numbers, or internal ratings
+appear in the player-facing UI.** All numbers pass through the
+interpretation layer (`src/voice.py`, Task 19) and are displayed as
+human-readable descriptors.
+
+Raw: `potential=72, punch_power=58, chin=62`
+Player sees: `Solid prospect with above-average power and a respectable chin.`
+
+### 14.2 Why
+
+The Soul document states: "Translate simulation into emotion." Raw
+numbers are for debugging; the player sees meaning. This is what makes
+CAGE EMPIRE unique — the player experiences stories, not spreadsheets.
+
+### 14.3 Threshold-Based Descriptors
+
+The interpretation layer uses **banded descriptors** that only update
+when a fighter's attribute crosses a band boundary:
+- 90-100 = "elite", 75-89 = "above-average", 60-74 = "solid",
+  40-59 = "average", 25-39 = "below-average", 10-24 = "poor",
+  0-9 = "abysmal"
+
+A fighter whose cardio drops from 76 to 74 sees their descriptor change
+from "above-average" to "solid". A drop from 76 to 75 does NOT change
+the descriptor. This prevents descriptor flickering and makes
+descriptions stable until a meaningful threshold is crossed.
+
+### 14.4 Architecture Requirement
+
+Every system that produces text the player sees MUST route through the
+interpretation layer. This includes:
+- Fighter profile blurbs
+- Scouting reports (Task 18)
+- News items (Task 23)
+- Commentary (Task B2)
+- Punditry (Task 24)
+- Hall of fame / legacy descriptions (Task 31)
+- Event summaries / show ratings (Task 26)
+
+Systems that produce raw data (the fight engine, the tick processor,
+the contract system) do NOT call the interpretation layer directly —
+they store raw numbers in the DB. The interpretation layer is called
+by the UI and the text-generation systems when they need to display
+or narrate the data.
+
+### 14.5 Implementation Timing
+
+The interpretation layer (Task 19) is built in Stage 3b, after the
+full 25-attribute set (Task 14.5) is available. Systems built before
+Task 19 (the beat engine, injuries, camps, weight cuts) store raw
+numbers and produce hardcoded text. When Task 19 lands, these systems
+are retrofitted to route through it. After Task 19, all new systems
+MUST use the interpretation layer from day one.
+
+---
+
+## 15. Event Bus (future architecture)
+
+### 15.1 Current State
+
+Currently `resolve_next_fight()` is a monolithic function with ~15
+hardcoded side effects in sequence. This works but doesn't scale.
+
+### 15.2 Future Refactor (Task 18.5)
+
+After Stage 3 (when injuries, camps, weight cuts, scouting, and the
+voice layer are all in place), `resolve_next_fight()` will be refactored
+to publish events ("FightResolved", "TitleChanged", "FighterRetired",
+etc.) instead of calling each system directly. Each system subscribes
+to the events it cares about.
+
+### 15.3 Not Now
+
+The event bus refactor is deferred until the number of side effects
+justifies it (~25+ systems reacting to fight resolution). Currently
+we have ~15, which is manageable in a monolithic function. The refactor
+is Task 18.5, positioned between Stage 3b and Stage 4.
