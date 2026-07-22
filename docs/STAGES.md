@@ -240,17 +240,21 @@ each retiring fighter. Regen lineage tracked. New prospect news items.
 |---|---|---|---|
 | **14.5+14.6+14.7** | Expand fighter_attributes (4→25), fighter_personality (3→20), add 14 fighters columns, 6 promotions columns, 8 gyms columns, 2 archetype bias columns. New `src/fighter_gen.py` module. Fix `current_date` quirk. Backfill all existing fighters. Seed 7 style + 5 personality archetypes with bias JSON. | 2.0.0 (MAJOR) | Growth (attributes are the growth substrate), Discovery (archetypes create variety) |
 | **B1** | Beat-level fight engine — tables (`fight_beats` + `fight_rounds`), basic beat loop (12-28 beats/round, phase-to-attribute mapping, 6 phases), decision scoring. `resolve_round()` function. | 2.1.0 (MINOR) | Conflict (the fight is the primary conflict), Watch Rise (dramatic moments) |
-| **B2** | Beat engine depth — fatigue system (gas depletes across beats/rounds), momentum system (clustered outcomes), mid-round finishes (KO/submission/doctor/corner/DQ), commentary beat selection (3-14 highlight beats). | 2.2.0 (MINOR) | Conflict (dramatic finishes), Watch Rise (the "oh my god it's over" moment) |
+| **B2** | Beat engine depth — fatigue + momentum + mid-round finishes (KO/sub/doctor/corner/DQ) + commentary beat selection + **fight importance + pressure modifiers** (clutch_factor, composure, consistency affect performance in main events). | 2.2.0 (MINOR) | Conflict (dramatic finishes, pressure stories), Watch Rise (rising to the occasion) |
 | **B-regen-update** | Update `generate_fighter()` (Task 14) to use `fighter_gen.py` from 14.5. Regen fighters now get full 25-attribute + 20-personality blocks with archetype bias. | 2.2.0 (same commit as B2) | Discovery (regen prospects feel like real fighters, not generic 50s) |
 
-### Execution order (strict)
+### Execution order (strict, updated)
 
 ```
-14.5+14.6+14.7 (combined, schema 2.0.0)
+14.5+14.6+14.7 (combined, schema 2.0.0) ✓ DONE
     ↓
-B1 (beat engine tables + basic loop, schema 2.1.0)
+pre-B1-fixes (potential, archetypes, memory, schema 2.0.1) ✓ DONE
     ↓
-B2 (fatigue + momentum + finishes + commentary, schema 2.2.0)
+B1 (beat engine tables + basic loop, schema 2.1.0) ✓ DONE
+    ↓
+pre-B2-fix (fights.card_slot + is_title_fight + event_cards.is_co_main, schema 2.1.1)
+    ↓
+B2 (fatigue + momentum + finishes + importance + commentary, schema 2.2.0)
     ↓
 B-regen-update (update generate_fighter to use fighter_gen.py, same commit as B2)
     ↓
@@ -266,6 +270,44 @@ B-regen-update (update generate_fighter to use fighter_gen.py, same commit as B2
     ↓
 18 (scouting, schema 2.7.0)
 ```
+
+### Pre-B2 schema fix: fight importance columns
+
+**Pillars served:** Conflict (importance creates pressure stories), Watch Rise
+(rising to the occasion / bottling under pressure)
+
+**Brief.** Add `card_slot` and `is_title_fight` columns to `fights` to
+separate card position from title-fight status (currently `bout_type` does
+both, which is a design smell — a fight can be a main event AND a title
+fight). Add `is_co_main` to `event_cards` (was in the spec but missing).
+Update code to use the new columns. Backfill existing fights.
+
+**Schema changes:**
+- `fights.card_slot` TEXT NOT NULL DEFAULT 'main_event' CHECK (card_slot IN ('main_event', 'co_main', 'featured_prelim', 'prelim', 'opener'))
+- `fights.is_title_fight` INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0,1))
+- `event_cards.is_co_main` INTEGER NOT NULL DEFAULT 0 CHECK (is_co_main IN (0,1))
+
+**Code changes:**
+- `_resolve_title_after_fight()`: check `fights.is_title_fight=1` instead of `bout_type='title_fight'`
+- `fight_history.title_at_stake`: check `fights.is_title_fight` instead of `bout_type`
+- `schedule_next_event()`: set `card_slot='main_event'`, `is_title_fight=0` for auto-scheduled fights
+- Seed: set `card_slot='main_event'`, `is_title_fight=1` for the seeded title fight
+- `bout_type` column stays for backward compatibility but is deprecated
+
+**Card size limits by promotion size (for future booking UI, NOT implemented now):**
+- small: 4-6 fights, mid: 5-8 fights, major: 6-12 fights
+
+**Acceptance checklist:**
+- [ ] `fights.card_slot` column added with CHECK constraint
+- [ ] `fights.is_title_fight` column added with CHECK constraint
+- [ ] `event_cards.is_co_main` column added with CHECK constraint
+- [ ] Schema version 2.1.1 (PATCH — adding columns to existing tables for a fix)
+- [ ] Migration name `v2_1_1_fight_importance_columns`
+- [ ] `_resolve_title_after_fight()` checks `is_title_fight=1` (not `bout_type='title_fight'`)
+- [ ] `fight_history.title_at_stake` checks `is_title_fight` (not `bout_type`)
+- [ ] `schedule_next_event()` sets `card_slot='main_event'`, `is_title_fight=0`
+- [ ] Seeded title fight has `card_slot='main_event'`, `is_title_fight=1`
+- [ ] All existing tests pass
 
 ### Detailed task brief: 14.5+14.6+14.7 — Fighter Schema Expansion
 
@@ -467,17 +509,41 @@ The `_resolve_outcome()` pure function from Task 3 is replaced.
 
 ---
 
-### Detailed task brief: B2 — Beat Engine Depth (fatigue, momentum, finishes)
+### Detailed task brief: B2 — Beat Engine Depth (fatigue, momentum, finishes, importance)
 
-**Pillars served:** Conflict (dramatic finishes), Watch Rise (the
-"oh my god it's over" moment)
+**Pillars served:** Conflict (dramatic finishes, pressure responses), Watch Rise
+(the "oh my god it's over" moment, the "he rose to the occasion" story)
 
-**Brief.** Add fatigue system (gas depletes across beats/rounds),
-momentum system (clustered outcomes from knockdowns/near-finishes),
-mid-round finishes (KO/submission/doctor/corner/DQ), and commentary
-beat selection (3-14 highlight beats per fight).
+**Brief.** Add fatigue system (gas depletes across beats/rounds), momentum
+system (clustered outcomes from knockdowns/near-finishes), mid-round finishes
+(KO/submission/doctor/corner/DQ), commentary beat selection (3-14 highlight
+beats), and **fight importance + pressure modifiers** (fighters with high
+clutch_factor rise to the occasion in main events; fighters with low
+clutch_factor bottle under pressure).
 
-**Dependencies.** Task B1 (needs the basic beat loop).
+**Dependencies.** Task B1 (needs the basic beat loop), pre-B2 schema fix
+(needs `fights.card_slot` + `fights.is_title_fight` columns).
+
+**Fight importance system (NEW — added during pre-B2 planning):**
+
+Fight importance is a computed value (0-100), not stored:
+- Card slot weight (40%): main_event=100, co_main=80, featured_prelim=60, prelim=40, opener=20
+- Title at stake (30%): yes=100, no=0
+- Rivalry heat (15%): from rivalries table (Task 22, future — 0 for now)
+- Fighter popularity (15%): avg marketability of both fighters
+
+Pressure response per fighter (computed, not stored):
+`pressure_response = clutch_factor*0.35 + composure*0.25 + consistency*0.20 + focus*0.10 + grit*0.10`
+
+In high-importance fights (importance > 60):
+- pressure_response >= 70: "Rises to the occasion" — +5% to beat attack/defense scores
+- pressure_response <= 30: "Bottler" — -10% to beat attack/defense scores
+- 30 < pressure_response < 70: no modifier (baseline)
+
+This creates the stories the Soul document demands:
+- "Unknown prospect upsets the champion in the main event — he rose to the occasion."
+- "Veteran chokes in the title fight — crumbled under the spotlight."
+- "Journeyman performs consistently whether it's the opener or the main event."
 
 **Acceptance checklist:**
 - [ ] Fatigue: cardio=90 out-lands cardio=30 increasingly in later rounds
@@ -488,10 +554,13 @@ beat selection (3-14 highlight beats per fight).
 - [ ] Corner stoppage works (3+ lost rounds + low grit/composure)
 - [ ] DQ works (low discipline + illegal strike, rare)
 - [ ] Commentary beat selection picks the right beats (knockdowns, near-finishes, finish, big momentum swings)
+- [ ] Fight importance computed from card_slot + is_title_fight + marketability
+- [ ] Pressure modifiers: high clutch_factor fighter gets bonus in main events
+- [ ] Pressure modifiers: low clutch_factor fighter gets penalty in main events
 - [ ] Schema version 2.2.0
 - [ ] All existing tests pass
 
-**Delegation.** full-stack-developer subagent. After B1 lands.
+**Delegation.** full-stack-developer subagent. After B1 + pre-B2 fix lands.
 
 ---
 
