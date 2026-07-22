@@ -1,0 +1,203 @@
+OUTPUTS
+
+nations.json
+regions.json
+cities.json
+gyms.json
+name_pools.json
+
+WORLD SCALE
+
+25 nations
+80-120 regions
+300-400 cities
+500 gyms
+
+NAMES
+
+200-500 first names per nation
+300-800 surnames per nation
+
+GYMS
+
+20 elite
+80 national
+150 regional
+250 local
+
+weighted toward MMA hotbeds
+
+FUTURE SUPPORT
+
+fighter generation
+bios
+career histories
+regens
+national tendencies
+gym lineage
+
+
+
+For Cage Empire, I'd scale back to something like:
+
+Entity	Sensible Indie Target
+Nations	18-22
+Regions	50-70
+Cities	120-180
+Gyms	250-350
+Fighters at Start	3,500-4,000
+Elite Gyms	15-20
+Name Pool Entries	~2,000-3,000 total names
+
+That world will already feel enormous to a player.
+
+What Actually Makes The World Feel Alive?
+
+Not 400 cities.
+
+Not 20,000 surnames.
+
+Instead:
+
+1. Career Histories
+
+A player remembers:
+
+Former Lightweight Champion
+Lost belt to Carlos Mendes
+Moved to Welterweight
+Went 1-4 after injury
+
+They do not remember:
+
+Born in Springfield 17
+2. Gym Identity
+
+If gyms develop reputations:
+
+Black River MMA
+- Wrestlers
+- Tough sparring
+- Injury prone
+
+Kingsport Combat
+- Excellent striking
+- Produces prospects
+
+Iron Wolf Academy
+- Small gym
+- Overachievers
+
+the world immediately feels alive.
+
+3. Fighter Generations
+
+The biggest thing we're missing.
+
+After 10 years:
+
+Generation 1 retires
+
+Generation 2 emerges
+
+Former champions become coaches
+
+Their sons appear
+
+Former teammates run gyms
+
+That's what creates living history.
+
+4. Memory Resurfacing
+
+Still one of the highest ROI systems.
+
+Examples:
+
+Lost title fight 6 years ago
+
+Former training partners
+
+Shared amateur rivalry
+
+Two previous fights
+
+Coach left gym
+
+Now every fight has context.
+
+My Revised Recommendation
+
+For V5:
+
+20 Nations
+
+60 Regions
+
+150 Cities
+
+300 Gyms
+
+4000 Fighters
+
+That's enough.
+
+Beyond that, returns drop fast.
+
+Even More Important
+
+I would stop world generation after:
+
+nations
+regions
+cities
+gyms
+
+and immediately move onto:
+
+fighter generation
+
+because fighters are the actual content.
+
+The world data is only there to support them.
+
+A player will interact with:
+
+4000 fighters
+
+far more than:
+
+150 cities
+
+So if I were prioritising the build:
+
+Phase 1
+-------
+Nations
+Regions
+Cities
+Gyms
+
+Phase 2
+-------
+4000 Fighters
+Archetypes
+Potential
+Career Stage
+Styles
+
+Phase 3
+-------
+Bios
+Rivalries
+Gym Histories
+Amateur Records
+
+Phase 4
+-------
+Career Memory
+Narrative Resurfacing
+Retirements
+Regens
+
+That's where Cage Empire starts feeling like a real world rather than a collection of database rows.
