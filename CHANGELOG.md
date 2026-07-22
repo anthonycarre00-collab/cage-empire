@@ -9,6 +9,61 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 
+## [2.9.0] - 2026-07-23
+
+### Added (Task 18 — Scouting system, schema 2.9.0 MINOR)
+- New `scouting_reports` table — 18 columns. One row per scouting
+  report. Stores estimated potential, ceiling, floor, strengths,
+  weaknesses as DESCRIPTORS (via voice.py), NOT raw numbers.
+  scout_confidence (0-100), is_stale (0/1), report_text (full prose).
+- New `src/scouting.py` — the scouting engine. Scout attributes stored
+  in `staff.specialty` JSON: eye_for_talent, technical_analysis,
+  character_reading, mistake_rate, bias_style, bias_nationality,
+  bias_aggression. Functions: assign_scout(), _check_scouting_
+  assignments(), generate_scouting_report(), mark_stale_reports().
+- Report accuracy: Gaussian noise with std = (100 - scout_attribute)
+  / 4. A 90-eye scout has ±2.5 noise; a 50-eye scout has ±12.5.
+- Scout biases: style (+5/-5 to estimates), nationality (0.5x noise
+  for familiar, 1.5x for unfamiliar), aggression (direct modifier).
+- Scout mistakes (5 types): overestimate_potential, underestimate_
+  potential, misread_strength_weakness, miss_key_trait, confidence_
+  mismatch. Triggered by mistake_rate%.
+- Tick integration: _check_scouting_assignments wired into run_tick()
+  after _check_training_camps. Reports generate after 7 days.
+- Report staleness: mark_stale_reports() called on camp completion,
+  fight resolution, and injury events.
+- Seed Phase 2: 2 scouts per promotion (20 total) with randomized
+  scout attributes.
+
+### Changed (Task 18 — Growth logic fix)
+- `_complete_training_camp` in tick_processor.py — potential is NO
+  LONGER guaranteed success. Added `effective_ceiling` = potential
+  × age_factor × health_factor × personality_factor.
+  - age_factor: 1.0 at 18-27, 0.95 at 28-30, 0.80 at 31-33, 0.60
+    at 34-36, 0.35 at 37+
+  - health_factor: 1.0 at 90+, 0.90 at 70-89, 0.70 at 50-69, 0.40
+    at 30-49, 0.15 below 30
+  - personality_factor: (discipline + coachability) / 200
+  - Diminishing returns: growth rate halves as attributes approach
+    effective_ceiling
+  - Most fighters plateau well below their potential — only young,
+    healthy, disciplined fighters in good gyms get close.
+
+### Tests (Task 18)
+- New acceptance test `scripts/test_scouting.py` — 40 sub-checks
+  across 12 cases. All PASS.
+- Supervisor fix: test_training_camps.py case F — assertion updated
+  for the growth logic change (older fighters may plateau with 0
+  gains, which is correct behavior).
+- All 22 acceptance tests pass (21 existing + 1 new).
+
+### Design Law (§13)
+- Discovery: scouting reveals fighter identity without raw numbers
+- Investment: player assigns scouts to evaluate prospects
+- Stories: scouts make mistakes — "bust" and "steal" narratives
+- Potential ≠ success: effective ceiling < potential for most fighters
+
+
 ## [2.8.0] - 2026-07-23
 
 ### Added (Task 19 — Voice / Interpretation Layer, schema 2.8.0 MINOR)

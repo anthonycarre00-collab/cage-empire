@@ -505,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.8.0"
+CODE_SCHEMA_VERSION = "2.9.0"
 
 
 def _parse_version(v):
@@ -1685,6 +1685,58 @@ CREATE TABLE IF NOT EXISTS fighter_descriptors (
     snapshot_version        INTEGER NOT NULL DEFAULT 1,
     updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- scouting_reports (added v2.9.0, Task 18 — Scouting system).
+--
+-- One row per scouting report. A scout (staff member with role_type=
+-- 'scout') is assigned to evaluate a target fighter. After N ticks of
+-- observation, a report is generated with estimated attributes,
+-- potential, strengths, weaknesses — all expressed as DESCRIPTORS
+-- (via voice.py), NOT raw numbers.
+--
+-- The report's accuracy depends on the scout's attributes:
+--   - eye_for_talent: how accurately they estimate potential
+--   - technical_analysis: how accurately they estimate attributes
+--   - character_reading: how accurately they estimate personality
+--   - mistake_rate: chance of a significant misjudgment
+--   - bias_style: over/under-rates certain styles
+--   - bias_nationality: better accuracy for familiar nations
+--
+-- Reports become STALE when the fighter trains, fights, or ages
+-- significantly. Stale reports show a warning but remain readable.
+--
+-- Per CONVENTIONS §14: all estimates use voice.py descriptors, NOT
+-- raw numbers. The player sees "high ceiling, above-average power,
+-- questionable chin" — not "potential=72, punch_power=78, chin=35."
+--
+-- Per the user directive: "potential should never equal guaranteed
+-- success." The scout estimates the fighter's CEILING, but the
+-- fighter may never reach it (see the effective_ceiling growth logic
+-- in tick_processor._complete_training_camp — age, health,
+-- personality, and diminishing returns all reduce the actual ceiling
+-- below the theoretical potential).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS scouting_reports (
+    scouting_report_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    scout_id                INTEGER NOT NULL REFERENCES staff(staff_id) ON DELETE CASCADE,
+    target_fighter_id       INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    promotion_id            INTEGER REFERENCES promotions(promotion_id) ON DELETE SET NULL,
+    report_date             TEXT NOT NULL,
+    estimated_potential     TEXT,
+    estimated_ceiling       TEXT,
+    estimated_floor         TEXT,
+    estimated_strengths     TEXT,
+    estimated_weaknesses    TEXT,
+    marketability_assessment TEXT,
+    injury_risk_assessment  TEXT,
+    contract_cost_estimate  INTEGER,
+    scout_confidence        INTEGER NOT NULL DEFAULT 50 CHECK (scout_confidence BETWEEN 0 AND 100),
+    is_stale                INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),
+    report_text             TEXT NOT NULL,
+    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2135,6 +2187,33 @@ def _migrate_v2_8_0_add_fighter_descriptors(conn):
 # them in order, skipping any already recorded in schema_migrations.
 # To add a new migration: define _migrate_v2_X_0_your_name(conn),
 # append it to this list, and bump CODE_SCHEMA_VERSION.
+def _migrate_v2_9_0_add_scouting_reports(conn):
+    """Task 18 — Scouting system. Adds the scouting_reports table."""
+    if not _has_table(conn, "scouting_reports"):
+        conn.execute(
+            "CREATE TABLE scouting_reports (\n"
+            "    scouting_report_id      INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    scout_id                INTEGER NOT NULL REFERENCES staff(staff_id) ON DELETE CASCADE,\n"
+            "    target_fighter_id       INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    promotion_id            INTEGER REFERENCES promotions(promotion_id) ON DELETE SET NULL,\n"
+            "    report_date             TEXT NOT NULL,\n"
+            "    estimated_potential     TEXT,\n"
+            "    estimated_ceiling       TEXT,\n"
+            "    estimated_floor         TEXT,\n"
+            "    estimated_strengths     TEXT,\n"
+            "    estimated_weaknesses    TEXT,\n"
+            "    marketability_assessment TEXT,\n"
+            "    injury_risk_assessment  TEXT,\n"
+            "    contract_cost_estimate  INTEGER,\n"
+            "    scout_confidence        INTEGER NOT NULL DEFAULT 50 CHECK (scout_confidence BETWEEN 0 AND 100),\n"
+            "    is_stale                INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),\n"
+            "    report_text             TEXT NOT NULL,\n"
+            "    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2143,6 +2222,7 @@ MIGRATIONS = [
     ("v2_6_0_world_seed_prep",     "2.6.0", _migrate_v2_6_0_world_seed_prep),
     ("v2_7_0_add_weight_cut_log",  "2.7.0", _migrate_v2_7_0_add_weight_cut_log),
     ("v2_8_0_add_fighter_descriptors","2.8.0", _migrate_v2_8_0_add_fighter_descriptors),
+    ("v2_9_0_add_scouting_reports","2.9.0", _migrate_v2_9_0_add_scouting_reports),
 ]
 
 

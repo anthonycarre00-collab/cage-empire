@@ -717,26 +717,83 @@ across 10 cases in `scripts/test_weight_cuts.py`.
 (manage weight cut difficulty), Anticipation ("will he make weight?"),
 Stories ("champion missed weight, stripped, interim title fight set").
 
-### Task ID 18 — Scouting system
+### Task ID 18 — Scouting system — **DONE** (commit `pending`)
 
-**Brief (needs expansion).** Add `scouting_reports` table. New "Scout"
-staff role. Scout can be assigned a target fighter; after N ticks, a
-scouting report is generated with estimated strengths, weaknesses,
-ceiling, floor, marketability, injury risk, contract cost.
+**Status:** Schema v2.8.0 → v2.9.0 (MINOR). 1 new table
+(`scouting_reports`, 18 columns). Migration `v2_9_0_add_scouting_reports`.
+40 sub-checks across 12 cases in `scripts/test_scouting.py`.
 
-**Dependencies:** Task 14.5 (needs full 24-attribute set to report on),
-Task 14.6 (needs `marketability` column).
+**Also fixed:** Growth logic in `_complete_training_camp` — potential
+is no longer guaranteed success. Added `effective_ceiling` that's below
+potential based on age, health, personality, and diminishing returns.
+Most fighters never reach their true potential.
 
-**Questions to resolve:**
-- How accurate is the scout's estimate? (Based on scout skill_level?
-  Affected by scout's region familiarity? Budget?)
-- How does the scout's estimate differ from the fighter's actual
-  attributes? (Gaussian noise around the true value? Banded
-  estimates like "elite" / "above average" / "average"?)
-- Can scouts discover hidden traits (consistency, clutch_factor)?
-- How does scouting quality degrade over time? (Report is a snapshot
-  that becomes stale as the fighter develops.)
-- UI: how does the player assign scouts and view reports?
+**Implementation:**
+- `src/scouting.py` — the scouting engine with:
+  * Scout attributes stored in `staff.specialty` JSON: `eye_for_talent`,
+    `technical_analysis`, `character_reading`, `mistake_rate`,
+    `bias_style`, `bias_nationality`, `bias_aggression`
+  * `assign_scout()` — stores assignment in scout's specialty JSON
+  * `_check_scouting_assignments()` — called on tick, generates reports
+    after 7 days of observation
+  * `generate_scouting_report()` — the core function:
+    1. Loads fighter's TRUE values
+    2. Applies Gaussian noise based on scout accuracy
+       (noise_std = (100 - attribute) / 4)
+    3. Applies biases (style +5/-5, nationality noise mult, aggression)
+    4. Rolls for mistakes (5 types: overestimate, underestimate,
+       misread strength/weakness, miss key trait, confidence mismatch)
+    5. Converts to descriptors via `voice.py` (Task 19)
+    6. Writes `scouting_reports` row + news item
+  * `mark_stale_reports()` — marks reports stale when fighter changes
+- `scouting_reports` table — 18 columns. Stores estimated potential,
+  ceiling, floor, strengths, weaknesses as DESCRIPTORS (not raw numbers).
+  `scout_confidence` (0-100), `is_stale` (0/1), `report_text` (full
+  prose report).
+- Tick integration: `_check_scouting_assignments` wired into `run_tick()`
+  after `_check_training_camps`.
+- Report staleness: `mark_stale_reports()` called on camp completion,
+  fight resolution, and injury events.
+- Seed Phase 2: 2 scouts per promotion (20 total) with randomized
+  scout attributes (eye_for_talent 35-85, mistake_rate 5-35, random
+  style/nationality biases).
+- Growth logic fix: `effective_ceiling = potential * age_factor *
+  health_factor * personality_factor`. Age factor: 1.0 at 18-27,
+  declining to 0.35 at 37+. Health factor: 1.0 at 90+, declining to
+  0.15 below 30. Personality factor: (discipline + coachability) / 200.
+  Diminishing returns: growth rate halves as attributes approach
+  effective_ceiling. Most fighters plateau well below their potential.
+
+**Answers to the brief's open questions:**
+- Accuracy: based on scout's eye_for_talent (potential), technical_
+  analysis (attributes), character_reading (personality). Gaussian
+  noise with std = (100 - attribute) / 4. A 90-eye scout has ±2.5
+  noise; a 50-eye scout has ±12.5.
+- Estimates use descriptors (voice.py), NOT raw numbers. Player sees
+  "high ceiling, above-average power" — not "potential=72."
+- Hidden traits: all 25 attributes + 20 personality traits are
+  estimated with noise. Consistency, clutch_factor, etc. are
+  estimated like any other attribute.
+- Staleness: reports marked stale on camp completion, fight resolution,
+  injury. Stale reports show a warning but remain readable.
+- UI: player calls `assign_scout(scout_id, target_fighter_id)` — future
+  UI tab will display this.
+
+**Potential ≠ guaranteed success:**
+- The scout estimates the fighter's CEILING (potential), but the
+  fighter may never reach it. The effective_ceiling growth logic
+  reduces the actual ceiling based on age, health, personality, and
+  diminishing returns.
+- A 20-year-old with potential=90, perfect health, high discipline:
+  effective_ceiling = 90 * 1.0 * 1.0 * 0.9 = 81. Can reach ~81.
+- A 32-year-old with potential=90, health=70, avg discipline:
+  effective_ceiling = 90 * 0.80 * 0.90 * 0.5 = 32. Already declining.
+- Most fighters never hit their true potential — only young, healthy,
+  disciplined fighters in good gyms get close.
+
+**Design Law (§13):** Discovery (scouting reveals identity without raw
+numbers), Investment (player assigns scouts to evaluate prospects),
+Stories (scouts make mistakes — "bust" and "steal" narratives).
 
 ### Task ID 19 — Voice / interpretation layer — **DONE** (commit `pending`)
 

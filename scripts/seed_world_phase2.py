@@ -416,6 +416,36 @@ def main():
             (first, last, rng.randint(30, 55), nation_id,
              "cutman", "cuts_and_swelling", promo_id),
         )
+        # Scouts (2 per promotion — v2.9.0 Task 18)
+        # Each scout has unique attributes stored in specialty JSON.
+        # Scouts are the player's eyes on the talent market — they
+        # evaluate fighters and produce scouting reports with estimated
+        # potential, strengths, weaknesses (all as descriptors, not raw
+        # numbers, per CONVENTIONS §14).
+        import json as _json
+        style_names = ["Striker", "Grappler", "Wrestler", "Brawler",
+                       "Counter-Striker", "Submission Specialist", "Balanced"]
+        # Get all nation names for bias_nationality
+        all_nations = [r[0] for r in conn.execute("SELECT name FROM nations").fetchall()]
+        for _ in range(2):
+            first, last = _gen_staff_name(nation_name, rng, conn)
+            scout_specialty = _json.dumps({
+                "eye_for_talent": rng.randint(35, 85),
+                "technical_analysis": rng.randint(35, 85),
+                "character_reading": rng.randint(35, 85),
+                "mistake_rate": rng.randint(5, 35),
+                "bias_style": rng.choice(style_names),
+                "bias_nationality": rng.choice(all_nations),
+                "bias_aggression": rng.randint(-15, 15),
+                "current_assignment": None,
+                "assignment_start_date": None,
+            })
+            conn.execute(
+                "INSERT INTO staff (first_name, last_name, age, nation_id, "
+                "role_type, specialty, promotion_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (first, last, rng.randint(30, 60), nation_id,
+                 "scout", scout_specialty, promo_id),
+            )
     conn.commit()
     staff_count = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
     print(f"  Staff: {staff_count}")

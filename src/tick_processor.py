@@ -545,27 +545,121 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
     fatigue_factor = 1.0 - max(0, fatigue - fatigue_tol) / 100.0 * 0.5
     fatigue_factor = max(0.5, min(1.0, fatigue_factor))
 
+    # v2.9.0 (Task 18): EFFECTIVE CEILING — potential is NOT guaranteed
+    # success. Most fighters never reach their true potential because:
+    #   - Age: fighters past prime (28+) grow slower; past 32, almost
+    #     no growth; past 36, decline.
+    #   - Injury history: career_health < 80 reduces growth; < 50 =
+    #     almost no growth.
+    #   - Personality: low discipline/coachability reduces the ceiling.
+    #   - Diminishing returns: as attributes approach potential, growth
+    #     rate decreases (the last 10 points are 2x harder than the
+    #     first 10).
+    #
+    # effective_ceiling = potential * age_factor * health_factor *
+    #   personality_factor
+    #
+    # A 20-year-old with potential=90, perfect health, high discipline
+    # (90) + coachability (90): ceiling = 90 * 1.0 * 1.0 * 0.9 = 81.
+    # Can reach ~81, NOT 90.
+    #
+    # A 32-year-old with potential=90, health=70, avg discipline (50):
+    # ceiling = 90 * 0.85 * 0.90 * 0.5 = 34. Already past their growth
+    # window — they're declining, not growing.
+    #
+    # This ensures "potential ≠ guaranteed success" per the user's
+    # directive. Scouting reports (Task 18) estimate potential, but
+    # the player must also consider age, health, personality, and gym
+    # quality when deciding whether to invest in a prospect.
+
+    # Load fighter age + career_health for the effective ceiling calc.
+    f_meta = conn.execute(
+        "SELECT f.date_of_birth, fc.career_health "
+        "FROM fighters f JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
+        "WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    fighter_age = 25  # default if DOB missing
+    career_health = 100  # default
+    if f_meta:
+        dob_str, ch = f_meta
+        if dob_str:
+            try:
+                fighter_age = 2026 - int(dob_str[:4])
+            except (ValueError, TypeError):
+                pass
+        career_health = ch if ch is not None else 100
+
+    # Age factor: 1.0 at 18-27, declining after
+    if fighter_age <= 27:
+        age_factor = 1.0
+    elif fighter_age <= 30:
+        age_factor = 0.95
+    elif fighter_age <= 33:
+        age_factor = 0.80
+    elif fighter_age <= 36:
+        age_factor = 0.60
+    else:
+        age_factor = 0.35  # veterans barely grow
+
+    # Health factor: 1.0 at 90+, declining
+    if career_health >= 90:
+        health_factor = 1.0
+    elif career_health >= 70:
+        health_factor = 0.90
+    elif career_health >= 50:
+        health_factor = 0.70
+    elif career_health >= 30:
+        health_factor = 0.40
+    else:
+        health_factor = 0.15  # broken down fighters can't grow
+
+    # Personality factor: average of discipline + coachability / 200
+    # Range: 0.0 (both at 0) to 1.0 (both at 100). Most fighters ~0.5.
+    personality_factor = (discipline + coachability) / 200.0
+
+    effective_ceiling = int(potential * age_factor * health_factor * personality_factor)
+    # Floor at 10 — even the most degraded fighter can maintain some baseline
+    effective_ceiling = max(10, effective_ceiling)
+
     attribute_changes = {}
     for attr_name in chosen_attrs:
         # Defensive — never string-format an unknown attribute name
         # into the UPDATE statement (CONVENTIONS §6 — SQL safety).
         if attr_name not in _FIGHTER_ATTR_COLUMNS:
             continue
-        # Base gain +1 to +3.
-        base = random.randint(1, 3)
-        # Final gain = round(base * gym_mult * coach_mult * fatigue_
-        # factor), min 1 (a camp always confers at least +1 to each
-        # chosen attribute — even a bad camp is better than no camp).
-        gain = max(1, int(round(base * gym_spec_mult * coach_mult
-                                * fatigue_factor)))
-        # Cap at fighter_career.potential — the soft cap on attribute
-        # growth. A prospect with potential=75 can't exceed 75 in
-        # any attribute via camps (or via any other growth path).
         cur_val = conn.execute(
             f"SELECT {attr_name} FROM fighter_attributes WHERE fighter_id = ?",
             (fighter_id,),
         ).fetchone()[0]
-        new_val = min(potential, cur_val + gain)
+
+        # v2.9.0: Diminishing returns — as cur_val approaches
+        # effective_ceiling, growth rate halves. The last 10 points
+        # are 2x harder than the first 10. This makes plateauing
+        # natural — fighters don't linearly grind to their ceiling.
+        if effective_ceiling > cur_val:
+            progress = (cur_val - 40) / max(1, effective_ceiling - 40)
+            progress = max(0.0, min(1.0, progress))
+            dim_factor = 1.0 - progress * 0.5  # 1.0 at base, 0.5 at ceiling
+        else:
+            dim_factor = 0.0  # already at or above ceiling — no growth
+
+        # Base gain +1 to +3.
+        base = random.randint(1, 3)
+        # Final gain = round(base * gym_mult * coach_mult * fatigue_
+        # factor * dim_factor), min 0 (if dim_factor=0, no gain —
+        # fighter has plateaued). If dim_factor > 0, min 1.
+        gain = int(round(base * gym_spec_mult * coach_mult
+                         * fatigue_factor * dim_factor))
+        if dim_factor > 0:
+            gain = max(1, gain)
+        else:
+            gain = 0
+
+        # Cap at effective_ceiling (NOT potential — potential is the
+        # theoretical max, effective_ceiling is what this fighter can
+        # actually reach given age/health/personality).
+        new_val = min(effective_ceiling, cur_val + gain)
         actual_gain = new_val - cur_val
         if actual_gain > 0:
             conn.execute(
@@ -621,6 +715,10 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
     # from tick_processor, but tick_processor already imports from app).
     from app import update_fighter_descriptor_snapshot
     update_fighter_descriptor_snapshot(conn, fighter_id)
+
+    # v2.9.0 (Task 18): mark scouting reports stale — fighter changed.
+    from scouting import mark_stale_reports
+    mark_stale_reports(conn, fighter_id)
 
     return "completed"
 
@@ -1193,6 +1291,14 @@ def run_tick(conn, tick_type="day", steps=1):
         if camps:
             print(f"  Processed {len(camps)} training camp(s) on "
                   f"{dt.strftime('%Y-%m-%d')}: {camps}")
+        # v2.9.0 (Task 18): process scouting assignments. Checks all
+        # scouts for ready assignments (7+ days elapsed) and generates
+        # reports. Lazy-import to avoid circular dependency.
+        from scouting import _check_scouting_assignments
+        scouting_done = _check_scouting_assignments(conn, dt.strftime("%Y-%m-%d"))
+        if scouting_done:
+            print(f"  Generated {len(scouting_done)} scouting report(s) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {scouting_done}")
         conn.commit()
 
 def main():
