@@ -9,6 +9,80 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.3.0 (Task B2 — Beat Engine Depth) — MINOR bump. Modifies the
+# fight_beats.outcome CHECK constraint to add two new outcome values
+# ('knockdown' and 'near_finish') that the B2 engine uses to mark the
+# finishing exchange of a mid-round KO/TKO and the "rocked but
+# survived" near-finish moments. B1's outcome CHECK allowed only
+# ('landed','missed','blocked','defended','reversed') — purely
+# per-beat exchange outcomes. B2 adds dramatic depth:
+#   - 'knockdown' marks the beat that ends a fight by KO/TKO (the
+#     finishing blow) AND high-momentum knockdown moments that didn't
+#     end the fight (a fighter got dropped but survived). These carry
+#     momentum_shift = +80 per the B2 brief.
+#   - 'near_finish' marks the beat where a defender was "rocked"
+#     (cumulative damage in the current beat sequence crossed their
+#     KO threshold, but the KO roll failed) OR where a submission
+#     attempt landed (defender tapped — finish) OR where a submission
+#     attempt almost succeeded. These carry momentum_shift = +60.
+#
+# Schema changes in this task (per the B2 brief):
+#   1. `fight_beats.outcome` CHECK constraint: add 'knockdown' and
+#      'near_finish' to the allowed outcome values (superset of B1's
+#      5 values — no breaking change to existing rows). Per CONVENTIONS
+#      §1.1, modifying a CHECK constraint on an existing table is a
+#      MINOR bump (existing rows still satisfy the new CHECK because
+#      the new values are a superset).
+#   2. `fight_rounds.fighter_a_gas_remaining` and
+#      `fight_rounds.fighter_b_gas_remaining` REAL NOT NULL DEFAULT
+#      100.0 columns: per the B2 brief ("Store in
+#      fight_rounds.fighter_a/b_gas_remaining"). resolve_round() now
+#      writes the per-round gas values to these columns (per-fighter,
+#      tracked in-memory across rounds by resolve_next_fight()).
+#      Adding columns to an existing table is a MINOR bump per
+#      CONVENTIONS §1.1. The DEFAULT 100.0 keeps existing INSERTs
+#      valid (a fighter starting a round has 100 gas unless they
+#      carried over lower gas from the previous round). This breaks
+#      test_beat_engine case A.10's hardcoded 17-column count
+#      assertion (D-number decision D1 — flagged per CONVENTIONS §11
+#      for the supervisor to relax to a column-subset check; the new
+#      test_beat_engine_depth.py uses a column-subset check that
+#      survives future column additions).
+#
+# No new tables. No columns removed. Migration name:
+# v2_3_0_beat_engine_depth.
+#
+# Code changes in app.py (Task B2):
+#   - Added fatigue system: gas=100 per fight, depletes per beat
+#     (phase-dependent costs), cardio + fatigue_tolerance slow decay,
+#     low gas (<30) reduces accuracy 30% and chin vulnerability +20%.
+#     Recovery between rounds: gas += recovery_rate * 0.3 (capped 100).
+#   - Added momentum system: cumulative momentum in a round shifts
+#     subsequent beat probabilities (initiator_advantage = clamp(
+#     cum_momentum/200, -0.3, +0.3)). Knockdown beats produce
+#     momentum_shift = +80, near_finish beats produce +60, big
+#     takedowns produce +30. Produces "smells blood" sequences
+#     instead of memoryless coin flips.
+#   - Added mid-round finishes: KO/TKO (cumulative damage threshold
+#     modified by chin/recovery_rate/grit/composure, killer_instinct
+#     increases finish probability), submission (submission_offense vs
+#     submission_defense/flexibility/scramble_ability/composure),
+#     doctor stoppage (cumulative damage > 200 + durability*2,
+#     checked between rounds), corner stoppage (3+ lost rounds +
+#     low grit/composure, 20% chance), DQ (low discipline + illegal
+#     strike, 1% per beat).
+#   - Added fight importance + pressure modifiers: importance computed
+#     from card_slot (40%) + is_title_fight (30%) + rivalry heat (15%,
+#     0 for now) + avg marketability (15%). In high-importance fights
+#     (>60), pressure_response (clutch_factor*0.35 + composure*0.25 +
+#     consistency*0.20 + focus*0.10 + grit*0.10) modifies beat scores:
+#     >= 70 → +5%, <= 30 → -10%.
+#   - Added commentary beat selection: after the fight resolves,
+#     selects 3-14 most important beats (knockdowns, near-finishes,
+#     finish, big momentum swings) and writes commentary_segments.
+#     Beat count depends on fight importance (quick 3-6, standard
+#     6-10, extended 10-14).
+#
 # v2.2.0 (Task pre-B2-fix) — MINOR bump. Adds three new columns to two
 # existing tables to separate "card position" from "title-fight status"
 # ahead of Task B2 (engine depth — fatigue + momentum + finishes +
@@ -133,7 +207,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.2.0"
+CODE_SCHEMA_VERSION = "2.3.0"
 
 
 def _parse_version(v):
@@ -966,8 +1040,26 @@ CREATE TABLE IF NOT EXISTS fight_beats (
     action_type            TEXT NOT NULL,
     initiator_fighter_id   INTEGER NOT NULL REFERENCES fighters(fighter_id),
     target_fighter_id      INTEGER NOT NULL REFERENCES fighters(fighter_id),
+    -- v2.3.0 (Task B2): added 'knockdown' and 'near_finish' to the
+    -- outcome CHECK. The 5 B1 outcomes ('landed','missed','blocked',
+    -- 'defended','reversed') describe per-beat exchange outcomes. The
+    -- 2 new B2 outcomes mark dramatic moments:
+    --   - 'knockdown': the beat that ends a fight by KO/TKO (finishing
+    --     blow) OR a moment where the defender was dropped but
+    --     survived (high-momentum knockdown). Carries
+    --     momentum_shift = +80 per the B2 brief.
+    --   - 'near_finish': the defender was "rocked" (cumulative damage
+    --     in the current beat sequence crossed their KO threshold, but
+    --     the KO roll failed — they survived) OR a submission_attempt
+    --     landed (defender tapped — finish) OR a submission attempt
+    --     almost succeeded. Carries momentum_shift = +60.
+    -- Modifying a CHECK constraint on an existing table is a MINOR
+    -- bump per CONVENTIONS §1.1 (no breaking change to data shape —
+    -- existing rows satisfy the new CHECK because the new values are
+    -- a superset of the old values).
     outcome                TEXT NOT NULL CHECK (outcome IN
-                             ('landed','missed','blocked','defended','reversed')),
+                             ('landed','missed','blocked','defended','reversed',
+                              'knockdown','near_finish')),
     damage_dealt           INTEGER NOT NULL DEFAULT 0,
     control_time_delta     INTEGER NOT NULL DEFAULT 0,
     momentum_shift         INTEGER NOT NULL DEFAULT 0,
@@ -991,6 +1083,18 @@ CREATE TABLE IF NOT EXISTS fight_rounds (
     fighter_b_takedowns         INTEGER NOT NULL DEFAULT 0,
     fighter_a_strikes_landed    INTEGER NOT NULL DEFAULT 0,
     fighter_b_strikes_landed    INTEGER NOT NULL DEFAULT 0,
+    -- v2.3.0 (Task B2): per-fighter gas remaining at the end of the
+    -- round. The fatigue system tracks gas in-memory across rounds in
+    -- resolve_next_fight() (gas starts at 100, depletes per beat per
+    -- _compute_gas_cost, recovers between rounds per
+    -- _recover_gas_between_rounds). resolve_round() writes the end-of-
+    -- round gas values to these columns so future systems (training
+    -- camps analyzing cardio endurance, commentary mentioning "he
+    -- looked gassed by round 3", punditry on conditioning) can read
+    -- them. DEFAULT 100.0 keeps existing INSERTs valid; the engine
+    -- always writes the actual end-of-round value.
+    fighter_a_gas_remaining     REAL NOT NULL DEFAULT 100.0,
+    fighter_b_gas_remaining     REAL NOT NULL DEFAULT 100.0,
     momentum_state              TEXT,
     round_winner_fighter_id     INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
     created_at                  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
@@ -1036,7 +1140,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_fight_importance_columns",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_beat_engine_depth",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

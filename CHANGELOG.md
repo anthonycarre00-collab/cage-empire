@@ -8,6 +8,211 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task B2 — Beat Engine Depth, schema 2.3.0 MINOR)
+- `fight_beats.outcome` CHECK constraint extended (Task B2, schema 2.3.0
+  MINOR) — added `'knockdown'` and `'near_finish'` to the allowed
+  outcome values. The 5 B1 outcomes (`'landed'`,`'missed'`,`'blocked'`,
+  `'defended'`,`'reversed'`) describe per-beat exchange outcomes; the 2
+  new B2 outcomes mark dramatic moments: `'knockdown'` is the beat that
+  ends a fight by KO/TKO (the finishing blow) OR a high-momentum moment
+  where the defender was dropped but survived (carries
+  `momentum_shift = +80`); `'near_finish'` is when the defender was
+  "rocked" (cumulative damage crossed their KO threshold but the KO roll
+  failed — they survived) OR a submission_attempt landed (defender
+  tapped — finish) OR a submission attempt almost succeeded (carries
+  `momentum_shift = +60`). Per CONVENTIONS §1.1, modifying a CHECK
+  constraint on an existing table is a MINOR bump (no breaking change —
+  existing rows satisfy the new CHECK because the new values are a
+  superset of the old values).
+- `fight_rounds.fighter_a_gas_remaining` + `fight_rounds.fighter_b_gas_remaining`
+  columns (Task B2, schema 2.3.0 MINOR) — REAL NOT NULL DEFAULT 100.0.
+  Per-fighter gas remaining at the end of the round. The fatigue system
+  tracks gas in-memory across rounds in `resolve_next_fight()` (gas
+  starts at 100, depletes per beat per `_compute_gas_cost`, recovers
+  between rounds per `_recover_gas_between_rounds`). `resolve_round()`
+  writes the end-of-round gas values to these columns so future systems
+  (training camps analyzing cardio endurance, commentary mentioning "he
+  looked gassed by round 3", punditry on conditioning) can read them.
+  The DEFAULT 100.0 keeps existing INSERTs valid; the engine always
+  writes the actual end-of-round value. Per CONVENTIONS §1.1, adding
+  columns to an existing table is a MINOR bump. (D1 in the B2 worklog —
+  the brief's mention of "already-exist gas columns" was a misread;
+  they did not exist in v2.2.0 and are added here.)
+- Fatigue system (Task B2) — gas starts at 100 per fight, depletes per
+  beat with phase-dependent base costs (standing=1, clinch/cage=2,
+  ground=3, scramble=4). `fatigue_tolerance` slows decay
+  (`gas_cost *= 1 - fatigue_tolerance/200`); `cardio` affects how fast
+  gas depletes (`gas_cost *= 1.5 - cardio/100`). Low gas (<30) reduces
+  accuracy 30% and chin vulnerability +20% (gassed fighters get hit
+  harder). Between rounds: `gas += recovery_rate * 0.3` (capped at 100).
+  Implemented in `_compute_gas_cost()`, `_recover_gas_between_rounds()`,
+  and the per-beat gas tracking in `resolve_round()`.
+- Momentum system (Task B2) — cumulative momentum in a round shifts
+  subsequent beat probabilities (`initiator_advantage = clamp(
+  cum_momentum/200, -0.3, +0.3)`). Knockdown beats produce
+  `momentum_shift = +80`, near-finish beats `+60`, big takedowns `+30`
+  (when `control_time_delta >= 3`). Momentum carries across rounds with
+  50% decay (a knockdown in round 1 gives half the advantage in round 2
+  — prevents the cross-round snowball that would otherwise make balanced
+  fights one-sided). Produces "smells blood" sequences instead of
+  memoryless coin flips. Implemented in `resolve_round()`'s beat loop
+  and the `_compute_beat_scores()` `momentum_advantage` parameter.
+- Mid-round finishes (Task B2) — 5 new finish types replace B1's
+  decision-only outcomes:
+  - **KO/TKO**: cumulative damage in a beat sequence crosses the
+    defender's threshold (`chin*1.0 + recovery_rate*0.2 + grit*0.1 +
+    composure*0.1` — D2 corrected the brief's inverted formula; D6
+    re-weighted chin from 0.5 to 1.0 so high-chin fighters are
+    substantially harder to KO). Only "power strikes" (damage >= 30)
+    can trigger a KO check — jabs and leg kicks accumulate damage but
+    don't knock people out. The attacker's `killer_instinct` determines
+    the probability the KO actually happens (`0.1 + KI*0.002`, range
+    0.1-0.3 — D6 tuned from the original 0.5-1.0 range that produced
+    ~100% KO rate for extreme matchups).
+  - **Submission**: a landed `submission_attempt` with a positive
+    submission score succeeds (defender taps). Score =
+    `attacker.submission_offense - defender.submission_defense*0.5 -
+    defender.flexibility*0.3 - defender.scramble_ability*0.2 +
+    attacker.composure*0.1` (D3 — the brief was ambiguous about whose
+    composure; interpreted as the attacker's, since a calm attacker is
+    better at finishing submissions).
+  - **Doctor stoppage**: cumulative damage across ALL rounds crosses
+    `200 + durability*2`, checked between rounds. D11 added a damage-
+    differential guard (`> 50`) — the doctor stops a one-sided beating,
+    not a mutual brawl where both fighters are evenly trading damage.
+  - **Corner stoppage**: fighter loses 3+ consecutive rounds AND
+    `grit < 40` AND `composure < 40`, 20% chance per qualifying round.
+    D8: checked BEFORE doctor stoppage so the corner has a chance to
+    throw in the towel before the doctor steps in (otherwise the doctor
+    stoppage always fired first in the test setup, preventing the
+    "corner throws in the towel" stories the B2 brief demands).
+  - **DQ**: fighter has `discipline < 20` AND lands a strike, 1% chance
+    per qualifying beat. Represents an illegal strike (eye poke, groin
+    shot, strike to back of head).
+- Fight importance + pressure modifiers (Task B2) — importance is a
+  computed value (0-100), NOT stored:
+  `card_slot weight (40%) + title at stake (30%) + rivalry heat (15%,
+  0 for now — rivalries table doesn't exist yet) + fighter popularity
+  (15%, avg marketability of both fighters)`. Card slot weights:
+  main_event=100, co_main=80, featured_prelim=60, prelim=40, opener=20.
+  Pressure response per fighter (computed, NOT stored):
+  `pressure_response = clutch_factor*0.35 + composure*0.25 +
+  consistency*0.20 + focus*0.10 + grit*0.10`. In high-importance fights
+  (importance > 60): `pressure_response >= 70` → +5% to beat
+  attack/defense scores ("rises to the occasion");
+  `pressure_response <= 30` → -10% ("bottler"); 30 < response < 70 →
+  no modifier (baseline). In low-importance fights, no modifier applies.
+  Implemented in `_compute_fight_importance()`,
+  `_compute_pressure_response()`, `_compute_pressure_modifier()`. This
+  creates the stories the Soul document demands: "Unknown prospect
+  upsets the champion in the main event — he rose to the occasion."
+- Commentary beat selection (Task B2) — after the fight resolves,
+  selects 3-14 most important beats (knockdowns, near-finishes, the
+  finishing beat, big momentum swings, round-winning sequences) and
+  writes `commentary_segments` rows for each. Beat count depends on
+  fight importance: quick (importance < 40) → 3-6 beats, standard
+  (40 <= importance < 70) → 6-10 beats, extended (importance >= 70) →
+  10-14 beats. Selection priority: knockdown (1000) > finishing beat
+  (900) > near-finish (800) > big momentum swing (500 + |ms|) > high
+  damage (damage_dealt). Implemented in `_select_commentary_beats()` +
+  `_generate_beat_commentary()`. This is the raw substrate that future
+  Task 23 (news engine) and Task 19 (interpretation layer) will turn
+  into the rich prose the player remembers.
+- `scripts/test_beat_engine_depth.py` acceptance test (Task B2) — NEW
+  acceptance test covering all 5 B2 systems (fatigue, momentum,
+  finishes, importance+pressure, commentary beat selection). 64 sub-
+  checks across 12 cases (A schema, B fatigue, C momentum, D KO/TKO,
+  E submission, F doctor stoppage, G corner stoppage, H DQ, I fight
+  importance, J pressure modifiers, K commentary beat selection, L
+  end-to-end fight resolution). Uses `build_db.CODE_SCHEMA_VERSION`
+  dynamically per CONVENTIONS §10 — no hardcoded version strings.
+
+### Changed (Task B2 — Beat Engine Depth, schema 2.3.0 MINOR)
+- `resolve_round()` in app.py (Task B2) — signature extended to accept
+  `gas_a`, `gas_b`, `cum_momentum`, `pressure_mod_a`, `pressure_mod_b`
+  parameters (all default to B1-equivalent values, preserving backward
+  compat for tests that don't pass them). The function now: (1) tracks
+  per-fighter gas across beats (depleting per `_compute_gas_cost` and
+  applying the low-gas accuracy/chin penalties), (2) tracks cumulative
+  momentum and applies the `momentum_advantage` modifier to beat scores,
+  (3) checks for mid-round finishes (KO/sub/DQ) and breaks out of the
+  beat loop if one occurs, (4) writes `knockdown`/`near_finish`
+  outcomes to `fight_beats` for dramatic moments, (5) writes the end-of-
+  round gas values to `fight_rounds.fighter_a/b_gas_remaining`. The B1
+  beat count formula, phase attribute mappings, phase transitions, and
+  per-beat outcome resolution are all PRESERVED.
+- `resolve_next_fight()` in app.py (Task B2) — now computes fight
+  importance + pressure modifiers before the round loop, passes them to
+  `resolve_round()`, tracks gas + cum_momentum across rounds (gas
+  recovers between rounds; momentum carries over with 50% decay), and
+  checks for between-round finishes (corner stoppage D8-checked-BEFORE
+  doctor stoppage). After the fight resolves, calls
+  `_select_commentary_beats()` + `_generate_beat_commentary()` to write
+  `commentary_segments` for the 3-14 most important beats. ALL existing
+  side effects (fight_history, rankings, titles, event lifecycle,
+  schedule_next_event, news, commentary) are PRESERVED — only the
+  resolution mechanism changed. Signature unchanged:
+  `resolve_next_fight(conn)`.
+- `_compute_beat_scores()` in app.py (Task B2) — signature extended to
+  accept `init_gas`, `target_gas`, `pressure_mod_init`,
+  `pressure_mod_target`, `momentum_advantage` parameters (all default
+  to B1-equivalent values). Applies the B2 modifiers: low-gas accuracy
+  penalty (30%), pressure modifier (multiplied into score), momentum
+  advantage (multiplied into attack score).
+- `_decide_fight_outcome()` in app.py (Task B2) — now factors in
+  knockdowns for 10-point must scoring. If the round winner scored a
+  knockdown in that round, the loser gets 8 instead of 9 (10-8 round —
+  the standard 10-point must extension for knockdowns). The 70% split/
+  30% unanimous bump on close fights (D2 from B1) is preserved.
+- `_format_fight_news()` + `_format_fight_commentary()` in app.py
+  (Task B2) — added support for the 5 new finish result types
+  (`ko_tko`, `submission`, `doctor_stoppage`, `corner_stoppage`, `dq`)
+  and the finish_time for mid-round finishes (e.g., "at 2:34 of round
+  2"). The `write_news()` and `write_commentary()` calls themselves are
+  unchanged — only the headline/body/commentary strings are enriched.
+- `_load_fighter_stats()` in app.py (Task B2) — now also loads
+  `clutch_factor`, `consistency`, and `marketability` from the
+  `fighters` table (these live on fighters, NOT on fighter_attributes
+  or fighter_personality). They're needed for fight importance +
+  pressure response computation. Falls back to 50 (the schema DEFAULT)
+  if the fighter row is missing or the columns are NULL.
+
+### Known issues (Task B2 — Beat Engine Depth, schema 2.3.0 MINOR)
+- `test_beat_engine.py` (Task B1 acceptance test) FAILS 13 sub-checks
+  across cases A, B, D, E, F, G, H, I (D14-D26 in the B2 worklog). All
+  13 failures are stale B1 assertions that assumed B1's no-finishes
+  behavior (every fight goes the full scheduled_rounds, every round has
+  12-28 beats, result_type is always a decision type). B2 deliberately
+  added mid-round finishes + new result types, which invalidates these
+  assumptions. The new test `test_beat_engine_depth.py` covers the B2
+  behavior with the correct setup (64/64 PASS). NOT modified per
+  CONVENTIONS §11 — flagged for the supervisor. The supervisor should
+  either (a) update test_beat_engine.py's stale assertions to match
+  B2's behavior (e.g., relax "every fight goes the full
+  scheduled_rounds" to "every fight goes at least 1 round"), or (b)
+  retire test_beat_engine.py entirely since test_beat_engine_depth.py
+  is a strict superset of its coverage. The 12 stale-assertion failures
+  are NOT functional regressions — the engine works correctly; the
+  assertions just encode B1's now-obsolete assumptions.
+- `test_beat_engine.py` case I.1 (D26 in the B2 worklog): the "no
+  single result_type > 60% on balanced matchup" assertion fails with
+  `doctor_stoppage` at 61/100. This is a real B2 tuning concern (not
+  just a stale assertion): doctor stoppage dominates balanced matchups
+  because the threshold (200 + durability*2 = 300 for all-50s) is
+  crossed too easily. The D11 damage-differential guard (>= 50) helps
+  but doesn't fully solve it. Future tuning should either raise the
+  base threshold (e.g., 250 + durability*2) or require a larger
+  differential (e.g., 75). Flagged for the supervisor — NOT modified
+  per CONVENTIONS §11.
+- 15 of 16 existing tests PASS unchanged (test_contracts,
+  test_event_lifecycle, test_event_scheduler, test_fight_history,
+  test_fight_importance, test_fight_resolver, test_fighter_attributes,
+  test_free_agency, test_pre_b1_fixes, test_promotion_filter,
+  test_rankings, test_regen, test_retirement, test_schema_versioning,
+  test_titles). The 1 with stale-assertion regressions is
+  test_beat_engine.py (documented above). New test
+  test_beat_engine_depth.py PASSES (64/64 checks).
+
 ### Added
 - `fights.card_slot` column (Task pre-B2-fix, schema 2.2.0 MINOR) —
   TEXT NOT NULL DEFAULT 'main_event' CHECK (card_slot IN ('main_event',
