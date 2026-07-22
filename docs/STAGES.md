@@ -982,19 +982,43 @@ Inter / Segoe UI fonts.
 promotion / venue / contract editors. CSV + JSON import/export.
 Portrait pack folder support. Full database backup/restore.
 
-### Task ID 18.5 — Event bus refactor
+### Task ID 18.5 — Event bus refactor — **DONE** (commit `pending`)
 
-**Brief (needs expansion).** Refactor `resolve_next_fight()` and
-`_check_retirements()` from monolithic functions with hardcoded side
-effects into event-publishing functions. Each system subscribes to the
-events it cares about (FightResolved, TitleChanged, FighterRetired,
-ContractExpired, etc.). This decouples systems and makes adding new
-side effects (social media, rivalries, punditry, show rating) a matter
-of adding a subscriber, not editing the monolith.
+**Status:** No schema change (in-memory pub/sub). `src/event_bus.py` +
+event publishing in `resolve_next_fight` + `run_tick`. 45 sub-checks
+across 10 cases in `scripts/test_event_bus.py`.
 
-**Dependencies:** All Stage 3 tasks complete (injuries, camps, weight
-cuts, scouting, voice layer all in place — enough systems to justify
-the refactor).
+**Implementation:**
+- `src/event_bus.py` — lightweight in-memory pub/sub system:
+  * `EventBus` class with subscribe/unsubscribe/publish/subscriber_count
+  * `Events` constants class with 12 event types (FIGHT_RESOLVED,
+    FIGHT_CANCELLED, TITLE_CHANGED, EVENT_COMPLETED, FIGHTER_RETIRED,
+    FIGHTER_SIGNED, FIGHTER_GENERATED, CONTRACT_EXPIRED, CAMP_COMPLETED,
+    CAMP_INJURY, INJURY_CREATED, INJURY_RECOVERED, WEIGHT_CUT_COMPLETED,
+    SCOUT_REPORT_GENERATED, FIGHTER_STATE_CHANGED, TICK_ADVANCED)
+  * Synchronous execution (single-threaded sim)
+  * Defensive: subscriber errors are caught + logged, don't block others
+  * Global singleton via `get_bus()` + `reset_bus()` for testing
+- `resolve_next_fight` — now publishes 3 events after all existing
+  side effects complete (ADDITIVE, not a replacement — existing inline
+  calls remain for backward compatibility):
+  1. `FIGHT_RESOLVED` — with fight_id, winner_id, loser_id, result_type,
+     finish_round, is_title_fight, title_changed, importance, etc.
+  2. `FIGHTER_STATE_CHANGED` — one per fighter (a_id, b_id)
+  3. `TITLE_CHANGED` — if title_change_id is not None
+- `run_tick` — publishes `TICK_ADVANCED` with current_date + tick_type
+- Stage 4+ systems (finances, social media, rivalries, news engine,
+  punditry, show rating) will subscribe to these events instead of
+  being hardcoded into the monolith.
+
+**Architecture decisions:**
+- No DB table — events are transient. The DB stores results, not events.
+- Synchronous — CAGE EMPIRE is single-threaded. Async adds complexity
+  for no benefit.
+- Additive — existing inline side effects remain. The event bus is for
+  NEW subscribers (Stage 4+), not a replacement for existing code.
+- Defensive — broken subscribers don't crash the game (try/except per
+  subscriber, error printed to stderr).
 
 **Pillars served:** All (the event bus is infrastructure that supports
 every system).

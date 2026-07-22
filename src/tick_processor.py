@@ -1299,6 +1299,19 @@ def run_tick(conn, tick_type="day", steps=1):
         if scouting_done:
             print(f"  Generated {len(scouting_done)} scouting report(s) on "
                   f"{dt.strftime('%Y-%m-%d')}: {scouting_done}")
+        # v2.9.1 (Task 18.5): publish TICK_ADVANCED event. Stage 4+
+        # systems that need to react to time passing (e.g., social
+        # media posts, rivalry cooldowns, finances) will subscribe.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.TICK_ADVANCED,
+                'current_date': dt.strftime("%Y-%m-%d"),
+                'tick_type': tick_type,
+            })
+        except ImportError:
+            pass
         conn.commit()
 
 def main():

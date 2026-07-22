@@ -9,6 +9,29 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 
+## [Task 18.5] - 2026-07-23
+
+### Added (Task 18.5 — Event Bus refactor, no schema change)
+- New `src/event_bus.py` — lightweight in-memory pub/sub system.
+  `EventBus` class with subscribe/unsubscribe/publish. `Events`
+  constants with 16 event types. Synchronous, defensive (subscriber
+  errors caught + logged), global singleton via `get_bus()`.
+- `resolve_next_fight` — now publishes FIGHT_RESOLVED,
+  FIGHTER_STATE_CHANGED (×2), and TITLE_CHANGED (if applicable) after
+  all existing side effects. ADDITIVE — existing inline calls remain.
+- `run_tick` — publishes TICK_ADVANCED with current_date + tick_type.
+- New acceptance test `scripts/test_event_bus.py` — 45 sub-checks
+  across 10 cases. All PASS.
+- All 23 acceptance tests pass (22 existing + 1 new).
+
+### Architecture
+- No DB table — events are transient. The DB stores results, not events.
+- Synchronous — CAGE EMPIRE is single-threaded.
+- Additive — existing inline side effects remain. The event bus is for
+  NEW Stage 4+ subscribers, not a replacement.
+- Defensive — broken subscribers don't crash the game.
+
+
 ## [2.9.0] - 2026-07-23
 
 ### Added (Task 18 — Scouting system, schema 2.9.0 MINOR)

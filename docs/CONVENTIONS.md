@@ -631,27 +631,50 @@ MUST use the interpretation layer from day one.
 
 ---
 
-## 15. Event Bus (future architecture)
+## 15. Event Bus (implemented Task 18.5)
 
-### 15.1 Current State
+### 15.1 Architecture
 
-Currently `resolve_next_fight()` is a monolithic function with ~15
-hardcoded side effects in sequence. This works but doesn't scale.
+`src/event_bus.py` provides a lightweight in-memory pub/sub system.
+Game actions (resolve_next_fight, run_tick) publish events; game
+systems subscribe to the events they care about. The bus is
+synchronous, in-memory, and defensive (subscriber errors are caught).
 
-### 15.2 Future Refactor (Task 18.5)
+### 15.2 Event Types
 
-After Stage 3 (when injuries, camps, weight cuts, scouting, and the
-voice layer are all in place), `resolve_next_fight()` will be refactored
-to publish events ("FightResolved", "TitleChanged", "FighterRetired",
-etc.) instead of calling each system directly. Each system subscribes
-to the events it cares about.
+16 event types defined in `Events`:
+- FIGHT_RESOLVED, FIGHT_CANCELLED, TITLE_CHANGED, EVENT_COMPLETED
+- FIGHTER_RETIRED, FIGHTER_SIGNED, FIGHTER_GENERATED
+- CONTRACT_EXPIRED
+- CAMP_COMPLETED, CAMP_INJURY
+- INJURY_CREATED, INJURY_RECOVERED
+- WEIGHT_CUT_COMPLETED
+- SCOUT_REPORT_GENERATED
+- FIGHTER_STATE_CHANGED
+- TICK_ADVANCED
 
-### 15.3 Not Now
+### 15.3 Usage
 
-The event bus refactor is deferred until the number of side effects
-justifies it (~25+ systems reacting to fight resolution). Currently
-we have ~15, which is manageable in a monolithic function. The refactor
-is Task 18.5, positioned between Stage 3b and Stage 4.
+```python
+from event_bus import get_bus, Events
+
+bus = get_bus()
+bus.subscribe(Events.FIGHT_RESOLVED, my_system.handle_fight)
+# ... later, when a fight resolves:
+# resolve_next_fight publishes FIGHT_RESOLVED automatically
+# my_system.handle_fight is called with (conn, event_dict)
+```
+
+### 15.4 Design Rules
+
+- **No DB table** — events are transient. The DB stores results.
+- **Synchronous** — CAGE EMPIRE is single-threaded.
+- **Additive** — existing inline side effects remain. The event bus
+  is for NEW subscribers (Stage 4+), not a replacement.
+- **Defensive** — broken subscribers don't crash the game.
+- **Stage 4+ systems MUST use the event bus** — no new inline side
+  effects in resolve_next_fight or run_tick. All new systems subscribe
+  to events instead.
 
 ---
 

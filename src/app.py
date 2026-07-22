@@ -4788,6 +4788,57 @@ def resolve_next_fight(conn):
     update_fighter_descriptor_snapshot(conn, a_id)
     update_fighter_descriptor_snapshot(conn, b_id)
 
+    # v2.9.1 (Task 18.5): publish FIGHT_RESOLVED event on the event bus.
+    # Stage 4+ systems (finances, social media, rivalries, news engine,
+    # punditry, show rating) will subscribe to this event instead of
+    # being hardcoded into this function. The existing side effects above
+    # remain inline (backward compatible) — the event bus is ADDITIVE,
+    # not a replacement. New subscribers added in Stage 4+ will handle
+    # their side effects via the event, without touching this function.
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.FIGHT_RESOLVED,
+            'fight_id': fight_id,
+            'event_id': event_id,
+            'promotion_id': promo_id,
+            'weight_class_id': weight_class_id,
+            'winner_id': winner_id if result_type != "draw" else None,
+            'loser_id': loser_id if result_type != "draw" else None,
+            'fighter_a_id': a_id,
+            'fighter_b_id': b_id,
+            'result_type': result_type,
+            'finish_round': finish_round,
+            'finish_time': finish_time,
+            'is_title_fight': is_title_fight,
+            'title_changed': title_change_id is not None,
+            'event_date': event_date,
+            'importance': importance,
+        })
+        # Also publish FIGHTER_STATE_CHANGED for both fighters (so
+        # future systems like social media can react to any fighter
+        # state change — not just fights).
+        for fid in (a_id, b_id):
+            bus.publish(conn, {
+                'type': Events.FIGHTER_STATE_CHANGED,
+                'fighter_id': fid,
+                'reason': 'fight_resolved',
+                'fight_id': fight_id,
+            })
+        # If title changed, publish TITLE_CHANGED
+        if title_change_id is not None:
+            bus.publish(conn, {
+                'type': Events.TITLE_CHANGED,
+                'title_id': title_change_id,
+                'fight_id': fight_id,
+                'event_id': event_id,
+                'promotion_id': promo_id,
+                'weight_class_id': weight_class_id,
+            })
+    except ImportError:
+        pass  # event_bus not available (shouldn't happen, but defensive)
+
     return fight_id
 
 
