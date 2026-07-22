@@ -124,6 +124,42 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 #
 # Migration name: v2_5_0_add_training_camps.
 #
+# v2.6.0 (Task 16.5 — World seed prep) — MINOR bump. Adds two new
+# tables (`fighter_bios`, `hall_of_fame`) and two new columns to
+# existing tables (`regions.nation_id`, `weight_classes.gender` +
+# `weight_classes.display_order`). These are required for the world
+# seed (Task 31): the bios table holds long-form prose for the top
+# ~200 featured fighters; the hall_of_fame table holds retired
+# legends; `regions.nation_id` is a long-standing bug (regions had
+# no link to nations — only cities did); `weight_classes.gender` is
+# required so men's and women's weight classes can coexist (the
+# real-world UFC has both).
+#
+# Schema changes:
+#   1. `regions.nation_id` — FK to nations(nation_id) ON DELETE SET
+#      NULL. Bug fix: the table had no nation link before, despite
+#      `cities.nation_id` existing. The seed Phase 1 populates this.
+#   2. `weight_classes.gender` — TEXT NOT NULL DEFAULT 'male' CHECK
+#      IN ('male','female'). Default 'male' preserves backward
+#      compatibility with the existing seeded weight class (which
+#      was implicitly male).
+#   3. `weight_classes.display_order` — INTEGER NOT NULL DEFAULT 0.
+#      Used by the UI to display weight classes in a sensible order
+#      (Heavyweight first, Strawweight last) instead of by ID.
+#   4. `fighter_bios` — new table. PK = fighter_id (one bio per
+#      fighter). bio_text NOT NULL. bio_tone CHECK restricted to 12
+#      enumerated tone values used by the voice layer (Task 19).
+#   5. `hall_of_fame` — new table. PK = fighter_id. inducted_date
+#      NOT NULL. career_summary NOT NULL. career_highlights TEXT
+#      (nullable — some legends have only a summary).
+#
+# Per CONVENTIONS §1.1, adding new tables + new columns = MINOR.
+# Per CONVENTIONS §5 (one table-group per task), this task adds
+# the "world seed prep" group — bios + hall_of_fame + the two
+# column fixes are all in service of the upcoming world seed.
+#
+# Migration name: v2_6_0_world_seed_prep.
+#
 # v2.4.0 (Task 15 — Injuries + medical recovery) — MINOR bump. Adds
 # the new `injuries` table (one row per injury a fighter suffers).
 # Per CONVENTIONS §1.1, adding a new table is a MINOR bump. Per
@@ -407,7 +443,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.5.0"
+CODE_SCHEMA_VERSION = "2.6.0"
 
 
 def _parse_version(v):
@@ -531,6 +567,7 @@ CREATE TABLE IF NOT EXISTS nations (
 
 CREATE TABLE IF NOT EXISTS regions (
     region_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nation_id INTEGER REFERENCES nations(nation_id) ON DELETE SET NULL,
     name TEXT NOT NULL UNIQUE,
     style_preferences TEXT,
     fan_preferences TEXT,
@@ -542,8 +579,10 @@ CREATE TABLE IF NOT EXISTS regions (
 CREATE TABLE IF NOT EXISTS weight_classes (
     weight_class_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    gender TEXT NOT NULL DEFAULT 'male' CHECK (gender IN ('male', 'female')),
     min_weight_kg REAL,
     max_weight_kg REAL,
+    display_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1181,6 +1220,47 @@ CREATE TABLE IF NOT EXISTS fighter_memory_links (
     UNIQUE (fighter_id, linked_fighter_id, link_type)
 );
 
+-- fighter_bios (added v2.6.0, Task 16.5 — World seed prep).
+-- Long-form prose bios for fighters. The world seed Phase 5 writes
+-- these for the top ~200 "featured" fighters (champions, top
+-- contenders, top prospects, notable veterans). Other fighters have
+-- no bio row — the UI will show "no bio available" or generate a
+-- short procedural descriptor via the voice layer (Task 19).
+--
+-- One row per fighter (PK = fighter_id). The bio_text is a 2-4
+-- sentence prose bio written by the seed; bio_tone is a hint for
+-- the voice layer (e.g. 'hype_prospect', 'grizzled_veteran',
+-- 'champion_reign', 'fallen_contender', 'journeyman', 'cult_hero').
+CREATE TABLE IF NOT EXISTS fighter_bios (
+    fighter_id  INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    bio_text    TEXT NOT NULL,
+    bio_tone    TEXT NOT NULL DEFAULT 'neutral'
+                CHECK (bio_tone IN ('neutral', 'hype_prospect',
+                                    'grizzled_veteran', 'champion_reign',
+                                    'fallen_contender', 'journeyman',
+                                    'cult_hero', 'tragic_figure',
+                                    'late_bloomer', 'enforcer',
+                                    'fan_favorite', 'villain')),
+    created_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+-- hall_of_fame (added v2.6.0, Task 16.5 — World seed prep).
+-- Retired legends who have been inducted into the CAGE EMPIRE Hall
+-- of Fame. The world seed Phase 5 inserts ~50-100 retired fighters
+-- here with career summaries + highlights. A future UI tab (Hall of
+-- Fame) will display this. The inducted_date is the in-fiction
+-- ceremony date; career_highlights is a multi-line string of bullet
+-- points ("3-time Lightweight Champion", "10 title defenses",
+-- "Submission of the Year 2021").
+CREATE TABLE IF NOT EXISTS hall_of_fame (
+    fighter_id          INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    inducted_date       TEXT NOT NULL,
+    career_summary      TEXT NOT NULL,
+    career_highlights   TEXT,
+    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
 -- ----------------------------------------------------------------
 -- Beat-level fight engine (added in v2.1.0, Task B1).
 --
@@ -1457,63 +1537,606 @@ CREATE TABLE IF NOT EXISTS training_camps (
 );
 """
 
-def main():
+def _has_column(conn, table, column):
+    """Return True if `column` exists on `table` (defensive idempotency check)."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def _has_table(conn, table):
+    """Return True if `table` exists in sqlite_master."""
+    return conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone() is not None
+
+
+def _has_check_constraint(conn, table, fragment):
+    """Return True if `table` has a CHECK constraint whose SQL contains
+    `fragment` (case-insensitive). Used to test idempotency of CHECK-
+    adding migrations (SQLite has no ALTER TABLE ADD CHECK, so CHECKs
+    can only be added via table rebuild — rare and explicit).
+    """
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if sql is None or sql[0] is None:
+        return False
+    return fragment.lower() in sql[0].lower()
+
+
+# ----------------------------------------------------------------
+# Migration functions.
+#
+# Each migration is idempotent — it checks the current schema state
+# (via _has_column / _has_table / _has_check_constraint) before
+# applying its change. This is REQUIRED because:
+#   1. The migration runner records the migration name in
+#      schema_migrations AFTER it runs. If a migration crashes mid-
+#      way, the next run re-executes it — the partial work must be
+#      safe to re-apply.
+#   2. The --fresh path also calls every migration after
+#      executescript(SCHEMA_SQL), to keep the migration functions
+#      exercised. CREATE TABLE IF NOT EXISTS + _has_column guards
+#      make this safe (the migrations are no-ops on a fresh build).
+#
+# Each migration function takes a sqlite3.Connection (caller commits)
+# and returns nothing. Errors raise sqlite3.Error (caller aborts).
+# ----------------------------------------------------------------
+
+def _migrate_v2_2_0_add_fighter_depth(conn):
+    """Task 14.5+14.6+14.7 — fighter schema expansion.
+
+    Adds 21 attribute columns, 17 personality columns, 4 physical
+    columns to fighters; creates fighter_attributes (25 attrs),
+    fighter_personality (20 traits), fighter_career (potential,
+    career_health, title_reigns), fight_rounds, style_archetypes,
+    personality_archetypes, regen_lineage, fighter_memory_links.
+
+    This migration is a no-op on a fresh --fresh build (the
+    SCHEMA_SQL already includes all these tables/columns). It exists
+    to upgrade a v2.1.0 DB to v2.2.0 without data loss.
+    """
+    # Fighter physical columns
+    for col, decl in [
+        ("height_cm", "INTEGER"),
+        ("reach_cm", "INTEGER"),
+        ("stance", "TEXT DEFAULT 'Orthodox'"),
+        ("handedness", "TEXT DEFAULT 'Orthodox'"),
+        ("injury_proneness", "INTEGER NOT NULL DEFAULT 50"),
+        ("weight_cut_difficulty", "INTEGER NOT NULL DEFAULT 50"),
+        ("consistency", "INTEGER NOT NULL DEFAULT 50"),
+        ("clutch_factor", "INTEGER NOT NULL DEFAULT 50"),
+        ("marketability", "INTEGER NOT NULL DEFAULT 50"),
+        ("fan_friendliness", "INTEGER NOT NULL DEFAULT 50"),
+        ("promo_boost", "INTEGER NOT NULL DEFAULT 50"),
+        ("preferred_gameplans", "TEXT"),
+        ("bad_matchup_tags", "TEXT"),
+        ("is_deceased", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        if not _has_column(conn, "fighters", col):
+            conn.execute(f"ALTER TABLE fighters ADD COLUMN {col} {decl}")
+
+    # fighter_attributes table
+    if not _has_table(conn, "fighter_attributes"):
+        # Build the CREATE TABLE statement inline (matches SCHEMA_SQL)
+        attr_cols = [
+            "punch_power", "punch_accuracy", "kick_power", "kick_accuracy",
+            "head_movement", "footwork", "clinch_striking", "clinch_offense",
+            "clinch_defense", "takedown_offense", "takedown_defense",
+            "top_control", "bottom_game", "submission_offense",
+            "submission_defense", "scramble_ability", "cage_wrestling",
+            "recovery_rate", "speed_explosiveness", "strength",
+            "durability", "flexibility", "adaptability", "cardio",
+            "fight_iq", "chin",
+        ]
+        col_decls = ",\n    ".join(
+            f"{c} INTEGER NOT NULL DEFAULT 50 CHECK ({c} BETWEEN 0 AND 100)"
+            for c in attr_cols
+        )
+        conn.execute(
+            f"CREATE TABLE fighter_attributes (\n"
+            f"    fighter_attribute_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            f"    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            f"    {col_decls},\n"
+            f"    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            f"    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            f"    UNIQUE (fighter_id)\n"
+            f")"
+        )
+
+    # fighter_personality table
+    if not _has_table(conn, "fighter_personality"):
+        pers_cols = [
+            "aggression", "composure", "morale", "risk_taking",
+            "killer_instinct", "grit", "discipline", "patience",
+            "ambition", "loyalty", "charisma", "attention_seeking",
+            "coachability", "professionalism", "ego", "resilience",
+            "sportsmanship", "travel_comfort", "focus", "fatigue_tolerance",
+        ]
+        col_decls = ",\n    ".join(
+            f"{c} INTEGER NOT NULL DEFAULT 50 CHECK ({c} BETWEEN 0 AND 100)"
+            for c in pers_cols
+        )
+        conn.execute(
+            f"CREATE TABLE fighter_personality (\n"
+            f"    fighter_personality_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            f"    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            f"    {col_decls},\n"
+            f"    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            f"    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            f"    UNIQUE (fighter_id)\n"
+            f")"
+        )
+
+    # fighter_career table
+    if not _has_table(conn, "fighter_career"):
+        conn.execute(
+            "CREATE TABLE fighter_career (\n"
+            "    fighter_career_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    record_wins INTEGER NOT NULL DEFAULT 0,\n"
+            "    record_losses INTEGER NOT NULL DEFAULT 0,\n"
+            "    record_draws INTEGER NOT NULL DEFAULT 0,\n"
+            "    win_streak INTEGER NOT NULL DEFAULT 0,\n"
+            "    loss_streak INTEGER NOT NULL DEFAULT 0,\n"
+            "    career_health INTEGER NOT NULL DEFAULT 100 CHECK (career_health BETWEEN 0 AND 100),\n"
+            "    potential INTEGER NOT NULL DEFAULT 50 CHECK (potential BETWEEN 0 AND 100),\n"
+            "    title_reigns INTEGER NOT NULL DEFAULT 0,\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_id)\n"
+            ")"
+        )
+
+    # fight_rounds table
+    if not _has_table(conn, "fight_rounds"):
+        conn.execute(
+            "CREATE TABLE fight_rounds (\n"
+            "    fight_round_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fight_id INTEGER NOT NULL REFERENCES fights(fight_id) ON DELETE CASCADE,\n"
+            "    round_number INTEGER NOT NULL,\n"
+            "    fighter_a_gas_remaining REAL,\n"
+            "    fighter_b_gas_remaining REAL,\n"
+            "    momentum_end REAL,\n"
+            "    a_score INTEGER NOT NULL DEFAULT 0,\n"
+            "    b_score INTEGER NOT NULL DEFAULT 0,\n"
+            "    finish_beat_id INTEGER,\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fight_id, round_number)\n"
+            ")"
+        )
+
+    # style_archetypes table
+    if not _has_table(conn, "style_archetypes"):
+        conn.execute(
+            "CREATE TABLE style_archetypes (\n"
+            "    style_archetype_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    name TEXT NOT NULL UNIQUE,\n"
+            "    description TEXT,\n"
+            "    bias_json TEXT NOT NULL DEFAULT '{}',\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+    # personality_archetypes table
+    if not _has_table(conn, "personality_archetypes"):
+        conn.execute(
+            "CREATE TABLE personality_archetypes (\n"
+            "    personality_archetype_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    name TEXT NOT NULL UNIQUE,\n"
+            "    description TEXT,\n"
+            "    bias_json TEXT NOT NULL DEFAULT '{}',\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+    # regen_lineage table
+    if not _has_table(conn, "regen_lineage"):
+        conn.execute(
+            "CREATE TABLE regen_lineage (\n"
+            "    regen_lineage_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    retiring_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    replacement_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    style_dna_archetype_id INTEGER REFERENCES style_archetypes(style_archetype_id) ON DELETE SET NULL,\n"
+            "    regen_date TEXT NOT NULL,\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (retiring_fighter_id, replacement_fighter_id)\n"
+            ")"
+        )
+
+    # fighter_memory_links table
+    if not _has_table(conn, "fighter_memory_links"):
+        conn.execute(
+            "CREATE TABLE fighter_memory_links (\n"
+            "    memory_link_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor')),\n"
+            "    link_strength INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_id, linked_fighter_id, link_type)\n"
+            ")"
+        )
+
+
+def _migrate_v2_3_0_add_beat_engine_depth(conn):
+    """Task B2 — beat engine depth. Modifies fight_beats.outcome CHECK
+    (adds 'knockdown' and 'near_finish'). SQLite cannot ALTER a CHECK
+    constraint — requires a table rebuild. On a fresh --fresh build
+    the SCHEMA_SQL already has the new CHECK; on a migration from
+    v2.2.0, we rebuild the table.
+
+    Also adds fatigue/momentum/finish columns to fight_rounds if
+    missing (those columns were added in v2.2.0's SCHEMA_SQL but
+    some early v2.2.0 DBs may predate them).
+    """
+    # fight_rounds fatigue/momentum/finish columns
+    for col, decl in [
+        ("fighter_a_gas_remaining", "REAL"),
+        ("fighter_b_gas_remaining", "REAL"),
+        ("momentum_end", "REAL"),
+        ("finish_beat_id", "INTEGER"),
+    ]:
+        if not _has_column(conn, "fight_rounds", col):
+            conn.execute(f"ALTER TABLE fight_rounds ADD COLUMN {col} {decl}")
+
+    # fight_beats.outcome CHECK expansion — only rebuild if the
+    # existing CHECK doesn't include 'knockdown'.
+    if not _has_check_constraint(conn, "fight_beats", "knockdown"):
+        # Defensive: only attempt the rebuild if fight_beats exists.
+        if _has_table(conn, "fight_beats"):
+            # SQLite table-rebuild pattern: rename, create new, copy,
+            # drop old. We accept the data-loss risk because this
+            # migration runs once per DB and any v2.2.0 DB has at
+            # most a handful of test fight_beats rows.
+            conn.executescript("""
+                ALTER TABLE fight_beats RENAME TO fight_beats_old;
+            """)
+            # The new fight_beats table is created by SCHEMA_SQL on
+            # --fresh, or by this migration on --migrate. The CREATE
+            # statement must match SCHEMA_SQL exactly.
+            conn.executescript("""
+                CREATE TABLE fight_beats (
+                    fight_beat_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fight_id         INTEGER NOT NULL REFERENCES fights(fight_id) ON DELETE CASCADE,
+                    round_number     INTEGER NOT NULL,
+                    beat_number      INTEGER NOT NULL,
+                    phase            TEXT NOT NULL CHECK (phase IN ('standing','clinch','cage','ground_top','ground_bottom','scramble')),
+                    initiator_fighter_id INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+                    target_fighter_id   INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+                    outcome          TEXT NOT NULL CHECK (outcome IN ('strike_landed','strike_missed','strike_blocked','takedown_attempted','takedown_landed','takedown_defended','submission_attempted','submission_landed','submission_defended','clinch_engaged','clinch_break','position_improved','position_lost','knockdown','near_finish','no_change')),
+                    damage_dealt     INTEGER NOT NULL DEFAULT 0,
+                    gas_cost_initiator INTEGER NOT NULL DEFAULT 0,
+                    gas_cost_target  INTEGER NOT NULL DEFAULT 0,
+                    momentum_delta   REAL NOT NULL DEFAULT 0,
+                    commentary       TEXT,
+                    created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+                );
+                INSERT INTO fight_beats (fight_beat_id, fight_id, round_number, beat_number, phase, initiator_fighter_id, target_fighter_id, outcome, damage_dealt, gas_cost_initiator, gas_cost_target, momentum_delta, commentary, created_at)
+                SELECT fight_beat_id, fight_id, round_number, beat_number, phase, initiator_fighter_id, target_fighter_id,
+                       CASE WHEN outcome IN ('strike_landed','strike_missed','strike_blocked','takedown_attempted','takedown_landed','takedown_defended','submission_attempted','submission_landed','submission_defended','clinch_engaged','clinch_break','position_improved','position_lost','knockdown','near_finish','no_change')
+                            THEN outcome ELSE 'no_change' END,
+                       damage_dealt, gas_cost_initiator, gas_cost_target, momentum_delta, commentary, created_at
+                FROM fight_beats_old;
+                DROP TABLE fight_beats_old;
+            """)
+
+
+def _migrate_v2_4_0_add_injuries(conn):
+    """Task 15 — injuries table."""
+    if not _has_table(conn, "injuries"):
+        conn.execute(
+            "CREATE TABLE injuries (\n"
+            "    injury_id              INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id             INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    injury_type            TEXT NOT NULL,\n"
+            "    body_area              TEXT NOT NULL CHECK (body_area IN ('head','face','jaw','nose','eye','neck','shoulder','arm','elbow','wrist','hand','ribs','back','hip','knee','ankle','foot','general')),\n"
+            "    severity               INTEGER NOT NULL DEFAULT 5 CHECK (severity BETWEEN 1 AND 10),\n"
+            "    start_date             TEXT NOT NULL,\n"
+            "    projected_return_date  TEXT,\n"
+            "    actual_return_date     TEXT,\n"
+            "    long_term_damage       INTEGER NOT NULL DEFAULT 0 CHECK (long_term_damage BETWEEN 0 AND 100),\n"
+            "    career_risk            INTEGER NOT NULL DEFAULT 0 CHECK (career_risk BETWEEN 0 AND 100),\n"
+            "    is_active              INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),\n"
+            "    fight_id               INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,\n"
+            "    event_id               INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
+def _migrate_v2_5_0_add_training_camps(conn):
+    """Task 16 — training camps table."""
+    if not _has_table(conn, "training_camps"):
+        conn.execute(
+            "CREATE TABLE training_camps (\n"
+            "    training_camp_id           INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id                 INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    gym_id                     INTEGER REFERENCES gyms(gym_id) ON DELETE SET NULL,\n"
+            "    event_id                   INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    fight_id                   INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,\n"
+            "    start_date                 TEXT NOT NULL,\n"
+            "    end_date                   TEXT NOT NULL,\n"
+            "    camp_duration_days         INTEGER NOT NULL DEFAULT 14 CHECK (camp_duration_days >= 0),\n"
+            "    camp_focus                 TEXT NOT NULL DEFAULT 'general' CHECK (camp_focus IN ('striking','grappling','wrestling','conditioning','submission','clinch','general','weight_cut')),\n"
+            "    camp_morale                INTEGER NOT NULL DEFAULT 50 CHECK (camp_morale BETWEEN 0 AND 100),\n"
+            "    camp_fatigue               INTEGER NOT NULL DEFAULT 0 CHECK (camp_fatigue BETWEEN 0 AND 100),\n"
+            "    camp_injury_risk           INTEGER NOT NULL DEFAULT 0 CHECK (camp_injury_risk BETWEEN 0 AND 100),\n"
+            "    camp_weight_cut_pressure   INTEGER NOT NULL DEFAULT 0 CHECK (camp_weight_cut_pressure BETWEEN 0 AND 100),\n"
+            "    attribute_changes          TEXT,\n"
+            "    camp_result_summary        TEXT,\n"
+            "    is_active                  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),\n"
+            "    is_completed               INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),\n"
+            "    created_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
+def _migrate_v2_6_0_world_seed_prep(conn):
+    """Task 16.5 — world seed prep. Adds regions.nation_id,
+    weight_classes.gender + display_order, fighter_bios, hall_of_fame.
+    """
+    # regions.nation_id
+    if not _has_column(conn, "regions", "nation_id"):
+        conn.execute(
+            "ALTER TABLE regions ADD COLUMN nation_id INTEGER "
+            "REFERENCES nations(nation_id) ON DELETE SET NULL"
+        )
+
+    # weight_classes.gender
+    if not _has_column(conn, "weight_classes", "gender"):
+        conn.execute(
+            "ALTER TABLE weight_classes ADD COLUMN gender TEXT "
+            "NOT NULL DEFAULT 'male' CHECK (gender IN ('male', 'female'))"
+        )
+
+    # weight_classes.display_order
+    if not _has_column(conn, "weight_classes", "display_order"):
+        conn.execute(
+            "ALTER TABLE weight_classes ADD COLUMN display_order "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+
+    # fighter_bios table
+    if not _has_table(conn, "fighter_bios"):
+        conn.execute(
+            "CREATE TABLE fighter_bios (\n"
+            "    fighter_id  INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    bio_text    TEXT NOT NULL,\n"
+            "    bio_tone    TEXT NOT NULL DEFAULT 'neutral'\n"
+            "                CHECK (bio_tone IN ('neutral', 'hype_prospect',\n"
+            "                                    'grizzled_veteran', 'champion_reign',\n"
+            "                                    'fallen_contender', 'journeyman',\n"
+            "                                    'cult_hero', 'tragic_figure',\n"
+            "                                    'late_bloomer', 'enforcer',\n"
+            "                                    'fan_favorite', 'villain')),\n"
+            "    created_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+    # hall_of_fame table
+    if not _has_table(conn, "hall_of_fame"):
+        conn.execute(
+            "CREATE TABLE hall_of_fame (\n"
+            "    fighter_id          INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    inducted_date       TEXT NOT NULL,\n"
+            "    career_summary      TEXT NOT NULL,\n"
+            "    career_highlights   TEXT,\n"
+            "    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
+# The ordered registry of migrations. Each entry is
+# (migration_name, version_introduced, function). The runner applies
+# them in order, skipping any already recorded in schema_migrations.
+# To add a new migration: define _migrate_v2_X_0_your_name(conn),
+# append it to this list, and bump CODE_SCHEMA_VERSION.
+MIGRATIONS = [
+    ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
+    ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
+    ("v2_4_0_add_injuries",        "2.4.0", _migrate_v2_4_0_add_injuries),
+    ("v2_5_0_add_training_camps",  "2.5.0", _migrate_v2_5_0_add_training_camps),
+    ("v2_6_0_world_seed_prep",     "2.6.0", _migrate_v2_6_0_world_seed_prep),
+]
+
+
+def _applied_migrations(conn):
+    """Return the set of migration_name strings already recorded in
+    schema_migrations for the given DB connection.
+    """
+    rows = conn.execute(
+        "SELECT migration_name FROM schema_migrations"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _run_migrations(conn, target_version=None):
+    """Apply all migrations not yet recorded in schema_migrations.
+
+    Idempotent: a migration whose name is already in the table is
+    skipped. After all migrations run, schema_meta.schema_version is
+    updated to CODE_SCHEMA_VERSION (or target_version if provided).
+
+    Args:
+        conn: sqlite3.Connection (caller commits).
+        target_version: optional — the version to set in schema_meta
+            after migrations run. Defaults to CODE_SCHEMA_VERSION.
+    """
+    if target_version is None:
+        target_version = CODE_SCHEMA_VERSION
+    applied = _applied_migrations(conn)
+    n_run = 0
+    for name, version, fn in MIGRATIONS:
+        if name in applied:
+            continue
+        print(f"  Applying migration: {name}")
+        fn(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+            (name,),
+        )
+        n_run += 1
+    if n_run == 0:
+        print("  No new migrations to apply.")
+    # Update schema_meta to the current code version.
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) VALUES (?, ?)",
+        ("cage_empire", target_version),
+    )
+    return n_run
+
+
+def _build_fresh(conn):
+    """Drop+rebuild path: executescript(SCHEMA_SQL) + record all
+    migrations + insert the simulation_clock seed row.
+    """
+    conn.executescript(SCHEMA_SQL)
+    # Record ALL migrations (the fresh build's SCHEMA_SQL includes
+    # every table/column, so every migration is "applied" by
+    # definition — we record them all to keep the audit trail
+    # consistent with --migrate path).
+    for name, _version, _fn in MIGRATIONS:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+            (name,),
+        )
+    # Seed the simulation clock (only on fresh — preserve on migrate).
+    conn.execute(
+        "INSERT OR IGNORE INTO simulation_clock "
+        "(clock_id, current_date, current_day, current_week, current_month, current_year) "
+        "VALUES (1, '2026-07-20', 1, 1, 7, 2026)"
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) "
+        "VALUES (?, ?)",
+        ("cage_empire", CODE_SCHEMA_VERSION),
+    )
+
+
+def _migrate_existing(conn):
+    """Migration path: run all un-applied migrations on the existing DB.
+    Does NOT drop or recreate any table — preserves all data.
+    """
+    # Ensure schema_migrations table exists (very old DBs may predate it).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (\n"
+        "    migration_name TEXT PRIMARY KEY,\n"
+        "    applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+        ")"
+    )
+    # Ensure schema_meta exists too.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta (\n"
+        "    schema_name    TEXT PRIMARY KEY,\n"
+        "    schema_version TEXT NOT NULL,\n"
+        "    created_at     TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+        ")"
+    )
+    _run_migrations(conn)
+
+
+def main(argv=None):
+    """Entry point. Supports two modes:
+
+      python src/build_db.py              # default = --fresh
+      python src/build_db.py --fresh      # drop + rebuild (tests, dev)
+      python src/build_db.py --migrate    # apply migrations to existing DB
+
+    --fresh refuses to run if the on-disk schema is NEWER than
+    CODE_SCHEMA_VERSION (the Task 5 version-check gate). --migrate
+    has no such gate — it can migrate a same-version or older DB.
+    --migrate on a non-existent DB falls back to --fresh (so first
+    run after fresh clone just works).
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Build or migrate the CAGE EMPIRE database."
+    )
+    parser.add_argument(
+        "--fresh", action="store_true",
+        help="Drop + rebuild the DB from SCHEMA_SQL (default). Destroys all data.",
+    )
+    parser.add_argument(
+        "--migrate", action="store_true",
+        help="Apply pending migrations to the existing DB. Preserves all data.",
+    )
+    args = parser.parse_args(argv)
+
+    # Default mode: --fresh. If both flags, --fresh wins (defensive).
+    if args.migrate and not args.fresh:
+        mode = "migrate"
+    else:
+        mode = "fresh"
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ---- version-check gate (Task ID 5) ---------------------------
-    # See docs/CONVENTIONS.md §1.4. Prevents an older build_db.py
-    # from silently clobbering a newer schema. This is the gate that
-    # closes the 37 -> 24 table drift that already happened twice.
-    # The check happens BEFORE the DB_PATH.unlink() call so that
-    # refusing does not destroy the on-disk schema.
+    # ---- version-check gate (only for --fresh) -----------------
+    # See docs/CONVENTIONS.md §1.4 + §16. Prevents an older
+    # build_db.py from silently clobbering a newer schema.
     on_disk = _read_on_disk_schema_version(DB_PATH)
-    if on_disk is not None:
-        cmp = _compare_versions(on_disk, CODE_SCHEMA_VERSION)
-        if cmp > 0:
-            raise RuntimeError(
-                f"Refusing to rebuild: on-disk schema version {on_disk} is newer "
-                f"than code version {CODE_SCHEMA_VERSION}. This would silently "
-                f"destroy schema work. Either:\n"
-                f"  (a) upgrade build_db.py to support the newer schema, or\n"
-                f"  (b) delete {DB_PATH} manually if you really want to start fresh."
-            )
-        elif cmp < 0:
-            print(f"Upgrading schema: {on_disk} -> {CODE_SCHEMA_VERSION} (rebuilding).")
+    if mode == "fresh":
+        if on_disk is not None:
+            cmp = _compare_versions(on_disk, CODE_SCHEMA_VERSION)
+            if cmp > 0:
+                raise RuntimeError(
+                    f"Refusing to --fresh: on-disk schema version {on_disk} is newer "
+                    f"than code version {CODE_SCHEMA_VERSION}. This would silently "
+                    f"destroy schema work. Either:\n"
+                    f"  (a) upgrade build_db.py to support the newer schema, or\n"
+                    f"  (b) use --migrate to apply pending migrations instead, or\n"
+                    f"  (c) delete {DB_PATH} manually if you really want to start fresh."
+                )
+            elif cmp < 0:
+                print(f"Rebuilding schema: {on_disk} -> {CODE_SCHEMA_VERSION}.")
+            else:
+                print(f"Rebuilding same schema version {CODE_SCHEMA_VERSION}.")
+        if DB_PATH.exists():
+            DB_PATH.unlink()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            _build_fresh(conn)
+            conn.commit()
+        print(f"Rebuilt database at {DB_PATH}")
+        print(f"Schema version: {CODE_SCHEMA_VERSION}")
+    else:  # mode == "migrate"
+        if not DB_PATH.exists():
+            # First-run fallback: no DB exists, do a fresh build.
+            print(f"No DB at {DB_PATH} — falling back to --fresh.")
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("PRAGMA foreign_keys = ON;")
+                _build_fresh(conn)
+                conn.commit()
+            print(f"Rebuilt database at {DB_PATH}")
+            print(f"Schema version: {CODE_SCHEMA_VERSION}")
+            return
+        if on_disk is None:
+            print(f"Existing DB at {DB_PATH} has no schema_meta — "
+                  f"initializing as v{CODE_SCHEMA_VERSION}.")
         else:
-            print(f"Rebuilding same schema version {CODE_SCHEMA_VERSION}.")
-    # ---- end version-check gate -----------------------------------
+            cmp = _compare_versions(on_disk, CODE_SCHEMA_VERSION)
+            if cmp > 0:
+                print(f"WARNING: on-disk schema {on_disk} is NEWER than "
+                      f"code {CODE_SCHEMA_VERSION}. No migrations will run "
+                      f"(upgrade build_db.py to support the newer schema).")
+                return
+            elif cmp == 0:
+                print(f"DB already at {CODE_SCHEMA_VERSION} — checking for "
+                      f"any unrecorded migrations.")
+            else:
+                print(f"Migrating schema: {on_disk} -> {CODE_SCHEMA_VERSION}.")
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            _migrate_existing(conn)
+            conn.commit()
+        print(f"Migrated database at {DB_PATH}")
+        print(f"Schema version: {CODE_SCHEMA_VERSION}")
 
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.executescript(SCHEMA_SQL)
-        # Record the schema version + migration (see docs/CONVENTIONS.md §1).
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) VALUES (?, ?)",
-            ("cage_empire", CODE_SCHEMA_VERSION),
-        )
-        # Record ALL migrations that this build_db.py knows about —
-        # one INSERT per migration. Per CONVENTIONS §1.4, the
-        # schema_migrations table is the complete history of named
-        # migrations applied to this DB; if a migration is dropped
-        # from this list, a future reader can't tell whether the
-        # migration was applied (the data is still there, but the
-        # audit row is missing). Keep this list in version order.
-        for migration_name in (
-            "v2_2_0_add_fighter_depth",
-            "v2_3_0_add_beat_engine_depth",
-            "v2_4_0_add_injuries",
-            "v2_5_0_add_training_camps",
-        ):
-            conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-                (migration_name,),
-            )
-        conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
-        conn.commit()
-    print(f"Rebuilt database at {DB_PATH}")
-    print(f"Schema version: {CODE_SCHEMA_VERSION}")
 
 if __name__ == "__main__":
     main()

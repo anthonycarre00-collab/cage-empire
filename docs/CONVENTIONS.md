@@ -78,6 +78,15 @@ This gate has been enforced since Task ID 5 (v1.3.0). The
 `_compare_versions()` helper uses semver comparison (not string
 comparison) so `"1.10.0"` correctly sorts after `"1.9.0"`.
 
+### 1.5 Dual-mode build (added Task 16.6)
+
+Since v2.6.0, `build_db.py` supports two modes: `--fresh` (drop +
+rebuild, default) and `--migrate` (apply pending migrations to the
+existing DB, preserve data). The version-check gate in §1.4 applies
+only to `--fresh`. The `--migrate` path has no such gate — it can
+migrate a same-version or older DB. See §16 for the full migration
+workflow.
+
 ---
 
 ## 2. CHANGELOG.md
@@ -643,3 +652,144 @@ The event bus refactor is deferred until the number of side effects
 justifies it (~25+ systems reacting to fight resolution). Currently
 we have ~15, which is manageable in a monolithic function. The refactor
 is Task 18.5, positioned between Stage 3b and Stage 4.
+
+---
+
+## 16. Database Build & Migration Workflow
+
+### 16.1 The Dual-Mode Pattern
+
+`src/build_db.py` supports two modes:
+
+| Mode | Command | Effect |
+|---|---|---|
+| Fresh | `python src/build_db.py --fresh` (or default, no flag) | Drops the DB file and rebuilds from `SCHEMA_SQL`. Destroys all data. |
+| Migrate | `python src/build_db.py --migrate` | Applies pending migrations to the existing DB. Preserves all data. |
+
+**Default mode is `--fresh`.** This is what tests use (they rebuild a 5-fighter toy DB on every test run). **The seeded world DB uses `--migrate` exclusively** — once the world is seeded, we never drop it.
+
+### 16.2 When to Use Which
+
+- **Tests** → `--fresh` (or no flag). Tests rebuild from scratch on every run. The 19 acceptance tests in `scripts/test_*.py` all use `--fresh`.
+- **Development** → `--fresh`. When iterating on schema, drop + rebuild is faster than writing a migration.
+- **Seeded world DB** → `--migrate`. Once `scripts/seed_world_phase1.py` through `phase5.py` have been run, the DB is the world. Future schema changes (Tasks 17-30) ship a migration function and the player/updater runs `python src/build_db.py --migrate` to apply it. **Never run `--fresh` on a seeded DB** — it destroys 4000 fighters and 30000+ fight_history rows.
+
+### 16.3 The Migration Registry
+
+Every schema change since v2.2.0 has a migration function in `build_db.py`:
+
+```python
+def _migrate_v2_X_0_your_name(conn):
+    """Task ID — short description. Idempotent."""
+    if not _has_column(conn, "table", "col"):
+        conn.execute("ALTER TABLE table ADD COLUMN col TYPE ...")
+    if not _has_table(conn, "new_table"):
+        conn.execute("CREATE TABLE new_table (...)")
+```
+
+These functions are registered in the `MIGRATIONS` list at the bottom of `build_db.py`:
+
+```python
+MIGRATIONS = [
+    ("v2_2_0_add_fighter_depth",    "2.2.0", _migrate_v2_2_0_add_fighter_depth),
+    ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
+    # ... append new migrations here ...
+]
+```
+
+The migration runner (`_run_migrations`) iterates `MIGRATIONS` in order. For each entry, it checks if the migration_name is already in `schema_migrations`. If yes, skip. If no, run the function + record the name.
+
+### 16.4 Idempotency Rule (CRITICAL)
+
+**Every migration function MUST be idempotent.** It MUST check the current schema state (`_has_column`, `_has_table`, `_has_check_constraint`) before applying its change. This is REQUIRED because:
+
+1. **Crash safety:** if a migration crashes mid-way (e.g., power loss, bug), the next `--migrate` run re-executes it. Partial work must be safe to re-apply.
+2. **Fresh-build consistency:** the `--fresh` path also records every migration name in `schema_migrations` (because `SCHEMA_SQL` already includes every table/column). The migration functions are NOT called on `--fresh`, but they could be — the idempotency guards make this safe.
+3. **Order independence:** if a future migration depends on an earlier one having run, the `MIGRATIONS` list order guarantees it. The idempotency guards handle the case where the earlier migration was a no-op (e.g., the column was already added by `SCHEMA_SQL`).
+
+### 16.5 Adding a New Migration (Workflow)
+
+When a task adds or changes schema:
+
+1. **Update `SCHEMA_SQL`** in `build_db.py`. The fresh-build path uses this. New tables/columns go here as `CREATE TABLE IF NOT EXISTS` / the column appears in the table definition.
+2. **Write a migration function** `_migrate_v2_X_0_your_name(conn)`. Use `ALTER TABLE` for new columns, `CREATE TABLE IF NOT EXISTS` for new tables. Guard every change with `_has_column` / `_has_table`.
+3. **Append to `MIGRATIONS`** with the new version string + function reference.
+4. **Bump `CODE_SCHEMA_VERSION`** per §1.1 rules (PATCH/MINOR/MAJOR).
+5. **Update the migration name in the function's docstring** (`Migration name: v2_X_0_your_name`).
+6. **Test both paths:** `python src/build_db.py` (fresh) and `python src/build_db.py --migrate` (migrate an older DB).
+7. **Run the acceptance tests** to verify nothing broke.
+
+### 16.6 SQLite ALTER TABLE Limitations
+
+SQLite's `ALTER TABLE` supports only:
+- `ADD COLUMN` (with restrictions — can't add NOT NULL without DEFAULT, can't add CHECK that references existing rows)
+- `RENAME TABLE`
+- `RENAME COLUMN` (SQLite 3.25+)
+- `DROP COLUMN` (SQLite 3.35+)
+
+SQLite does NOT support:
+- Adding a CHECK constraint to an existing column (requires table rebuild)
+- Modifying a column's type (requires table rebuild)
+- Adding a FOREIGN KEY to an existing column (requires table rebuild)
+- Removing a column's NOT NULL (requires table rebuild)
+
+**Table rebuild pattern** (rare — only when a CHECK or type changes):
+
+```python
+conn.executescript("""
+    ALTER TABLE old_table RENAME TO old_table_backup;
+    -- CREATE the new table with the updated schema
+    CREATE TABLE old_table (...);
+    -- COPY data from backup, transforming as needed
+    INSERT INTO old_table (cols) SELECT cols FROM old_table_backup;
+    DROP TABLE old_table_backup;
+""")
+```
+
+The migration function `_migrate_v2_3_0_add_beat_engine_depth` in `build_db.py` shows this pattern in use (rebuilding `fight_beats` to expand the `outcome` CHECK constraint).
+
+### 16.7 Version-Check Gate (Task 5, preserved)
+
+The `--fresh` path refuses to run if the on-disk schema is NEWER than `CODE_SCHEMA_VERSION` (the Task 5 gate). This prevents an older `build_db.py` from silently clobbering a newer schema.
+
+The `--migrate` path has no such gate — it can migrate a same-version or older DB. If the on-disk version is NEWER than code, `--migrate` prints a warning and does nothing (the upgrade direction is "code leads, DB follows").
+
+### 16.8 The Seed Layer
+
+`src/seed_data.py` is the **minimal playable seed** — 5 fighters, 2 gyms, 2 promotions, 1 weight class, 1 event. Used by tests and dev. Run AFTER `--fresh`:
+
+```
+python src/build_db.py        # fresh build (default)
+python src/seed_data.py       # minimal seed
+```
+
+`scripts/seed_world_phase1.py` through `phase5.py` are the **full world seed** — 20 nations, 60 regions, 150 cities, 300 gyms, 8-12 promotions, 4000 fighters, career histories, bios, hall of fame. Run once on a fresh DB:
+
+```
+python src/build_db.py                            # fresh build
+python scripts/seed_world_phase1.py               # nations/regions/cities/venues/WCs/names
+python scripts/seed_world_phase2.py               # gyms/promotions/staff
+python scripts/seed_world_phase3.py               # fighters (4000)
+python scripts/seed_world_phase4.py               # career histories/fights/titles/rankings/contracts/injuries
+python scripts/seed_world_phase5.py               # bios/gym histories/legends/memory/news
+```
+
+After all 5 phases run, the DB at `data/cage_empire.db` IS the world. The game loads it directly. The player never runs seed scripts.
+
+Future code changes (Tasks 17-30) ship migrations:
+
+```
+git pull
+python src/build_db.py --migrate                  # apply new migrations, preserve world data
+```
+
+### 16.9 Backups
+
+Before running `--migrate` on the production world DB, **always back up**:
+
+```
+cp data/cage_empire.db data/cage_empire.db.backup-$(date +%Y%m%d)
+python src/build_db.py --migrate
+```
+
+If the migration fails or produces unexpected results, restore from backup. The migration runner does NOT auto-backup — this is the operator's responsibility.

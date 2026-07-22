@@ -172,7 +172,7 @@ def case_2_same_version_rebuild():
 # --------------------------------------------------------------------
 
 def case_3_upgrade_rebuild():
-    # Start from a clean 1.3.0 build, then manually downgrade the
+    # Start from a clean build, then manually downgrade the
     # on-disk version to 1.2.1 to simulate an older DB.
     delete_db()
     run_build_db()
@@ -180,11 +180,16 @@ def case_3_upgrade_rebuild():
     # Sanity check: version is now 1.2.1.
     assert read_schema_version() == "1.2.1", "setup failed: version not 1.2.1"
     rc, out, err = run_build_db()
-    expected_text = f"Upgrading schema: 1.2.1 -> {EXPECTED_CODE_VERSION}"
+    # Task 16.6: the message changed from "Upgrading schema" to
+    # "Rebuilding schema" to match the dual-mode --fresh / --migrate
+    # workflow. --fresh is the default and still rebuilds (drops +
+    # recreates) when the on-disk version is older; --migrate is the
+    # new path that preserves data.
+    expected_text = f"Rebuilding schema: 1.2.1 -> {EXPECTED_CODE_VERSION}"
     actual_version = read_schema_version()
     passed = (rc == 0) and (expected_text in out) and (actual_version == EXPECTED_CODE_VERSION)
     return passed, {
-        "case": "3. Upgrade rebuild (1.2.1 -> 1.3.0)",
+        "case": "3. Upgrade rebuild (1.2.1 -> current, --fresh default)",
         "expected": f"rc=0, stdout contains {expected_text!r}, schema_version={EXPECTED_CODE_VERSION}",
         "actual": f"rc={rc}, schema_version={actual_version!r}",
         "stdout": out.strip(),
