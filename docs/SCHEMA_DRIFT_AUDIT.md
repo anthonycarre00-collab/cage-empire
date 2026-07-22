@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-23 — Task 18 (scouting system).
-> **Current schema version:** 2.9.0 (45 tables, +1 new table this task).
+> **Last revised:** 2026-07-23 — Task 20 (finance system).
+> **Current schema version:** 3.0.0 (46 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls

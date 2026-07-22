@@ -884,12 +884,34 @@ when not scouted (hidden until Task 18).
 
 **Status:** NOT STARTED. **Briefs need expansion.**
 
-### Task ID 20 — Finance system + screen
+### Task ID 20 — Finance system + screen — **DONE** (commit `pending`)
 
-**Brief (needs expansion).** Add `finances` table (per-event P&L,
-per-week burn rate). Add Finance tab to UI: current cash, burn rate,
-last event P&L, forecast. Revenue from ticket sales + broadcast;
-expenses from purses + venue + staff salaries + medical.
+**Status:** Schema v2.9.0 → v3.0.0 (MAJOR — first major version bump
+marks the transition to Stage 4: Media & Economy). 1 new table
+(`finance_transactions`, 9 columns). Migration `v3_0_0_add_finance_
+transactions`. 22 sub-checks across 8 cases in `scripts/test_finance.py`.
+
+**Implementation:**
+- `src/finance.py` — the finance system, entirely event-bus-driven
+  (first Stage 4 system to use the event bus per CONVENTIONS §15.4):
+  * Subscribes to `FIGHT_RESOLVED` via `register_subscribers()`
+  * Processes finances when an event completes (all fights resolved)
+  * Revenue: ticket_sales (venue_cap × fill_rate × ticket_price),
+    broadcast_revenue (based on broadcast_tier), merchandise (fighter
+    marketability)
+  * Expenses: fighter_purse (from contracts), venue_rental (per seat),
+    staff_salary (per staff member), medical_cost (per fight),
+    weight_cut_penalty (purse penalties from Task 17)
+  * Voice layer: finance news uses descriptors ("highly profitable",
+    "hemorrhaging cash") not raw dollar amounts (§14)
+  * `promotions.current_cash` updated on each transaction
+- `finance_transactions` table — 9 columns. transaction_type CHECK
+  constrains to 11 enumerated values. Positive amounts = revenue,
+  negative = expenses. Per-event P&L = SUM(amount) WHERE event_id=?.
+
+**Design Law (§13):** Investment (player manages promotion finances),
+Conflict (cash flow pressure — must make profitable events or go broke),
+Voice layer (finance descriptors not raw numbers).
 
 **Dependencies:** Task 14.6 (needs `marketability` column for fighter
 purse calculation).

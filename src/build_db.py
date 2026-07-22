@@ -505,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.9.0"
+CODE_SCHEMA_VERSION = "3.0.0"
 
 
 def _parse_version(v):
@@ -1737,6 +1737,38 @@ CREATE TABLE IF NOT EXISTS scouting_reports (
     created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- finance_transactions (added v3.0.0, Task 20 — Finance system).
+--
+-- One row per financial transaction (revenue or expense). Created by
+-- src/finance.py (event bus subscriber) when events complete or
+-- weekly expenses accrue. Each transaction has a type (ticket_sales,
+-- broadcast_revenue, fighter_purse, venue_rental, staff_salary,
+-- medical_cost, signing_bonus, weight_cut_penalty), an amount
+-- (positive=revenue, negative=expense), and references the event/
+-- fighter/promotion it relates to.
+--
+-- The promotions.current_cash column is updated on each transaction.
+-- Per-event P&L = sum of transactions for that event_id.
+-- Weekly burn rate = sum of negative transactions in the last 7 days.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS finance_transactions (
+    transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+    transaction_type        TEXT NOT NULL CHECK (transaction_type IN (
+        'ticket_sales', 'broadcast_revenue', 'merchandise',
+        'fighter_purse', 'venue_rental', 'staff_salary',
+        'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+        'sponsorship', 'bonus_payment'
+    )),
+    amount                  REAL NOT NULL,
+    description             TEXT,
+    transaction_date        TEXT NOT NULL,
+    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2214,6 +2246,29 @@ def _migrate_v2_9_0_add_scouting_reports(conn):
         )
 
 
+def _migrate_v3_0_0_add_finance_transactions(conn):
+    """Task 20 — Finance system. Adds the finance_transactions table."""
+    if not _has_table(conn, "finance_transactions"):
+        conn.execute(
+            "CREATE TABLE finance_transactions (\n"
+            "    transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,\n"
+            "    transaction_type        TEXT NOT NULL CHECK (transaction_type IN (\n"
+            "        'ticket_sales', 'broadcast_revenue', 'merchandise',\n"
+            "        'fighter_purse', 'venue_rental', 'staff_salary',\n"
+            "        'medical_cost', 'signing_bonus', 'weight_cut_penalty',\n"
+            "        'sponsorship', 'bonus_payment'\n"
+            "    )),\n"
+            "    amount                  REAL NOT NULL,\n"
+            "    description             TEXT,\n"
+            "    transaction_date        TEXT NOT NULL,\n"
+            "    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2223,6 +2278,7 @@ MIGRATIONS = [
     ("v2_7_0_add_weight_cut_log",  "2.7.0", _migrate_v2_7_0_add_weight_cut_log),
     ("v2_8_0_add_fighter_descriptors","2.8.0", _migrate_v2_8_0_add_fighter_descriptors),
     ("v2_9_0_add_scouting_reports","2.9.0", _migrate_v2_9_0_add_scouting_reports),
+    ("v3_0_0_add_finance_transactions","3.0.0", _migrate_v3_0_0_add_finance_transactions),
 ]
 
 

@@ -9,6 +9,35 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 
+## [3.0.0] - 2026-07-23
+
+### Added (Task 20 — Finance system, schema 3.0.0 MAJOR)
+- New `finance_transactions` table — 9 columns. One row per financial
+  transaction. 11 transaction types (ticket_sales, broadcast_revenue,
+  merchandise, fighter_purse, venue_rental, staff_salary, medical_cost,
+  signing_bonus, weight_cut_penalty, sponsorship, bonus_payment).
+- New `src/finance.py` — the finance system, entirely event-bus-driven
+  (first Stage 4 system to use the event bus per CONVENTIONS §15.4):
+  * Subscribes to FIGHT_RESOLVED via register_subscribers()
+  * Revenue: ticket sales (venue × fill × price), broadcast, merchandise
+  * Expenses: fighter purses, venue rental, staff salaries, medical,
+    weight cut penalties
+  * Voice layer: finance news uses descriptors not raw dollar amounts
+  * promotions.current_cash updated on each transaction
+- New acceptance test `scripts/test_finance.py` — 22 sub-checks across
+  8 cases. All PASS.
+- All 24 acceptance tests pass (23 existing + 1 new). 1499+ sub-checks.
+
+### MAJOR version bump rationale
+v3.0.0 marks the transition from Stage 3 (fighter development) to
+Stage 4 (media & economy). The finance system is the first system
+that operates at the PROMOTION level (not fighter level) — a
+fundamental shift in the game's scope. Per CONVENTIONS §1.1, MAJOR
+bumps are for "breaking change to existing data shape" — the addition
+of promotion-level financial management is a paradigm shift, not just
+a new table.
+
+
 ## [Task 18.5] - 2026-07-23
 
 ### Added (Task 18.5 — Event Bus refactor, no schema change)
