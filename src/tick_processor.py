@@ -1,4 +1,6 @@
 import sqlite3
+import json
+import random
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -12,8 +14,24 @@ DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 # the module itself does NOT require a display (only tk.Tk() does), so
 # this is safe in headless contexts. There is no circular-import risk
 # because app.py does NOT import tick_processor.
+#
+# v2.5.0 (Task 16): also import the camp-focus attribute map and the
+# fighter attribute whitelist from app.py — they're maintained there
+# (next to the camp writer _create_training_camp and the camp reader
+# _get_camp_fatigue_for_event) per the "table ships with code" rule
+# (CONVENTIONS §5.3). tick_processor._check_training_camps reads
+# _CAMP_FOCUS_ATTRS to know which attributes each camp_focus upgrades
+# on completion, and reads _FIGHTER_ATTR_COLUMNS as the SQL-injection
+# safety whitelist before string-formatting attribute names into the
+# UPDATE statement.
 sys.path.insert(0, str(BASE_DIR))
-from app import _vacate_title_on_retirement, generate_fighter  # noqa: E402
+from app import (  # noqa: E402
+    _vacate_title_on_retirement,
+    generate_fighter,
+    _CAMP_FOCUS_ATTRS,
+    _FIGHTER_ATTR_COLUMNS,
+    fighter_name,
+)
 
 
 # ----------------------------------------------------------------
@@ -147,6 +165,449 @@ def _check_injury_recovery(conn, current_date):
         recovered.append((injury_id, fighter_id))
 
     return recovered
+
+
+# ----------------------------------------------------------------
+# Training camps (Task ID 16).
+#
+# `_check_training_camps` runs on every tick (called from run_tick
+# AFTER _check_injury_recovery so the order is: clock advance →
+# _check_retirements → _check_contract_expiry →
+# _check_injury_recovery → _check_training_camps → commit).
+#
+# For each active, uncompleted camp whose [start_date, end_date]
+# window contains current_date:
+#   - If current_date == end_date: COMPLETE the camp. Pick 2-4
+#     attributes from the camp_focus pool, apply +1 to +3 base gain
+#     scaled by gym spec / coachability / fatigue factor (capped at
+#     fighter_career.potential), write attribute_changes JSON +
+#     camp_result_summary + a completion news item, set is_active=0
+#     is_completed=1.
+#   - Else (start_date < current_date < end_date): PROGRESS the camp.
+#     Fatigue +2-5 (reduced by cardio + fatigue_tolerance). Morale
+#     ±0-2 (dampened by coachability, biased by gym culture_tone).
+#     Injury risk +2-5 (increased by injury_proneness, reduced by
+#     gym medical_support). If injury_risk > 80: create a training
+#     injury via the Task 15 injuries table (training-injury pool),
+#     reduce career_health, mark the camp inactive + completed.
+#
+# The function does NOT commit — the conn.commit() in run_tick
+# covers both the clock UPDATE and any camp side effects (training_
+# camps UPDATE, fighter_attributes UPDATE, fighter_career UPDATE,
+# injuries INSERT, news_items INSERT). Prints a one-line log per
+# tick if any camps progressed or completed.
+#
+# Reader-of-camp-data rule (CONVENTIONS §5.3): the camp table ships
+# with TWO readers — `_get_camp_fatigue_for_event` in app.py (read
+# by resolve_next_fight to apply the brief's "Fatigue > 50 = reduced
+# starting gas" rule) AND this function (reads the camp to progress
+# and complete it). Both readers are required for the table to be
+# considered "shipped with code".
+# ----------------------------------------------------------------
+
+# The training-injury pool — distinct from the fight-injury pool in
+# app.py because training injuries have a different character (overuse,
+# sparring accidents, weight-cut complications) than in-fight injuries
+# (concussions from KO, joint damage from submissions, doctor-
+# stoppage facial damage). Picked at random when injury_risk > 80.
+# Each entry is (injury_type, body_area, sev_min, sev_max). Severity
+# is rolled in [sev_min, sev_max] then adjusted by durability (see
+# the same -2..+2 adjustment that _maybe_create_injury uses).
+_TRAINING_INJURY_POOL = (
+    ("torn ACL",            "knee",     7, 10),  # catastrophic — 3-5 month layoff
+    ("hamstring strain",    "hip",      3,  6),  # 4-9 weeks (hip flexor/hamstring)
+    ("shoulder labrum tear","shoulder", 6,  9),  # 2-4 months
+    ("rib sprain",          "ribs",     2,  5),  # 2-6 weeks
+    ("training concussion", "head",     4,  7),  # 6-10 weeks (extra cautious)
+    ("wrist sprain",        "wrist",    2,  4),  # 2-5 weeks
+    ("ankle sprain",        "ankle",    2,  4),  # 2-5 weeks
+)
+
+
+def _check_training_camps(conn, current_date):
+    """Progress and complete active training camps on a tick.
+
+    Args:
+        conn: sqlite3 connection (caller commits — same pattern as
+            _check_injury_recovery, _check_retirements,
+            _check_contract_expiry).
+        current_date: ISO date string 'YYYY-MM-DD' (the current sim
+            date after this tick's clock advance).
+
+    Returns:
+        List of (training_camp_id, fighter_id, action) tuples for
+        camps that progressed or completed on this tick. action is
+        one of 'progressed', 'completed', 'injured' (a training
+        injury was created and the camp was force-completed).
+    """
+    # Fetch active, uncompleted camps whose window contains today.
+    # Order by training_camp_id for deterministic processing.
+    rows = conn.execute(
+        "SELECT training_camp_id, fighter_id, gym_id, event_id, "
+        "fight_id, start_date, end_date, camp_focus, camp_morale, "
+        "camp_fatigue, camp_injury_risk "
+        "FROM training_camps "
+        "WHERE is_active = 1 AND is_completed = 0 "
+        "AND start_date <= ? AND end_date >= ? "
+        "ORDER BY training_camp_id",
+        (current_date, current_date),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Get or create the "System Feed" news source — same pattern as
+    # every other tick-side helper that writes news items.
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    results = []
+    for (camp_id, fighter_id, gym_id, event_id, fight_id,
+         start_date, end_date, camp_focus, morale, fatigue,
+         injury_risk) in rows:
+        # Load the fighter's stats once per camp — pulled fresh each
+        # tick (the fighter's cardio / fatigue_tolerance / etc. may
+        # have changed since the camp started; pull the current
+        # values for accurate progression).
+        stats_row = conn.execute(
+            "SELECT fa.cardio, fa.recovery_rate, fa.durability, "
+            "fp.fatigue_tolerance, fp.coachability, fp.discipline, "
+            "fc.potential, fc.career_health, "
+            "f.injury_proneness "
+            "FROM fighters f "
+            "JOIN fighter_attributes fa ON fa.fighter_id = f.fighter_id "
+            "JOIN fighter_personality fp ON fp.fighter_id = f.fighter_id "
+            "JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+            "WHERE f.fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()
+        if stats_row is None:
+            # Defensive — the fighter was deleted between camp
+            # creation and progression. Mark the camp inactive so we
+            # don't keep retrying.
+            conn.execute(
+                "UPDATE training_camps SET is_active = 0, "
+                "camp_result_summary = 'fighter not found', "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE training_camp_id = ?",
+                (camp_id,),
+            )
+            results.append((camp_id, fighter_id, "skipped"))
+            continue
+        (cardio, recovery_rate, durability, fatigue_tol,
+         coachability, discipline, potential, career_health,
+         injury_proneness) = stats_row
+
+        # Load the gym's spec columns — defensive against NULL gym_id
+        # (shouldn't happen since _create_training_camp skips fighters
+        # with NULL gym_id, but the FK is ON DELETE SET NULL so a
+        # gym could be deleted out from under an active camp).
+        gym_row = (conn.execute(
+            "SELECT facility_quality, medical_support, "
+            "sparring_depth, development_focus, culture_tone "
+            "FROM gyms WHERE gym_id = ?",
+            (gym_id,),
+        ).fetchone() if gym_id is not None else None)
+        if gym_row is None:
+            # Gym was deleted — fall back to neutral spec values.
+            facility_quality, medical_support, sparring_depth = 50, 50, 50
+            development_focus, culture_tone = 50, "balanced"
+        else:
+            (facility_quality, medical_support, sparring_depth,
+             development_focus, culture_tone) = gym_row
+
+        # ---- Branch: completion vs progression ----
+        if current_date == end_date:
+            action = _complete_training_camp(
+                conn, camp_id, fighter_id, camp_focus, fatigue, morale,
+                cardio, fatigue_tol, coachability, discipline,
+                potential, facility_quality, development_focus,
+                culture_tone, src_id, current_date,
+            )
+            results.append((camp_id, fighter_id, action))
+        else:
+            action = _progress_training_camp(
+                conn, camp_id, fighter_id, fatigue, morale, injury_risk,
+                cardio, fatigue_tol, coachability, injury_proneness,
+                medical_support, culture_tone, durability,
+                recovery_rate, event_id, fight_id, src_id, current_date,
+            )
+            results.append((camp_id, fighter_id, action))
+
+    return results
+
+
+def _progress_training_camp(conn, camp_id, fighter_id, fatigue, morale,
+                            injury_risk, cardio, fatigue_tol, coachability,
+                            injury_proneness, medical_support,
+                            culture_tone, durability, recovery_rate,
+                            event_id, fight_id, src_id, current_date):
+    """Progress an in-window camp by one tick: accrue fatigue, fluctuate
+    morale, accumulate injury risk, maybe spawn a training injury.
+
+    Returns the action string: 'progressed' or 'injured' (if a training
+    injury was created and the camp force-completed).
+    """
+    # Fatigue: +2-5 per tick. Reduced by cardio (50 = no reduction,
+    # 100 = -2) and fatigue_tolerance (50 = no reduction, 100 = -2).
+    # A cardio monster with elite fatigue tolerance might gain only
+    # +0-1 fatigue per tick; a cardio-deficient fighter with low
+    # tolerance can hit 100 fatigue inside a 14-day camp.
+    fatigue_gain = random.randint(2, 5)
+    fatigue_gain -= max(0, int((cardio - 50) / 25))      # 0..2 reduction
+    fatigue_gain -= max(0, int((fatigue_tol - 50) / 25)) # 0..2 reduction
+    new_fatigue = min(100, fatigue + max(0, fatigue_gain))
+
+    # Morale: ±0-2 per tick. Dampened by coachability (high coachability
+    # = stable morale; low = volatile). Biased by gym culture_tone:
+    #   disciplined → +1 bias (structured camp, clear expectations)
+    #   loose       → -1 bias (chaotic camp, lots of distractions)
+    #   predator    → +1 bias (high-intensity, us-vs-them mentality)
+    #   balanced    → 0 bias (neutral)
+    morale_delta = random.randint(-2, 2)
+    # Dampen the delta by coachability (50 = no dampening, 100 = halved).
+    morale_delta = int(morale_delta * (1 - max(0, coachability - 50) / 100))
+    culture_bias = {
+        "disciplined": 1,
+        "loose": -1,
+        "predator": 1,
+        "balanced": 0,
+    }.get(culture_tone, 0)
+    new_morale = max(0, min(100, morale + morale_delta + culture_bias))
+
+    # Injury risk: +2-5 per tick. Increased by injury_proneness (50 =
+    # no change, 100 = +2), reduced by gym medical_support (50 = no
+    # reduction, 100 = -2). A fighter with high injury_proneness at a
+    # gym with weak medical support can hit 80 risk inside a 14-day
+    # camp; the same fighter at an elite gym stays under 50.
+    risk_gain = random.randint(2, 5)
+    risk_gain += max(0, int((injury_proneness - 50) / 25))  # 0..2 increase
+    risk_gain -= max(0, int((medical_support - 50) / 25))   # 0..2 reduction
+    new_risk = min(100, injury_risk + max(0, risk_gain))
+
+    # If risk crosses 80, spawn a training injury and force-complete
+    # the camp (the fighter can't continue training). This is the
+    # "training-camp injury" story — the prospect tears his ACL two
+    # weeks out from his debut, the title challenger suffers a
+    # concussion in sparring, etc.
+    if new_risk > 80:
+        # Pick a training injury from the pool.
+        injury_type, body_area, sev_min, sev_max = random.choice(
+            _TRAINING_INJURY_POOL
+        )
+        # Severity in [sev_min, sev_max], adjusted by durability
+        # (-2 at dur=100, +2 at dur=0). Same adjustment as
+        # _maybe_create_injury in app.py.
+        severity = random.randint(sev_min, sev_max)
+        severity += int((50 - durability) / 25)  # -2..+2
+        severity = max(1, min(10, severity))
+        # Recovery timeline: severity * 14 days, minus a small
+        # recovery_rate bonus (same formula as fight injuries).
+        from datetime import datetime as _dt, timedelta as _td
+        start_dt = _dt.strptime(current_date, "%Y-%m-%d")
+        days_out = max(7, severity * 14 - int(recovery_rate * 0.1))
+        projected_return = (start_dt + _td(days=days_out)).strftime("%Y-%m-%d")
+        # 30% chance of long-term damage on severity 8+ (matches
+        # _maybe_create_injury's rule).
+        long_term = 0
+        if severity >= 8 and random.random() < 0.30:
+            long_term = random.randint(2, 5)
+        # Insert the injuries row. injury_source = 'training' (the
+        # column doesn't exist in the schema yet — Task 15 used a
+        # body_area CHECK constraint that allows any string, so the
+        # news body will clarify "suffered in training camp").
+        conn.execute(
+            "INSERT INTO injuries (fighter_id, injury_type, body_area, "
+            "severity, start_date, projected_return_date, "
+            "long_term_damage, is_active, fight_id, event_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (fighter_id, injury_type, body_area, severity,
+             current_date, projected_return, long_term, fight_id, event_id),
+        )
+        # Reduce career_health by severity * 2 (temporary — restored
+        # on recovery) + long_term (permanent). Same rule as fight
+        # injuries.
+        health_penalty = severity * 2 + long_term
+        conn.execute(
+            "UPDATE fighter_career SET career_health = MAX(0, "
+            "career_health - ?), updated_at = CURRENT_TIMESTAMP "
+            "WHERE fighter_id = ?",
+            (health_penalty, fighter_id),
+        )
+        # Write the training-injury news item.
+        name_row = conn.execute(
+            "SELECT first_name || ' ' || last_name FROM fighters "
+            "WHERE fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()
+        fighter_name_str = (name_row[0] if name_row
+                            else f"Fighter {fighter_id}")
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, fight_id, event_id, "
+            "published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (src_id,
+             f"{fighter_name_str} suffers {injury_type} in training",
+             f"{fighter_name_str} suffered a {injury_type} (severity "
+             f"{severity}/10) during training camp and is projected "
+             f"to return on {projected_return}. The camp has been "
+             f"suspended.",
+             "negative", "injury", fighter_id, fight_id, event_id,
+             current_date),
+        )
+        # Force-complete the camp as 'injured' (no attribute gains).
+        conn.execute(
+            "UPDATE training_camps SET camp_fatigue = ?, camp_morale = ?, "
+            "camp_injury_risk = ?, is_active = 0, is_completed = 1, "
+            "camp_result_summary = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE training_camp_id = ?",
+            (new_fatigue, new_morale, new_risk,
+             f"suspended due to training injury: {injury_type} "
+             f"(severity {severity}/10)",
+             camp_id),
+        )
+        return "injured"
+
+    # Normal progression — update the camp's tracking columns and
+    # leave is_active=1, is_completed=0.
+    conn.execute(
+        "UPDATE training_camps SET camp_fatigue = ?, camp_morale = ?, "
+        "camp_injury_risk = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE training_camp_id = ?",
+        (new_fatigue, new_morale, new_risk, camp_id),
+    )
+    return "progressed"
+
+
+def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
+                            fatigue, morale, cardio, fatigue_tol,
+                            coachability, discipline, potential,
+                            facility_quality, development_focus,
+                            culture_tone, src_id, current_date):
+    """Complete a camp: pick attributes to upgrade, apply scaled gains,
+    write attribute_changes JSON + summary + news item, mark complete.
+
+    Returns the action string: 'completed'.
+    """
+    # The attribute pool for this camp_focus. Imported from app.py
+    # (the source of truth for "which attributes does each camp_focus
+    # upgrade" — see _CAMP_FOCUS_ATTRS).
+    attr_pool = _CAMP_FOCUS_ATTRS.get(camp_focus, _CAMP_FOCUS_ATTRS["general"])
+
+    # Number of attributes to upgrade: 2 + (coach_ability +
+    # development_focus) / 100, clamped to [2, 4]. The brief's
+    # "coach_ability" is the gym's coach-quality proxy — we use the
+    # fighter's own coachability (their ability to absorb coaching)
+    # combined with the gym's development_focus (how good the gym is
+    # at developing talent).
+    n_attrs = 2 + int((coachability + development_focus) / 100)
+    n_attrs = max(2, min(4, n_attrs))
+
+    # Pick n_attrs distinct attributes from the pool (random.sample
+    # without replacement — no attribute gets upgraded twice in one
+    # camp).
+    n_attrs = min(n_attrs, len(attr_pool))
+    chosen_attrs = random.sample(attr_pool, n_attrs)
+
+    # Multipliers:
+    #   gym_spec_mult: 0.5-1.5 from (facility_quality + development_
+    #     focus) / 200 + 0.5. A bare-bones gym (50/50) = 1.0; an
+    #     elite gym (100/100) = 1.5; a shoebox gym (0/0) = 0.5.
+    #   coach_mult: 0.5-1.5 from coachability / 100. A coachable
+    #     fighter (100) gets +50% gains; an uncoachable one (0) gets
+    #     -50%.
+    #   fatigue_factor: 0.5-1.0 from 1 - (camp_fatigue - fatigue_
+    #     tolerance) / 100. A fighter with low fatigue (0) and
+    #     decent tolerance (50+) gets full 1.0 gains. A fighter who
+    #     is gassed (100 fatigue) with low tolerance (0) gets 0.5
+    #     gains — they're too tired to absorb the work.
+    gym_spec_mult = 0.5 + (facility_quality + development_focus) / 200.0
+    coach_mult = 0.5 + coachability / 100.0
+    fatigue_factor = 1.0 - max(0, fatigue - fatigue_tol) / 100.0 * 0.5
+    fatigue_factor = max(0.5, min(1.0, fatigue_factor))
+
+    attribute_changes = {}
+    for attr_name in chosen_attrs:
+        # Defensive — never string-format an unknown attribute name
+        # into the UPDATE statement (CONVENTIONS §6 — SQL safety).
+        if attr_name not in _FIGHTER_ATTR_COLUMNS:
+            continue
+        # Base gain +1 to +3.
+        base = random.randint(1, 3)
+        # Final gain = round(base * gym_mult * coach_mult * fatigue_
+        # factor), min 1 (a camp always confers at least +1 to each
+        # chosen attribute — even a bad camp is better than no camp).
+        gain = max(1, int(round(base * gym_spec_mult * coach_mult
+                                * fatigue_factor)))
+        # Cap at fighter_career.potential — the soft cap on attribute
+        # growth. A prospect with potential=75 can't exceed 75 in
+        # any attribute via camps (or via any other growth path).
+        cur_val = conn.execute(
+            f"SELECT {attr_name} FROM fighter_attributes WHERE fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()[0]
+        new_val = min(potential, cur_val + gain)
+        actual_gain = new_val - cur_val
+        if actual_gain > 0:
+            conn.execute(
+                f"UPDATE fighter_attributes SET {attr_name} = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE fighter_id = ?",
+                (new_val, fighter_id),
+            )
+            attribute_changes[attr_name] = actual_gain
+
+    # Build the camp_result_summary — a one-line human-readable
+    # summary the future UI will display. The Interpretation Layer
+    # (Task 19) will translate this into a player-facing string; for
+    # now we write the raw data (CONVENTIONS §14 allows raw data in
+    # the DB, only the UI must use the interpretation layer).
+    if attribute_changes:
+        gains_str = ", ".join(f"+{v} {k.replace('_', ' ')}"
+                              for k, v in attribute_changes.items())
+        summary = f"completed ({camp_focus} focus): {gains_str}"
+    else:
+        summary = (f"completed ({camp_focus} focus) — no gains "
+                   f"(attributes already at potential)")
+
+    conn.execute(
+        "UPDATE training_camps SET is_active = 0, is_completed = 1, "
+        "attribute_changes = ?, camp_result_summary = ?, "
+        "camp_fatigue = ?, camp_morale = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE training_camp_id = ?",
+        (json.dumps(attribute_changes), summary, fatigue, morale, camp_id),
+    )
+
+    # Completion news item — topic='training' (the news_items.topic
+    # column is TEXT with no CHECK, so any string is accepted).
+    name_row = conn.execute(
+        "SELECT first_name || ' ' || last_name FROM fighters "
+        "WHERE fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    fighter_name_str = (name_row[0] if name_row
+                        else f"Fighter {fighter_id}")
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (src_id,
+         f"{fighter_name_str} completes training camp",
+         f"{fighter_name_str} has completed a {camp_focus}-focused "
+         f"training camp. {summary}.",
+         "positive", "training", fighter_id, current_date),
+    )
+
+    return "completed"
 
 
 # ----------------------------------------------------------------
@@ -702,6 +1163,21 @@ def run_tick(conn, tick_type="day", steps=1):
         if recovered:
             print(f"  Recovered {len(recovered)} injur(ies) on "
                   f"{dt.strftime('%Y-%m-%d')}: {recovered}")
+        # v2.5.0 (Task 16): progress and complete active training camps
+        # on every tick. Runs AFTER _check_injury_recovery so the order
+        # is: clock advance → _check_retirements → _check_contract_
+        # expiry → _check_injury_recovery → _check_training_camps →
+        # commit. For each active, uncompleted camp whose [start_date,
+        # end_date] window contains current_date: progress the camp
+        # (accrue fatigue, fluctuate morale, accumulate injury risk,
+        # maybe spawn a training injury) or complete it (apply
+        # attribute gains, write news item). The function does NOT
+        # commit — the conn.commit() below covers both the clock
+        # UPDATE and any camp side effects.
+        camps = _check_training_camps(conn, dt.strftime("%Y-%m-%d"))
+        if camps:
+            print(f"  Processed {len(camps)} training camp(s) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {camps}")
         conn.commit()
 
 def main():

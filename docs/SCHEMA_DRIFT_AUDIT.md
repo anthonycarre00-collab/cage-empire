@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-21 — Task 14.5+14.6+14.7 (fighter schema expansion).
-> **Current schema version:** 2.0.0 (37 tables, 69 new columns across 8 tables).
+> **Last revised:** 2026-07-22 — Task 16 (training camps).
+> **Current schema version:** 2.5.0 (40 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -148,8 +148,8 @@ historical fights have no round data.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `injuries` | yes (fighter_id, event_id, injury_type, severity, body_area, start_date, projected_return_date, actual_return_date, long_term_damage, career_risk) | no | no | `MISSING` — Task ID 15 (Stage 3) |
-| `training_camps` | yes (fighter_id, gym_id, event_id, dates, camp_focus, camp_morale, camp_fatigue, camp_injury_risk, camp_weight_cut_pressure, camp_result_summary) | no | no | `MISSING` — Task ID 16 (Stage 3) |
+| `injuries` | yes (fighter_id, event_id, injury_type, severity, body_area, start_date, projected_return_date, actual_return_date, long_term_damage, career_risk) | no | yes (v2.4.0) | `OK` — Task 15 |
+| `training_camps` | yes (fighter_id, gym_id, event_id, dates, camp_focus, camp_morale, camp_fatigue, camp_injury_risk, camp_weight_cut_pressure, camp_result_summary) | no | yes (v2.5.0) | `OK` — Task 16 |
 
 ---
 

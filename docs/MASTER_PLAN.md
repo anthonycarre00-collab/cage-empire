@@ -14,15 +14,15 @@ complete. The game now simulates end-to-end: real attribute-based
 fight resolution, event lifecycle, repeatable events, contracts,
 rankings, titles, retirement, free agency, and regen.
 
-### Built (v1.9.0, commit `347b339`)
+### Built (v2.5.0, Task 16)
 
 | Layer | State |
 |---|---|
-| Database | 37 tables (SQLite) |
+| Database | 40 tables (SQLite) |
 | Schema versioning | `schema_meta` + `schema_migrations` + version-check gate (Task 5) |
-| Fighter attributes | 4 stored (`punch_power`, `cardio`, `fight_iq`, `chin`) — **read by the resolver** but spec calls for 24. **CRITICAL GAP — see §Z.1.** |
-| Fighter personality | 3 stored (`aggression`, `composure`, `morale`) — **read by the resolver** but spec calls for 17+. **CRITICAL GAP — see §Z.1.** |
-| Tick processor | Advances clock + checks retirements (Task 12) + checks contract expiry (Task 13) |
+| Fighter attributes | 25 stored (Task 14.5): punch/kick power+accuracy, head_movement, footwork, clinch striking/offense/defense, takedown off/def, top/bottom control, submission off/def, scramble, cage_wrestling, recovery_rate, speed_explosiveness, strength, durability, flexibility, adaptability, cardio, fight_iq, chin. |
+| Fighter personality | 20 stored (Task 14.5): aggression, composure, morale, risk_taking, killer_instinct, grit, discipline, patience, ambition, loyalty, charisma, attention_seeking, coachability, professionalism, ego, resilience, sportsmanship, travel_comfort, focus, fatigue_tolerance. |
+| Tick processor | Advances clock + checks retirements (Task 12) + checks contract expiry (Task 13) + checks injury recovery (Task 15) + progresses + completes training camps (Task 16). |
 | Fight resolution | Real probabilistic resolver (Task 3): power score from 4 attrs + Gaussian noise + morale/composure modifiers + margin-based result type |
 | Event lifecycle | scheduled → in_progress → completed (Task 7) |
 | Repeatable events | Auto-schedules next card ~4 weeks out when event completes (Task 8) |
@@ -37,7 +37,9 @@ rankings, titles, retirement, free agency, and regen.
 | Rival promotions | Rival Fight League seeded (inert, 3 fighters, no events, no AI) — Task 25 will add AI. |
 | Finances | `promotions.current_cash` column only — no P&L, no burn rate. Task 20 will add. |
 | Scouting | **none** — Task 18. |
-| Injuries / camps / weight cuts | **none** — Tasks 15-17. |
+| Injuries | 15-column `injuries` table (Task 15): doctor-stoppage guaranteed, KO/TKO 30% head, submission 15% joint, decision 5% base + damage-scaled. Recovery via tick. Severity 8+ has 30% chance of permanent attribute reduction. |
+| Training camps | 19-column `training_camps` table (Task 16): 14-day pre-event camp per fighter. Camp_focus from style archetype. Per-tick progression (fatigue, morale, injury_risk). Completion applies +1 to +3 to 2-4 attributes, capped at potential. Camp fatigue > 50 reduces starting gas. Injury risk > 80 spawns training injury. |
+| Weight cuts | **none** — Task 17. |
 | Social / rivalries / news templates | **none** (enriched hardcoded strings only) — Tasks 21-23. |
 | Voice / interpretation layer | **none** — Task 19. |
 | Mod tools | **none** — Task 29. |
@@ -295,3 +297,8 @@ expanded briefs are reviewed and approved.
 | 2026-07-21 (user) | Gameworld seed task added (Task 31) | A "living history" seed generating 100+ fighters, 5+ promotions, historical events, rivalries, retired legends. Positioned in Stage 5 after all systems are in place. |
 | 2026-07-21 (user) | Event bus refactor deferred to Task 18.5 | Currently `resolve_next_fight()` has ~15 hardcoded side effects. After Stage 3 (~25 side effects), refactor to event-publishing pattern. Positioned between Stage 3b and Stage 4. Added to CONVENTIONS.md §15. |
 | 2026-07-21 (user) | Fight importance system: card_slot + is_title_fight + pressure modifiers | `bout_type` was doing double duty (card position + title fight). Split into `fights.card_slot` (main_event/co_main/featured_prelim/prelim/opener) + `fights.is_title_fight` (0/1). Fight importance is computed (not stored) from card_slot + title + rivalry + marketability. Pressure response from clutch_factor/composure/consistency/focus/grit affects beat engine scores in high-importance fights. Pre-B2 schema fix (2.1.1) adds the columns; B2 implements the pressure modifiers. No new tables needed — all fields already exist (clutch_factor, consistency on fighters; composure, grit, focus on fighter_personality; marketability on fighters). |
+| 2026-07-22 (Task 16) | 19 columns implemented (not 20) | The brief's parenthetical list enumerates 19 column names; the prose header says "20". The list is authoritative — the "20" is an off-by-one typo (same pattern as Task 14.5's "21 vs 22"). |
+| 2026-07-22 (Task 16) | Training-injury pool uses body_area from the injuries CHECK | The brief listed "leg" as a body_area, but the injuries CHECK constraint (Task 15) doesn't include "leg" — only hip/knee/ankle/foot for the lower body. Changed "leg" → "hip" for hamstring strain to satisfy the CHECK. |
+| 2026-07-22 (Task 16) | Camp lifecycle: schedule_next_event creates camps; tick_processor progresses + completes them | One table = one writer (schedule_next_event via _create_training_camp) + one reader (resolve_next_fight via _get_camp_fatigue_for_event) per CONVENTIONS §5.3. The tick-time progression is a third "reader" that also writes — acceptable because camps are inherently a tick-driven system. |
+| 2026-07-22 (Task 16) | camp_focus 'weight_cut' reserved for Task 17 | The 8th camp_focus value is in the CHECK but not mapped from any archetype. Task 17 (weight cuts) will use it. |
+| 2026-07-22 (Task 16) | schema_migrations now records ALL known migrations on rebuild | Task 16 subagent had replaced the v2_4_0 migration with v2_5_0 — losing the v2_4_0 row. Fixed to INSERT OR IGNORE all 4 migrations (v2_2_0, v2_3_0, v2_4_0, v2_5_0) on every rebuild. Per CONVENTIONS §1.4, the migrations table is the complete history. |

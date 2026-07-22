@@ -8,6 +8,166 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+
+## [2.5.0] - 2026-07-22
+
+### Added (Task 16 — Training camps, schema 2.5.0 MINOR)
+- New `training_camps` table — 19 columns. One row per fighter per
+  scheduled fight. The CHECK constraints enforce `camp_morale`,
+  `camp_fatigue`, `camp_injury_risk`, `camp_weight_cut_pressure` all
+  0-100 (DEFAULT 50/0/0/0); `camp_duration_days` >= 0 (DEFAULT 14);
+  `camp_focus` restricted to the 8 enumerated values (striking,
+  grappling, wrestling, conditioning, submission, clinch, general,
+  weight_cut); `is_active` / `is_completed` 0/1 (DEFAULT 1/0). FKs:
+  `fighter_id` NOT NULL ON DELETE CASCADE; `gym_id` / `event_id` /
+  `fight_id` ON DELETE SET NULL. The 8th camp_focus value
+  (`weight_cut`) is reserved for Task 17.
+- New `_create_training_camp()` helper in app.py — called by
+  `schedule_next_event` for each of the 2 booked fighters. Camp window:
+  `start_date = event_date - 14`, `end_date = event_date`,
+  `camp_duration_days = 14`. `camp_focus` derived from the fighter's
+  style archetype via `_ARCHETYPE_NAME_TO_CAMP_FOCUS` (Striker →
+  striking, Grappler → grappling, Wrestler → wrestling, Submission
+  Specialist → submission, Brawler/Counter-Striker → striking,
+  Balanced → general; default 'general').
+- New `_pick_camp_focus_for_archetype()` helper in app.py — looks up
+  the style_archetypes.name for the given id and maps it via
+  `_ARCHETYPE_NAME_TO_CAMP_FOCUS`. Returns 'general' for unknown /
+  NULL / missing archetypes (defensive).
+- New `_CAMP_FOCUS_ATTRS` map in app.py — maps each camp_focus to the
+  pool of `fighter_attributes` the camp upgrades on completion. Read
+  by tick_processor._check_training_camps.
+- New `_get_camp_fatigue_for_event()` reader in app.py — called by
+  `resolve_next_fight` to apply the brief's "Fatigue > 50 = reduced
+  starting gas" rule. Starting gas = 100 - max(0, camp_fatigue - 50),
+  floored at 50. This is the reader required by CONVENTIONS §5.3.
+- New `_check_training_camps()` helper in tick_processor.py — runs
+  every tick AFTER `_check_injury_recovery`. For each active,
+  uncompleted camp whose `[start_date, end_date]` window contains
+  `current_date`:
+  * Progression (`current_date < end_date`): fatigue +2-5 (reduced by
+    cardio + fatigue_tolerance), morale ±0-2 (dampened by
+    coachability, biased by gym `culture_tone`), injury_risk +2-5
+    (increased by `injury_proneness`, reduced by gym `medical_support`).
+    If injury_risk > 80: spawn a training injury from
+    `_TRAINING_INJURY_POOL` (7 entries — torn ACL, hamstring strain,
+    shoulder labrum tear, rib sprain, training concussion, wrist /
+    ankle sprain), reduce `career_health`, write "suffers X in
+    training" news item, force-complete the camp as 'injured'.
+  * Completion (`current_date == end_date`): pick 2-4 attributes
+    from the camp_focus pool, apply +1 to +3 base gain scaled by
+    `gym_spec_mult` (0.5-1.5 from `facility_quality` +
+    `development_focus`), `coach_mult` (0.5-1.5 from `coachability`),
+    `fatigue_factor` (0.5-1.0 from `fatigue_tolerance` vs
+    `camp_fatigue`). Capped at `fighter_career.potential`. Write
+    `attribute_changes` JSON + `camp_result_summary` + a completion
+    news item with `topic='training'`.
+- New `_TRAINING_INJURY_POOL` constant in tick_processor.py — 7
+  training-injury types with body_area + severity range. Distinct
+  from the fight-injury pool in app.py because training injuries
+  have a different character (overuse, sparring accidents).
+- New `_progress_training_camp()` and `_complete_training_camp()`
+  helpers in tick_processor.py — called by `_check_training_camps`
+  based on the camp's state. Both write side effects (training_camps
+  UPDATE, fighter_attributes UPDATE, fighter_career UPDATE,
+  injuries INSERT, news_items INSERT); the caller commits.
+- `run_tick` in tick_processor.py — extended to call
+  `_check_training_camps` after `_check_injury_recovery`, before
+  commit. Prints a one-line log per tick if any camps progressed or
+  completed.
+- `schedule_next_event` in app.py — extended to call
+  `_create_training_camp` for each of the 2 booked fighters AFTER
+  the event + fight + participants + event_cards rows are INSERTed.
+  Fighters with NULL `current_gym_id` are skipped (with a printed
+  warning) — free agents without a home gym can't run a camp.
+- `resolve_next_fight` in app.py — extended to read camp fatigue via
+  `_get_camp_fatigue_for_event` and apply the brief's "Fatigue > 50
+  = reduced starting gas" rule (floored at 50).
+- `build_db.py` — `CODE_SCHEMA_VERSION` bumped to "2.5.0". Migration
+  `v2_5_0_add_training_camps` recorded. The `schema_migrations` INSERT
+  now records ALL known migrations (v2_2_0, v2_3_0, v2_4_0, v2_5_0)
+  on every rebuild — previously each task replaced the previous
+  migration name, losing the audit trail. Per CONVENTIONS §1.4, the
+  migrations table is the complete history.
+
+### Tests (Task 16)
+- New acceptance test `scripts/test_training_camps.py` — 85 sub-checks
+  across 11 cases (A schema, B defaults, C camp creation by
+  schedule_next_event, D camp progression, E camp completion, F
+  attribute gains verification, G training injury path, H
+  _get_camp_fatigue_for_event reader, I gas penalty in
+  resolve_next_fight, J archetype-to-camp-focus mapping, K Design Law
+  check). All PASS.
+- Updated `scripts/test_event_scheduler.py` — case C (3 → "events
+  after resolving new event's fight (may be < 3 if injuries prevented
+  scheduling)"), case D (4 → "events after 3rd cycle (may be < 4)"),
+  case G (skips None fight_ids in the per-fight_id assertion loop).
+  Task 15 supervisor fix was incomplete — only cases B/D/G had been
+  updated, but cases C/D/G still had stale strict assertions that
+  broke under Task 15's injury-prevented-scheduling behavior. Task 16
+  supervisor fix completes the cleanup. Now 60/60 PASS.
+
+### Decisions (Task 16, logged in `docs/MASTER_PLAN.md`)
+- D1: 19 columns implemented (not 20). The brief's parenthetical list
+  enumerates 19 column names; the prose header says "20". The list
+  is authoritative — the "20" is an off-by-one typo (same pattern as
+  Task 14.5's "21 vs 22" decision D1).
+- D2: Training-injury pool uses `body_area` values from the injuries
+  CHECK constraint's enumerated set. The brief listed "leg" as a
+  body_area, but the injuries CHECK (Task 15) doesn't include "leg"
+  — only hip/knee/ankle/foot for the lower body. Changed "leg" →
+  "hip" for hamstring strain to satisfy the CHECK.
+- D3: Camp lifecycle = writer + reader + tick-time progression. One
+  table = one writer (schedule_next_event via _create_training_camp)
+  + one reader (resolve_next_fight via _get_camp_fatigue_for_event)
+  per CONVENTIONS §5.3. The tick-time progression
+  (_check_training_camps in tick_processor.py) is a third "reader"
+  that also writes — acceptable because camps are inherently a
+  tick-driven system (the camp window is time-bounded).
+- D4: `camp_focus='weight_cut'` reserved for Task 17. The 8th
+  camp_focus value is in the CHECK but not mapped from any
+  archetype. Task 17 (weight cuts) will use it.
+- D5: `schema_migrations` now records ALL known migrations on
+  rebuild. The Task 16 subagent had replaced the v2_4_0 migration
+  name with v2_5_0 — losing the v2_4_0 audit row. Fixed to INSERT
+  OR IGNORE all 4 migrations on every rebuild. Per CONVENTIONS §1.4,
+  the migrations table is the complete history.
+
+### Design Law check (CONVENTIONS §13)
+- **Investment**: gym spec multiplies camp gains. facility_quality +
+  development_focus → gym_spec_mult 0.5-1.5. A fighter at an elite
+  gym (100/100) gets +50% gains; at a shoebox gym (0/0) gets -50%.
+  The player's choice of gym for a fighter is an investment.
+- **Growth**: camps are the primary fighter-growth mechanism between
+  fights. 2-4 attrs upgraded +1 to +3 per camp, capped at potential.
+  A prospect's attributes climb toward their potential via camps.
+- **Conflict**: camp injuries introduce adversity. A prospect can
+  tear his ACL two weeks out from his debut, derailing the planned
+  title shot. The "is he ever the same after the injury?" question
+  is conflict extended across time.
+- **Legacy**: a fighter's camp history (attribute_changes JSON across
+  all their camps) is the substrate for the "development curve" UI
+  the future Hall of Fame will display.
+- **Anticipation**: the camp's completion news item + the upcoming
+  fight are the "your fighter is ready / what will the gains look
+  like in the cage?" anticipation beats.
+
+### Stories (CAGE EMPIRE SOUL.md)
+- "The 24-year-old prospect's striking camp paid off — his punch
+  power climbed 3 points in the 2 weeks before his debut. He knocked
+  out the regional gatekeeper in 47 seconds." (Investment → Growth
+  → dramatic moment)
+- "The title challenger pushed too hard in camp — fatigue hit 80 by
+  fight week. He started the title fight gassed, lost a 5-round
+  decision. The camp that was supposed to prepare him cost him the
+  belt." (Investment gone wrong → Conflict)
+- "The prospect tore his ACL in sparring 11 days out from his debut.
+  The camp was suspended. He's projected to return in 5 months. The
+  debut is rescheduled — but is he ever the same fighter?" (Conflict
+  → Legacy)
+
+## [2.4.0] - 2026-07-21
+
 ### Added (Task 15 — Injuries + medical recovery, schema 2.4.0 MINOR)
 - New `injuries` table (Task 15, schema 2.4.0 MINOR) — 15 columns. One
   row per injury a fighter suffers. The CHECK constraints enforce

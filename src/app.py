@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import random
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -2883,6 +2884,232 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
     return (picks[0][0], picks[1][0])
 
 
+# ----------------------------------------------------------------
+# Training camps (Task ID 16).
+#
+# `_ARCHETYPE_NAME_TO_CAMP_FOCUS` maps the 7 seeded style archetype
+# names to the 8 enumerated camp_focus values (the 8th value,
+# 'weight_cut', is reserved for Task 17 — weight cuts — and is not
+# used by the archetype mapping). `_CAMP_FOCUS_ATTRS` maps each
+# camp_focus to the pool of fighter_attributes the camp upgrades on
+# completion. Both maps are read by tick_processor._check_training_
+# camps (the tick-time camp progress / completion helper), so they
+# live here next to the writer (_create_training_camp below) and the
+# reader (_get_camp_fatigue_for_event further below) per the "table
+# ships with code" rule (CONVENTIONS §5.3).
+#
+# The camp lifecycle:
+#   1. schedule_next_event (below) creates one training_camps row per
+#      booked fighter when a new event is auto-scheduled. start_date =
+#      event_date - 14 days; end_date = event_date; camp_focus from
+#      the fighter's style archetype.
+#   2. tick_processor._check_training_camps progresses each active
+#      camp on every tick within [start_date, end_date]: fatigue +2-5,
+#      morale fluctuates, injury_risk accumulates. If injury_risk > 80
+#      a training injury is created via the Task 15 injuries table.
+#   3. On the tick where current_date == end_date, the camp completes:
+#      2-4 attributes are upgraded by +1 to +3 (capped at potential),
+#      a completion news item is written, is_active=0 is_completed=1.
+#   4. resolve_next_fight (further below) reads the camp's camp_fatigue
+#      via _get_camp_fatigue_for_event and applies the brief's "Fatigue
+#      > 50 = reduced starting gas" rule: starting gas = 100 - max(0,
+#      camp_fatigue - 50), floored at 50.
+# ----------------------------------------------------------------
+
+# Maps the 7 seeded style_archetypes.name values to camp_focus. The
+# 8th camp_focus value 'weight_cut' is reserved for Task 17 (weight
+# cuts) and is NOT mapped from any archetype — it will be used when
+# the weight-cut system creates a separate camp-type entry. The
+# default 'general' is used for unknown / NULL archetypes (defensive
+# — generate_fighter in app.py picks a random archetype, so this
+# fallback only fires if a future archetype is added without updating
+# this map).
+_ARCHETYPE_NAME_TO_CAMP_FOCUS = {
+    "Balanced": "general",
+    "Striker": "striking",
+    "Grappler": "grappling",
+    "Wrestler": "wrestling",
+    "Brawler": "striking",
+    "Counter-Striker": "striking",
+    "Submission Specialist": "submission",
+}
+
+# Maps each camp_focus to the pool of fighter_attributes that the
+# camp upgrades on completion. All attribute names MUST be in the
+# _FIGHTER_ATTR_COLUMNS whitelist (defensive — the completion helper
+# in tick_processor string-formats these into UPDATE SQL after
+# checking the whitelist; the whitelist check is the safety net).
+#
+# Striking → punch / kick power + accuracy + head_movement (the 5
+#   stand-up attributes — a striking camp sharpens the weapons).
+# Grappling → takedown + top_control + submission offense/defense
+#   (the 5 ground-work attributes — a grappling camp rounds out the
+#   mat game).
+# Wrestling → takedown_offense + top_control + cage_wrestling +
+#   strength (the 4 wrestling-specific attributes — a wrestling camp
+#   builds the grinding top game).
+# Conditioning → cardio + recovery_rate + durability (the 3 physical
+#   stamina attributes — a conditioning camp builds the engine).
+# Submission → submission_offense + submission_defense + bottom_game
+#   + flexibility (the 4 submission-specific attributes — a
+#   submission camp sharpens the tap-or-pass game).
+# Clinch → clinch_striking + clinch_offense + clinch_defense +
+#   cage_wrestling (the 4 clinch-phase attributes — a clinch camp
+#   builds the dirty-boxing + takedown-clinch game).
+# General → punch_power + cardio + fight_iq + chin + footwork +
+#   strength (6 well-rounded attributes — a general camp polishes
+#   the fundamentals).
+# Weight_cut → cardio + recovery_rate (Task 17 territory — a weight-
+#   cut camp manages the cut's impact on the engine. For now this
+#   pool is used only if the player or AI explicitly schedules a
+#   weight_cut camp, which the current code does not).
+_CAMP_FOCUS_ATTRS = {
+    "striking":   ["punch_power", "punch_accuracy", "kick_power",
+                   "kick_accuracy", "head_movement"],
+    "grappling":  ["takedown_offense", "takedown_defense", "top_control",
+                   "submission_offense", "submission_defense"],
+    "wrestling":  ["takedown_offense", "top_control", "cage_wrestling",
+                   "strength"],
+    "conditioning": ["cardio", "recovery_rate", "durability"],
+    "submission": ["submission_offense", "submission_defense",
+                   "bottom_game", "flexibility"],
+    "clinch":     ["clinch_striking", "clinch_offense", "clinch_defense",
+                   "cage_wrestling"],
+    "general":    ["punch_power", "cardio", "fight_iq", "chin",
+                   "footwork", "strength"],
+    "weight_cut": ["cardio", "recovery_rate"],
+}
+
+# How many days before the event the camp starts (~2 weeks per the
+# Task 16 brief). camp_duration_days = 14. The camp ends on the
+# event_date itself (the gains apply on the same tick the event is
+# scheduled for — by the time the player clicks Resolve Fight, the
+# camp has completed and the improved attributes are in effect).
+_CAMP_LEAD_DAYS = 14
+
+
+def _pick_camp_focus_for_archetype(conn, style_archetype_id):
+    """Return the camp_focus string for a fighter's style archetype.
+
+    Looks up the style_archetypes.name for the given id and maps it
+    via _ARCHETYPE_NAME_TO_CAMP_FOCUS. Returns 'general' for unknown
+    / NULL / missing archetypes (defensive — generate_fighter picks
+    a random archetype, but a future code path might insert a fighter
+    without one).
+
+    Args:
+        conn: sqlite3 connection (read-only — no writes here).
+        style_archetype_id: the fighter's fight_style_archetype_id
+            (NULL is allowed and returns 'general').
+
+    Returns:
+        One of the 8 camp_focus values (always 'general' or one of
+        the 7 archetype-mapped values — 'weight_cut' is never returned
+        here since it's reserved for Task 17's weight-cut camps).
+    """
+    if style_archetype_id is None:
+        return "general"
+    row = conn.execute(
+        "SELECT name FROM style_archetypes WHERE style_archetype_id=?",
+        (style_archetype_id,),
+    ).fetchone()
+    if row is None:
+        return "general"
+    name = row[0]
+    return _ARCHETYPE_NAME_TO_CAMP_FOCUS.get(name, "general")
+
+
+def _create_training_camp(conn, fighter_id, gym_id, event_id, fight_id,
+                          event_date, style_archetype_id):
+    """Create one training_camps row for a fighter scheduled to fight.
+
+    Called by schedule_next_event (below) for each of the 2 booked
+    fighters, AFTER the event + fight + participants + event_cards
+    rows are INSERTed. The camp represents the ~2-week training block
+    the fighter attends at their gym leading up to the fight.
+
+    Camp fields:
+      - start_date = event_date - _CAMP_LEAD_DAYS (14 days before).
+      - end_date = event_date (camp ends on fight day — the gains
+        apply on the same tick as the event, before the player
+        resolves the fight).
+      - camp_duration_days = _CAMP_LEAD_DAYS (14).
+      - camp_focus = derived from style_archetype_id via
+        _pick_camp_focus_for_archetype.
+      - camp_morale = 50 (schema DEFAULT — fluctuates during the
+        camp via _check_training_camps in tick_processor).
+      - camp_fatigue = 0 (schema DEFAULT — accrues during the camp).
+      - camp_injury_risk = 0 (schema DEFAULT — accumulates during
+        the camp).
+      - camp_weight_cut_pressure = 0 (schema DEFAULT — Task 17 will
+        populate this).
+      - is_active = 1, is_completed = 0.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the fighter attending the camp.
+        gym_id: the gym where the camp is held (the fighter's
+            current_gym_id at scheduling time — recorded here so
+            that if the fighter changes gyms mid-camp, the camp
+            still uses the original gym's stats for progression).
+        event_id: the event the camp is preparing the fighter for.
+        fight_id: the fight the camp is preparing the fighter for.
+        event_date: 'YYYY-MM-DD' — the event's date. Used to compute
+            start_date and end_date.
+        style_archetype_id: the fighter's fight_style_archetype_id
+            — drives the camp_focus selection.
+
+    Returns:
+        The new training_camp_id (int) on success, or None if the
+        INSERT failed (defensive — shouldn't happen unless the DB is
+        in a weird state).
+    """
+    try:
+        event_dt = datetime.strptime(event_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        print(f"Warning: could not create training camp — invalid "
+              f"event_date {event_date!r}.")
+        return None
+    start_dt = event_dt - timedelta(days=_CAMP_LEAD_DAYS)
+    start_date_str = start_dt.strftime("%Y-%m-%d")
+    end_date_str = event_date
+    camp_focus = _pick_camp_focus_for_archetype(conn, style_archetype_id)
+    cur = conn.execute(
+        "INSERT INTO training_camps (fighter_id, gym_id, event_id, "
+        "fight_id, start_date, end_date, camp_duration_days, "
+        "camp_focus) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (fighter_id, gym_id, event_id, fight_id,
+         start_date_str, end_date_str, _CAMP_LEAD_DAYS, camp_focus),
+    )
+    return cur.lastrowid
+
+
+def _get_camp_fatigue_for_event(conn, fighter_id, event_id):
+    """Return the camp_fatigue for a fighter's most recent camp on an event.
+
+    Called by resolve_next_fight (below) to apply the brief's "Fatigue
+    > 50 = reduced starting gas" rule. Reads the most recent
+    training_camps row for the (fighter_id, event_id) pair. Returns
+    0 if no camp exists (e.g., the seeded fight — schedule_next_event
+    hasn't been called for it yet, so no camp was created).
+
+    Args:
+        conn: sqlite3 connection (read-only — no writes here).
+        fighter_id: the fighter whose camp fatigue we want.
+        event_id: the event the camp prepared them for.
+
+    Returns:
+        The camp_fatigue integer (0-100), or 0 if no camp exists.
+    """
+    row = conn.execute(
+        "SELECT camp_fatigue FROM training_camps "
+        "WHERE fighter_id=? AND event_id=? "
+        "ORDER BY training_camp_id DESC LIMIT 1",
+        (fighter_id, event_id),
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """Auto-schedule the next event for a promotion, ~weeks_out weeks
     after a reference date.
@@ -3070,6 +3297,48 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
         "VALUES (?, ?, 1, 'main_event', 1, 0)",
         (new_event_id, new_fight_id),
     )
+
+    # ----------------------------------------------------------------
+    # v2.5.0 (Task 16): create training camps for both booked fighters.
+    # Each fighter gets one training_camps row representing the ~2-week
+    # training block at their gym leading up to the fight. The camp's
+    # start_date = new_date_str - 14 days, end_date = new_date_str,
+    # camp_focus derived from the fighter's style archetype. The camp
+    # is then progressed / completed by _check_training_camps in
+    # tick_processor.py on every tick within [start_date, end_date].
+    #
+    # If a fighter's current_gym_id is NULL (a free agent without a
+    # home gym — possible for fighters generated by generate_fighter
+    # who were signed via sign_free_agent without a gym assignment),
+    # the camp is skipped with a printed warning. The fighter still
+    # gets to fight — they just don't get the camp progression / gain
+    # benefits (and don't suffer the camp fatigue / injury risk either,
+    # which is the realistic trade-off for not having a home gym).
+    # ----------------------------------------------------------------
+    for fid in (fighter_a_id, fighter_b_id):
+        f_row = conn.execute(
+            "SELECT current_gym_id, fight_style_archetype_id "
+            "FROM fighters WHERE fighter_id=?",
+            (fid,),
+        ).fetchone()
+        if f_row is None:
+            print(f"Warning: could not create training camp — fighter "
+                  f"{fid} not found in fighters table.")
+            continue
+        f_gym_id, f_archetype_id = f_row
+        if f_gym_id is None:
+            print(f"Warning: fighter {fid} has no current_gym_id — "
+                  f"skipping training camp creation (no home gym).")
+            continue
+        _create_training_camp(
+            conn,
+            fighter_id=fid,
+            gym_id=f_gym_id,
+            event_id=new_event_id,
+            fight_id=new_fight_id,
+            event_date=new_date_str,
+            style_archetype_id=f_archetype_id,
+        )
 
     # 8. Return the new event_id. Do NOT commit — the caller commits,
     # matching the existing pattern (resolve_next_fight, advance_day,
@@ -3558,8 +3827,27 @@ def resolve_next_fight(conn):
     total_b_damage = 0
     # v2.3.0 fatigue: gas starts at 100 per fight. Tracked across
     # rounds (recovered between rounds via _recover_gas_between_rounds).
-    gas_a = 100.0
-    gas_b = 100.0
+    # v2.5.0 (Task 16): if the fighter has a training camp for this
+    # event with camp_fatigue > 50, the brief's "Fatigue > 50 = reduced
+    # starting gas" rule applies: starting gas = 100 - max(0,
+    # camp_fatigue - 50), floored at 50. A fighter who pushed too hard
+    # in camp (fatigue 100) starts at gas 50 — they're gassed from the
+    # cut / training load. A fighter whose camp was moderate (fatigue
+    # 40) starts fresh at gas 100. If no camp exists (e.g., the seeded
+    # fight — schedule_next_event hasn't been called for it), no
+    # penalty applies (the helper returns 0, which doesn't trigger the
+    # > 50 branch). This is the reader required by CONVENTIONS §5.3 —
+    # the camp data is read by resolve_next_fight and affects fight
+    # outcomes (the "camp fatigue cost the prospect his debut" story).
+    camp_fatigue_a = _get_camp_fatigue_for_event(conn, a_id, event_id)
+    camp_fatigue_b = _get_camp_fatigue_for_event(conn, b_id, event_id)
+    gas_a = 100.0 - max(0, camp_fatigue_a - 50) if camp_fatigue_a > 50 else 100.0
+    gas_b = 100.0 - max(0, camp_fatigue_b - 50) if camp_fatigue_b > 50 else 100.0
+    # Floor at 50 — a fighter never starts below half gas (the camp
+    # fatigue penalty is real but never crippling enough to lose the
+    # fight before it starts).
+    gas_a = max(50.0, gas_a)
+    gas_b = max(50.0, gas_b)
     # v2.3.0 momentum: cumulative momentum carries across rounds.
     cum_momentum = 0
     # v2.3.0 corner stoppage: track consecutive round losses per fighter.

@@ -620,23 +620,65 @@ CREATE TABLE IF NOT EXISTS injuries (
 - What injury types exist? (Concussion, broken bone, torn ACL, etc.)
 - How does `long_term_damage` accumulate and affect retirement?
 
-### Task ID 16 — Training camps
+### Task ID 16 — Training camps — **DONE** (commit pending)
 
-**Brief (needs expansion).** Add `training_camps` table. Before an
-event, fighters attend a camp at their gym. Camp modifies
-`fighter_attributes` slightly (+/- 1–3 points) based on gym
-specialization and camp focus.
+**Status:** Schema v2.4.0 → v2.5.0 (MINOR). 1 new table (`training_camps`,
+19 columns). Migration `v2_5_0_add_training_camps`. 85 sub-checks
+across 11 cases in `scripts/test_training_camps.py`.
 
-**Dependencies:** Task 14.5 (needs full 24-attribute set to modify),
-Task 14.6 (needs gym specialization columns — currently the `gyms`
-table is thin).
+**Implementation:**
+- `_create_training_camp()` in app.py — called by schedule_next_event
+  for each of the 2 booked fighters. Camp window: start_date =
+  event_date - 14, end_date = event_date, camp_duration_days = 14.
+  camp_focus derived from the fighter's style archetype via
+  `_ARCHETYPE_NAME_TO_CAMP_FOCUS` (7 archetype → camp_focus mappings;
+  default 'general').
+- `_check_training_camps()` in tick_processor.py — runs every tick
+  AFTER _check_injury_recovery. For each active, uncompleted camp
+  whose [start_date, end_date] window contains current_date:
+  * Progression (current_date < end_date): fatigue +2-5 (reduced
+    by cardio + fatigue_tolerance), morale ±0-2 (dampened by
+    coachability, biased by gym culture_tone), injury_risk +2-5
+    (increased by injury_proneness, reduced by gym medical_support).
+    If injury_risk > 80: spawn a training injury from
+    `_TRAINING_INJURY_POOL` (7 entries — torn ACL, hamstring strain,
+    shoulder labrum tear, rib sprain, training concussion, wrist /
+    ankle sprain), reduce career_health, write "suffers X in
+    training" news item, force-complete the camp as 'injured'.
+  * Completion (current_date == end_date): pick 2-4 attributes from
+    the camp_focus pool, apply +1 to +3 base gain scaled by gym_spec_
+    mult (0.5-1.5 from facility_quality + development_focus),
+    coach_mult (0.5-1.5 from coachability), fatigue_factor (0.5-1.0
+    from fatigue_tolerance vs camp_fatigue). Capped at fighter_career.
+    potential. Write attribute_changes JSON + camp_result_summary +
+    completion news item.
+- `_get_camp_fatigue_for_event()` reader in app.py — called by
+  resolve_next_fight to apply the "Fatigue > 50 = reduced starting
+  gas" rule. Starting gas = 100 - max(0, camp_fatigue - 50), floored
+  at 50.
 
-**Questions to resolve:**
-- How long before an event does the camp start? (2 weeks? 4 weeks?)
-- How does camp focus interact with the fighter's style archetype?
-- Does camp fatigue affect fight performance?
-- Does camp injury risk feed into Task 15's injury system?
-- Should the UI show camp reports?
+**Answers to the brief's open questions:**
+- Camp starts 14 days before the event (`_CAMP_LEAD_DAYS = 14`).
+- Camp focus = derived from style archetype (Striker → striking,
+  Grappler → grappling, Wrestler → wrestling, Submission Specialist
+  → submission, Brawler/Counter-Striker → striking, Balanced →
+  general; default 'general').
+- Camp fatigue > 50 reduces starting gas in resolve_next_fight,
+  floored at 50.
+- Camp injury risk > 80 spawns a training injury via the Task 15
+  injuries table (training-injury pool distinct from the fight-injury
+  pool). Career_health is reduced; the camp is force-completed.
+- UI camp reports deferred to a future task (the camp_result_summary
+  column stores the raw data; Task 19's interpretation layer will
+  translate it for the UI per CONVENTIONS §14).
+
+**Decisions logged in worklog:**
+- D1: 19 columns (brief's parenthetical list) vs "20" (brief's prose
+  header) — implemented the 19 enumerated (the list is authoritative,
+  the prose "20" is an off-by-one typo).
+- D2: Training-injury pool uses body_area values from the injuries
+  CHECK constraint's enumerated set (the brief's "leg" was changed
+  to "hip" — "leg" is not in the CHECK).
 
 ### Task ID 17 — Weight cuts
 

@@ -9,6 +9,121 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.5.0 (Task 16 — Training camps) — MINOR bump. Adds the new
+# `training_camps` table (one row per fighter per scheduled fight —
+# the camp they attend at their gym in the ~2 weeks leading up to the
+# event). Per CONVENTIONS §1.1, adding a new table is a MINOR bump.
+# Per CONVENTIONS §5 (one table-group per task), this task adds ONLY
+# the `training_camps` table — it is a single logical group (career &
+# development) that builds on Task 14.6's gym specialization columns
+# (facility_quality, medical_support, sparring_depth, development_
+# focus, culture_tone, weight_cut_support) and Task 15's injuries
+# table (camp injury risk feeds into Task 15's injury system). Per
+# CONVENTIONS §5.3, the table ships with both a writer
+# (schedule_next_event in app.py creates camps when a new event is
+# scheduled; _check_training_camps in tick_processor.py progresses
+# and completes them) and a reader (resolve_next_fight in app.py
+# reads the camp's fatigue to apply a starting-gas penalty).
+#
+# Schema changes in this task (per the Task 16 brief):
+#   1. New `training_camps` table — 19 columns. The brief's parenthetical
+#      lists 19 column names ("training_camp_id PK, fighter_id FK, gym_id
+#      FK, event_id FK, fight_id FK, start_date, end_date,
+#      camp_duration_days, camp_focus CHECK IN ..., camp_morale 0-100
+#      DEFAULT 50, camp_fatigue 0-100 DEFAULT 0, camp_injury_risk 0-100
+#      DEFAULT 0, camp_weight_cut_pressure 0-100 DEFAULT 0,
+#      attribute_changes TEXT, camp_result_summary TEXT, is_active 0/1
+#      DEFAULT 1, is_completed 0/1 DEFAULT 0, created_at, updated_at")
+#      but the brief's prose header says "20 columns". Implemented the
+#      19 enumerated columns (the list is the authoritative spec — the
+#      "20" in the prose is an off-by-one typo, same pattern as Task
+#      14.5's "21 vs 22 new attribute columns" decision D1). See
+#      worklog decision D2 for the full explanation. The CHECK
+#      constraints enforce camp_morale, camp_fatigue, camp_injury_risk,
+#      camp_weight_cut_pressure all 0-100; is_active / is_completed
+#      0/1; camp_focus restricted to the 8 enumerated values (striking,
+#      grappling, wrestling, conditioning, submission, clinch, general,
+#      weight_cut). FKs: fighter_id NOT NULL ON DELETE CASCADE, gym_id
+#      / event_id / fight_id ON DELETE SET NULL (preserve camp history
+#      when a gym/event/fight is deleted — the camp record survives
+#      with NULL FK).
+#
+# Code changes in app.py (Task 16):
+#   - New `_create_training_camp()` helper called from
+#     schedule_next_event() AFTER the event, fight, participants, and
+#     event_cards rows are INSERTed. For each of the 2 booked fighters,
+#     creates one training_camps row with start_date = event_date - 14
+#     days, end_date = event_date, camp_duration_days = 14, camp_focus
+#     derived from the fighter's fight_style_archetype_id (style
+#     archetype name → camp_focus via _ARCHETYPE_NAME_TO_CAMP_FOCUS
+#     map; default 'general'). The camp's gym_id is the fighter's
+#     current_gym_id — if NULL, the camp is skipped (with a printed
+#     warning) since free agents without a gym can't run a camp.
+#   - New `_get_camp_fatigue_for_event()` reader called from
+#     resolve_next_fight() to apply the brief's "Fatigue > 50 = reduced
+#     starting gas" rule. Reads the most recent training_camps row for
+#     the (fighter_id, event_id) pair; if camp_fatigue > 50, the
+#     fighter's starting gas is reduced by (camp_fatigue - 50), floored
+#     at 50. This is the reader required by CONVENTIONS §5.3.
+#   - New `_CAMP_FOCUS_ATTRS` mapping camp_focus → attribute pool (used
+#     by tick_processor._complete_training_camp to pick which
+#     attributes the camp upgrades — striking → punch_power/accuracy/
+#     kick_power/accuracy/head_movement, etc.).
+#   - New `_ARCHETYPE_NAME_TO_CAMP_FOCUS` mapping archetype name →
+#     camp_focus (Striker → striking, Grappler → grappling, Wrestler
+#     → wrestling, Submission Specialist → submission, Brawler/
+#     Counter-Striker → striking, Balanced → general; default
+#     'general' for unknown archetypes).
+#
+# Code changes in tick_processor.py (Task 16):
+#   - New `_check_training_camps()` helper called from run_tick() AFTER
+#     _check_injury_recovery. For each active, uncompleted camp whose
+#     [start_date, end_date] window contains current_date:
+#       * If current_date == end_date: complete the camp. Pick 2-4
+#         attributes from the camp_focus pool (count = 2 + int((coach_
+#         ability + development_focus) / 100), clamped to [2, 4]).
+#         Apply +1 to +3 base gain to each chosen attribute, scaled
+#         by gym spec multiplier (0.5-1.5 from facility_quality +
+#         development_focus), coachability multiplier (0.5-1.5), and
+#         fatigue factor (0.5-1.0 from fatigue_tolerance vs camp_
+#         fatigue). Capped at fighter_career.potential. Write the
+#         attribute_changes JSON + camp_result_summary + a completion
+#         news item ("{Fighter} completes training camp"). Set
+#         is_active=0, is_completed=1.
+#       * Else (start_date < current_date < end_date): progress the
+#         camp. Accrue fatigue +2-5 per tick (modified by cardio +
+#         fatigue_tolerance, both reducing). Fluctuate morale by ±0-2
+#         (modified by coachability dampening + culture_tone bias —
+#         disciplined = +morale, loose = -morale, predator = +morale,
+#         balanced = neutral). Accumulate injury_risk +2-5 per tick
+#         (modified by injury_proneness increasing + medical_support
+#         reducing). If injury_risk > 80: create an injury via the
+#         Task 15 injuries table (training-injury pool: torn ACL,
+#         hamstring strain, shoulder labrum tear, rib sprain, training
+#         concussion, wrist/ankle sprain), reduce career_health by
+#         severity*2, write injury news, and mark the camp as inactive
+#         + completed (the fighter is injured and can't continue).
+#   - EXTENDED: run_tick — calls _check_training_camps AFTER
+#     _check_injury_recovery (order: clock advance → _check_retirements
+#     → _check_contract_expiry → _check_injury_recovery →
+#     _check_training_camps → commit). Prints one-line logs per tick
+#     if any camps completed or any camp injuries occurred.
+#
+# News items written (Task 16):
+#   - Camp completion: "{Fighter} completes training camp" with
+#     topic='training', fighter_id set, body summarizing the attribute
+#     changes ("Training camp (striking): punch_power +2, head_movement
+#     +1"). This is the narrative layer the Soul document demands — the
+#     player sees "John Vale's striking camp paid off — his punch power
+#     is up 2 points" instead of a raw UPDATE query.
+#   - Camp injury: "{Fighter} suffers {injury_type} in training" with
+#     topic='injury', fighter_id set. Same news shape as Task 15's
+#     fight injuries — the player can't tell from the headline whether
+#     the injury happened in camp or in the fight, which is realistic
+#     (both are "the fighter is hurt" stories).
+#
+# Migration name: v2_5_0_add_training_camps.
+#
 # v2.4.0 (Task 15 — Injuries + medical recovery) — MINOR bump. Adds
 # the new `injuries` table (one row per injury a fighter suffers).
 # Per CONVENTIONS §1.1, adding a new table is a MINOR bump. Per
@@ -292,7 +407,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.4.0"
+CODE_SCHEMA_VERSION = "2.5.0"
 
 
 def _parse_version(v):
@@ -1255,6 +1370,91 @@ CREATE TABLE IF NOT EXISTS injuries (
     created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- training_camps (added v2.5.0, Task 16 — Training camps).
+--
+-- One row per fighter per scheduled fight. When schedule_next_event()
+-- in app.py auto-schedules a new event, it creates one training_camps
+-- row for each of the 2 booked fighters, with start_date = event_date
+-- - 14 days and end_date = event_date (a ~2-week camp leading up to
+-- the fight). The camp_focus is derived from the fighter's
+-- fight_style_archetype_id (Striker → striking, Grappler → grappling,
+-- Wrestler → wrestling, Submission Specialist → submission, Brawler
+-- and Counter-Striker → striking, Balanced → general; default
+-- 'general' for unknown archetypes — see _ARCHETYPE_NAME_TO_CAMP_FOCUS
+-- in app.py).
+--
+-- The tick processor (_check_training_camps in tick_processor.py)
+-- progresses each active, uncompleted camp on every tick within the
+-- camp's [start_date, end_date] window:
+--   - Fatigue accrues +2-5 per tick (reduced by cardio +
+--     fatigue_tolerance).
+--   - Morale fluctuates ±0-2 per tick (dampened by coachability,
+--     biased by the gym's culture_tone: disciplined → +morale,
+--     loose → -morale, predator → +morale, balanced → neutral).
+--   - Injury risk accumulates +2-5 per tick (increased by
+--     injury_proneness, reduced by the gym's medical_support).
+--   - If injury_risk > 80: a training injury is created via the
+--     Task 15 injuries table (training-injury pool: torn ACL,
+--     hamstring strain, shoulder labrum tear, rib sprain, training
+--     concussion, wrist/ankle sprain). The camp is marked inactive
+--     and completed (the fighter is injured and can't continue
+--     training).
+--   - If current_date == end_date: the camp completes. Pick 2-4
+--     attributes from the camp_focus pool (count = 2 + int((coach_
+--     ability + development_focus) / 100), clamped [2,4]). Apply
+--     +1 to +3 base gain to each, scaled by:
+--       * gym spec multiplier (0.5-1.5 from facility_quality +
+--         development_focus — the brief's "Gym spec +50%/-50%" rule)
+--       * coachability multiplier (0.5-1.5)
+--       * fatigue factor (0.5-1.0 — high fatigue + low fatigue_
+--         tolerance reduces gains)
+--     Capped at fighter_career.potential. The attribute_changes
+--     column records the gains as a JSON dict (e.g. {"punch_power":
+--     2, "head_movement": 1}). A completion news item is written:
+--     "{Fighter} completes training camp" with topic='training'.
+--
+-- resolve_next_fight in app.py reads the camp's camp_fatigue column
+-- to apply the brief's "Fatigue > 50 = reduced starting gas" rule:
+-- starting gas = 100 - max(0, camp_fatigue - 50), floored at 50.
+-- This is the reader required by CONVENTIONS §5.3.
+--
+-- 19 columns (the brief's prose says "20" but the parenthetical
+-- list enumerates 19 — see worklog decision D2). The 4 0-100
+-- INTEGER columns have CHECK constraints; is_active / is_completed
+-- are 0/1 CHECK; camp_focus is restricted to the 8 enumerated
+-- values. FKs: fighter_id NOT NULL ON DELETE CASCADE (clean up
+-- when a fighter is deleted); gym_id / event_id / fight_id ON
+-- DELETE SET NULL (preserve camp history when a gym/event/fight
+-- is deleted — the camp record survives with NULL FK).
+--
+-- See docs/STAGES.md Task ID 16 for the brief. See SCHEMA_DRIFT_
+-- AUDIT.md §H (training_camps was the MISSING row this task
+-- upgrades to OK — deferred update per the brief's "No docs"
+-- rule; the supervisor applies the audit update at sign-off).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS training_camps (
+    training_camp_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id                 INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    gym_id                     INTEGER REFERENCES gyms(gym_id) ON DELETE SET NULL,
+    event_id                   INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    fight_id                   INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,
+    start_date                 TEXT NOT NULL,
+    end_date                   TEXT NOT NULL,
+    camp_duration_days         INTEGER NOT NULL DEFAULT 14 CHECK (camp_duration_days >= 0),
+    camp_focus                 TEXT NOT NULL DEFAULT 'general' CHECK (camp_focus IN ('striking','grappling','wrestling','conditioning','submission','clinch','general','weight_cut')),
+    camp_morale                INTEGER NOT NULL DEFAULT 50 CHECK (camp_morale BETWEEN 0 AND 100),
+    camp_fatigue               INTEGER NOT NULL DEFAULT 0 CHECK (camp_fatigue BETWEEN 0 AND 100),
+    camp_injury_risk           INTEGER NOT NULL DEFAULT 0 CHECK (camp_injury_risk BETWEEN 0 AND 100),
+    camp_weight_cut_pressure   INTEGER NOT NULL DEFAULT 0 CHECK (camp_weight_cut_pressure BETWEEN 0 AND 100),
+    attribute_changes          TEXT,
+    camp_result_summary        TEXT,
+    is_active                  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    is_completed               INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+    created_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def main():
@@ -1293,10 +1493,23 @@ def main():
             "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) VALUES (?, ?)",
             ("cage_empire", CODE_SCHEMA_VERSION),
         )
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_injuries",),
-        )
+        # Record ALL migrations that this build_db.py knows about —
+        # one INSERT per migration. Per CONVENTIONS §1.4, the
+        # schema_migrations table is the complete history of named
+        # migrations applied to this DB; if a migration is dropped
+        # from this list, a future reader can't tell whether the
+        # migration was applied (the data is still there, but the
+        # audit row is missing). Keep this list in version order.
+        for migration_name in (
+            "v2_2_0_add_fighter_depth",
+            "v2_3_0_add_beat_engine_depth",
+            "v2_4_0_add_injuries",
+            "v2_5_0_add_training_camps",
+        ):
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+                (migration_name,),
+            )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()
     print(f"Rebuilt database at {DB_PATH}")
