@@ -680,22 +680,42 @@ across 11 cases in `scripts/test_training_camps.py`.
   CHECK constraint's enumerated set (the brief's "leg" was changed
   to "hip" — "leg" is not in the CHECK).
 
-### Task ID 17 — Weight cuts
+### Task ID 17 — Weight cuts — **DONE** (commit `pending`)
 
-**Brief (needs expansion).** Add `weight_cut_difficulty` column to
-`fighters` (migration). Before a fight, fighters cut weight. High
-`weight_cut_difficulty` + high `aggression` = chance of missing weight
-→ fight becomes catch-weight or cancelled.
+**Status:** Schema v2.6.0 → v2.7.0 (MINOR). 1 new table (`weight_cut_log`,
+14 columns). Migration `v2_7_0_add_weight_cut_log`. 41 sub-checks
+across 10 cases in `scripts/test_weight_cuts.py`.
 
-**Dependencies:** Task 14.6 (needs `weight_cut_difficulty` column).
+**Implementation:**
+- `_run_weight_cut()` in app.py — called by `resolve_next_fight`
+  BEFORE the fight resolves. For each of the 2 fighters, rolls against
+  the miss probability (derived from `weight_cut_difficulty` + age +
+  `camp_weight_cut_pressure` − gym `weight_cut_support`).
+- 5 cut outcomes:
+  * `made_weight` — no penalty, fight proceeds normally
+  * `missed_small` (< 1kg) — 20% purse forfeiture, no cardio penalty
+  * `missed_medium` (1-3kg) — 30% purse forfeiture, 15 cardio penalty
+  * `missed_large` (> 3kg) — fight CANCELLED (no_contest, opponent
+    gets 50% purse)
+  * `cancelled` — fight cancelled before the cut (reserved for future)
+- Miss distribution: 50% small, 35% medium, 15% large.
+- Cardio penalty applied to starting gas (`gas = 100 - cardio_penalty`,
+  floored at 50).
+- News items written for every cut result (topic='weight_cut').
 
-**Questions to resolve:**
-- How is weight cut difficulty determined? (Per-fighter static value?
-  Affected by age? Affected by weight class changes?)
-- What happens when a fighter misses weight? (Catch-weight? Fight
-  cancelled? Opponent gets a percentage of purse?)
-- Does the cut affect fight performance? (Lower cardio/stamina for
-  the fighter who had a harder cut?)
+**Answers to the brief's open questions:**
+- Weight cut difficulty: per-fighter static value
+  (`fighters.weight_cut_difficulty`, 0-100, added in Task 14.5).
+  Modified by age (+1% per year over 30, max +15%) and
+  `camp_weight_cut_pressure` (0-20%).
+- Missing weight: three outcomes based on how badly they miss (small/
+  medium/large). Large miss → fight cancelled.
+- Cut affects performance: missed_medium applies a 15-point cardio
+  penalty to starting gas.
+
+**Design Law (§13):** Conflict (pre-fight tension), Investment
+(manage weight cut difficulty), Anticipation ("will he make weight?"),
+Stories ("champion missed weight, stripped, interim title fight set").
 
 ### Task ID 18 — Scouting system
 

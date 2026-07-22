@@ -3110,6 +3110,211 @@ def _get_camp_fatigue_for_event(conn, fighter_id, event_id):
     return row[0] if row else 0
 
 
+# ----------------------------------------------------------------
+# Weight cuts (Task ID 17).
+#
+# Before a fight, fighters cut weight to make their weight class limit.
+# The `weight_cut_difficulty` column (0-100, per-fighter static, added
+# in Task 14.5) drives the base miss probability. Age (older = harder
+# cut) and camp_weight_cut_pressure (from weight_cut-focused camps,
+# Task 16) modify the probability. Gym weight_cut_support reduces it.
+#
+# The cut outcome determines what happens:
+#   made_weight    — no penalty, fight proceeds normally
+#   missed_small   — missed by < 1kg, 20% purse forfeiture, no cardio penalty
+#   missed_medium  — missed by 1-3kg, 30% purse forfeiture, 15 cardio penalty
+#   missed_large   — missed by > 3kg, fight CANCELLED (no_contest)
+#
+# The cardio penalty reduces the fighter's starting gas in
+# resolve_next_fight (gas = 100 - cardio_penalty, floored at 50).
+# This is the "hard cut cost the fighter his gas" story.
+# ----------------------------------------------------------------
+
+
+def _compute_weight_cut_miss_prob(conn, fighter_id, event_id):
+    """Compute the probability (0.0-1.0) that a fighter misses weight.
+
+    Base probability from weight_cut_difficulty (0-100 → 0%-40%).
+    Modified by:
+      + age (fighters 30+ get +1% per year over 30, max +15%)
+      + camp_weight_cut_pressure (0-100 → 0%-20%, from weight_cut camps)
+      - gym weight_cut_support (0-100 → 0%-15% reduction)
+
+    Capped at 0.75 (75% max miss probability — even the worst cutter
+    makes weight sometimes).
+
+    Args:
+        conn: sqlite3 connection (read-only).
+        fighter_id: the fighter attempting the cut.
+        event_id: the event the fight is on (for camp pressure lookup).
+
+    Returns:
+        Float 0.0-1.0 — the probability of missing weight.
+    """
+    row = conn.execute(
+        "SELECT f.weight_cut_difficulty, f.date_of_birth, "
+        "f.current_gym_id "
+        "FROM fighters f WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if row is None:
+        return 0.0
+    wcd, dob, gym_id = row
+    wcd = wcd or 50  # default if NULL
+    # Base miss probability: 0% at wcd=0, 40% at wcd=100
+    base_prob = wcd / 100.0 * 0.40
+    # Age modifier: +1% per year over 30, max +15%
+    if dob:
+        try:
+            birth_year = int(dob[:4])
+            age = 2026 - birth_year  # sim date is 2026-07-22
+            if age > 30:
+                base_prob += min(0.15, (age - 30) * 0.01)
+        except (ValueError, TypeError):
+            pass
+    # Camp weight_cut_pressure modifier: 0-20% from weight_cut camps
+    camp_row = conn.execute(
+        "SELECT camp_weight_cut_pressure FROM training_camps "
+        "WHERE fighter_id=? AND event_id=? "
+        "ORDER BY training_camp_id DESC LIMIT 1",
+        (fighter_id, event_id),
+    ).fetchone()
+    if camp_row:
+        pressure = camp_row[0]
+        base_prob += pressure / 100.0 * 0.20
+    # Gym weight_cut_support reduction: 0-15%
+    if gym_id is not None:
+        gym_row = conn.execute(
+            "SELECT weight_cut_support FROM gyms WHERE gym_id=?",
+            (gym_id,),
+        ).fetchone()
+        if gym_row:
+            support = gym_row[0]
+            base_prob -= support / 100.0 * 0.15
+    # Clamp to [0, 0.75]
+    return max(0.0, min(0.75, base_prob))
+
+
+def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
+                    event_date, is_title_fight):
+    """Run the weight cut for a fighter and return the cut_outcome.
+
+    Rolls against the miss probability. If the fighter misses, picks a
+    cut_outcome (missed_small / missed_medium / missed_large) based on
+    how badly they missed. Writes a weight_cut_log row + a news item.
+
+    Returns:
+        A dict with keys: cut_outcome (str), cardio_penalty (int),
+        purse_penalty_pct (int), weight_missed_kg (float),
+        actual_weight_kg (float or None).
+    """
+    # Get the weight class target weight (max_weight_kg)
+    wc_row = conn.execute(
+        "SELECT max_weight_kg FROM weight_classes WHERE weight_class_id=?",
+        (weight_class_id,),
+    ).fetchone()
+    if wc_row is None:
+        return {"cut_outcome": "made_weight", "cardio_penalty": 0,
+                "purse_penalty_pct": 0, "weight_missed_kg": 0.0,
+                "actual_weight_kg": None}
+    target_weight = wc_row[0]
+
+    # Compute miss probability
+    miss_prob = _compute_weight_cut_miss_prob(conn, fighter_id, event_id)
+
+    # Roll
+    if random.random() < miss_prob:
+        # Fighter misses weight. Pick how badly.
+        # 50% small (< 1kg), 35% medium (1-3kg), 15% large (> 3kg)
+        roll = random.random()
+        if roll < 0.50:
+            cut_outcome = "missed_small"
+            weight_missed = random.uniform(0.1, 0.9)
+            cardio_penalty = 0
+            purse_penalty = 20
+        elif roll < 0.85:
+            cut_outcome = "missed_medium"
+            weight_missed = random.uniform(1.0, 3.0)
+            cardio_penalty = 15
+            purse_penalty = 30
+        else:
+            cut_outcome = "missed_large"
+            weight_missed = random.uniform(3.1, 5.0)
+            cardio_penalty = 0  # fight cancelled, no cardio penalty applies
+            purse_penalty = 50  # opponent gets 50%, offender gets nothing
+        actual_weight = target_weight + weight_missed
+    else:
+        # Fighter makes weight
+        cut_outcome = "made_weight"
+        weight_missed = 0.0
+        actual_weight = target_weight
+        cardio_penalty = 0
+        purse_penalty = 0
+
+    # Write the weight_cut_log row
+    conn.execute(
+        "INSERT INTO weight_cut_log (fighter_id, fight_id, event_id, "
+        "weight_class_id, cut_date, target_weight_kg, actual_weight_kg, "
+        "weight_missed_kg, cut_outcome, cardio_penalty, purse_penalty_pct, "
+        "is_title_fight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (fighter_id, fight_id, event_id, weight_class_id, event_date,
+         target_weight, actual_weight, weight_missed, cut_outcome,
+         cardio_penalty, purse_penalty, is_title_fight),
+    )
+
+    # Write a news item about the cut result
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+    name_row = conn.execute(
+        "SELECT first_name || ' ' || last_name FROM fighters WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    fighter_name = name_row[0] if name_row else f"Fighter {fighter_id}"
+    if cut_outcome == "made_weight":
+        headline = f"{fighter_name} makes weight"
+        body = f"{fighter_name} successfully made weight at {target_weight:.1f}kg for the upcoming fight."
+        sentiment = "neutral"
+    elif cut_outcome == "missed_large":
+        headline = f"{fighter_name} misses weight by {weight_missed:.1f}kg — fight cancelled"
+        body = (f"{fighter_name} missed weight by {weight_missed:.1f}kg, "
+                f"coming in at {actual_weight:.1f}kg for a {target_weight:.1f}kg limit. "
+                f"The fight has been cancelled. The opponent will receive 50% of their purse.")
+        sentiment = "negative"
+    else:
+        headline = f"{fighter_name} misses weight by {weight_missed:.1f}kg"
+        body = (f"{fighter_name} missed weight by {weight_missed:.1f}kg, "
+                f"coming in at {actual_weight:.1f}kg for a {target_weight:.1f}kg limit. "
+                f"The fight will proceed at catch-weight. "
+                f"{fighter_name.split()[0]} forfeits {purse_penalty}% of their purse"
+                f"{' and will start the fight with depleted cardio' if cardio_penalty > 0 else ''}.")
+        sentiment = "negative"
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, fight_id, event_id, published_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, sentiment, "weight_cut", fighter_id,
+         fight_id, event_id, event_date),
+    )
+
+    return {
+        "cut_outcome": cut_outcome,
+        "cardio_penalty": cardio_penalty,
+        "purse_penalty_pct": purse_penalty,
+        "weight_missed_kg": weight_missed,
+        "actual_weight_kg": actual_weight,
+    }
+
+
 def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """Auto-schedule the next event for a promotion, ~weeks_out weeks
     after a reference date.
@@ -3789,6 +3994,84 @@ def resolve_next_fight(conn):
     stats_b = _load_fighter_stats(conn, b_id)
 
     # ----------------------------------------------------------------
+    # v2.7.0 (Task 17): run weight cuts for BOTH fighters BEFORE the
+    # fight resolves. If either fighter misses_large (> 3kg), the
+    # fight is CANCELLED — recorded as 'no_contest' in fight_history.
+    # If a fighter misses_small or missed_medium, the fight proceeds
+    # at catch-weight with a cardio penalty applied to starting gas.
+    # ----------------------------------------------------------------
+    cut_a = _run_weight_cut(conn, a_id, fight_id, event_id,
+                            weight_class_id, event_date, is_title_fight)
+    cut_b = _run_weight_cut(conn, b_id, fight_id, event_id,
+                            weight_class_id, event_date, is_title_fight)
+    # Check for cancellation (either fighter missed_large)
+    if cut_a["cut_outcome"] == "missed_large" or cut_b["cut_outcome"] == "missed_large":
+        # Fight cancelled — record as no_contest and return early
+        # Determine which fighter missed (or both)
+        if cut_a["cut_outcome"] == "missed_large" and cut_b["cut_outcome"] == "missed_large":
+            nc_headline = f"Fight cancelled — both fighters missed weight"
+        elif cut_a["cut_outcome"] == "missed_large":
+            nc_headline = f"Fight cancelled — {fighter_name(conn, a_id)} missed weight by {cut_a['weight_missed_kg']:.1f}kg"
+        else:
+            nc_headline = f"Fight cancelled — {fighter_name(conn, b_id)} missed weight by {cut_b['weight_missed_kg']:.1f}kg"
+        # Mark the fight as no_contest
+        conn.execute(
+            "UPDATE fights SET result_type='no_contest', finish_round=0, "
+            "finish_time='0:00', performance_rating=0, fan_reaction_rating=20 "
+            "WHERE fight_id=?",
+            (fight_id,),
+        )
+        # Defensive: clear any existing fight_history rows for this fight
+        # (matches the main resolver's idempotent pattern — a re-resolve
+        # after reset_fight would have stale rows).
+        conn.execute("DELETE FROM fight_history WHERE fight_id=?", (fight_id,))
+        # Write fight_history rows for both fighters (outcome='nc')
+        for fid in (a_id, b_id):
+            oid = b_id if fid == a_id else a_id
+            conn.execute(
+                "INSERT INTO fight_history (fight_id, fighter_id, opponent_id, "
+                "outcome, result_type, finish_round, finish_time, score_margin, "
+                "event_id, event_date, weight_class_id, title_at_stake) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (fight_id, fid, oid, "nc", "no_contest", 0, "0:00",
+                 0, event_id, event_date, weight_class_id, is_title_fight),
+            )
+        # Update fighter_career records (no win/loss added, but
+        # fights_counted via fight_history rows)
+        # Write a cancellation news item
+        src_row = conn.execute(
+            "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+        ).fetchone()
+        if src_row is None:
+            src_id = conn.execute(
+                "INSERT INTO news_sources (name, credibility, sensationalism, "
+                "bias, regional_reach, reliability, frequency) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("System Feed", 70, 40, 50, 60, 80, 80),
+            ).lastrowid
+        else:
+            src_id = src_row[0]
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fight_id, event_id, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (src_id, nc_headline,
+             f"The fight has been cancelled due to a weight miss. "
+             f"No winner will be declared.",
+             "negative", "weight_cut", fight_id, event_id, event_date),
+        )
+        # Trigger event lifecycle (check if this was the last fight on the card)
+        _update_event_status_after_resolution(conn, event_id)
+        # If the event just completed, auto-schedule the next event
+        post_status = conn.execute(
+            "SELECT status FROM events WHERE event_id = ?", (event_id,)
+        ).fetchone()[0]
+        if post_status == "completed":
+            schedule_next_event(conn, promotion_id=promo_id,
+                                from_event_date=event_date, weeks_out=4)
+        return fight_id  # return the fight_id even though it was cancelled
+
+    # ----------------------------------------------------------------
     # v2.3.0 (Task B2): compute fight importance + pressure modifiers.
     # Importance is a computed value (0-100), not stored. Pressure
     # modifiers apply to beat scores only in high-importance fights
@@ -3843,9 +4126,15 @@ def resolve_next_fight(conn):
     camp_fatigue_b = _get_camp_fatigue_for_event(conn, b_id, event_id)
     gas_a = 100.0 - max(0, camp_fatigue_a - 50) if camp_fatigue_a > 50 else 100.0
     gas_b = 100.0 - max(0, camp_fatigue_b - 50) if camp_fatigue_b > 50 else 100.0
+    # v2.7.0 (Task 17): apply weight cut cardio penalty. Fighters who
+    # missed_medium (1-3kg over) start the fight with reduced cardio —
+    # gas reduced by the cardio_penalty (default 15), floored at 50.
+    # This is the "hard cut cost the fighter his gas" story.
+    gas_a -= cut_a.get("cardio_penalty", 0)
+    gas_b -= cut_b.get("cardio_penalty", 0)
     # Floor at 50 — a fighter never starts below half gas (the camp
-    # fatigue penalty is real but never crippling enough to lose the
-    # fight before it starts).
+    # fatigue + weight cut penalty is real but never crippling enough
+    # to lose the fight before it starts).
     gas_a = max(50.0, gas_a)
     gas_b = max(50.0, gas_b)
     # v2.3.0 momentum: cumulative momentum carries across rounds.

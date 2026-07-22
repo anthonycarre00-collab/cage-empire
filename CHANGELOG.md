@@ -9,6 +9,68 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 
+## [2.7.0] - 2026-07-23
+
+### Added (Task 17 — Weight cuts, schema 2.7.0 MINOR)
+- New `weight_cut_log` table — 14 columns. One row per fighter per
+  scheduled fight, recording the weight cut outcome. The
+  `cut_outcome` CHECK constrains to 5 enumerated values
+  ('made_weight', 'missed_small', 'missed_medium', 'missed_large',
+  'cancelled'). FKs: fighter_id NOT NULL ON DELETE CASCADE; fight_id
+  / event_id / weight_class_id ON DELETE SET NULL.
+- New `_compute_weight_cut_miss_prob()` helper in app.py — computes
+  the probability (0.0-1.0) that a fighter misses weight. Base from
+  `weight_cut_difficulty` (0-100 → 0%-40%), +age (+1%/yr over 30,
+  max +15%), +`camp_weight_cut_pressure` (0-20%), −gym
+  `weight_cut_support` (0-15%). Capped at 0.75.
+- New `_run_weight_cut()` helper in app.py — called by
+  `resolve_next_fight` BEFORE the fight resolves. Rolls against the
+  miss probability. If the fighter misses, picks a cut_outcome based
+  on how badly they missed (50% small, 35% medium, 15% large). Writes
+  a `weight_cut_log` row + a news item (topic='weight_cut').
+- `resolve_next_fight` in app.py — extended to run weight cuts for
+  both fighters before the fight. If either fighter misses_large
+  (> 3kg), the fight is CANCELLED (result_type='no_contest',
+  fight_history outcome='nc', fight returns early). If a fighter
+  misses_medium, a 15-point cardio penalty is applied to their
+  starting gas (floored at 50).
+- `build_db.py` — `CODE_SCHEMA_VERSION` bumped to "2.7.0". Migration
+  `v2_7_0_add_weight_cut_log` recorded in the MIGRATIONS registry.
+
+### Tests (Task 17)
+- New acceptance test `scripts/test_weight_cuts.py` — 41 sub-checks
+  across 10 cases (A schema, B defaults, C miss probability, D
+  made_weight path, E missed_small path, F missed_medium path, G
+  missed_large path, H resolve_next_fight integration, I camp
+  pressure integration, J Design Law check). All PASS.
+- Supervisor fix: `test_beat_engine_depth.py` case L.3 — added
+  'no_contest' to the valid result_type set (was 8 values, now 9).
+- Supervisor fix: `test_beat_engine_depth.py` case L.4 — finish_round
+  now allows 0 (no_contest fights never start) in addition to > 0.
+- Supervisor fix: `test_fight_resolver.py` — the no_contest path
+  now DELETEs existing fight_history rows before INSERTing (defensive
+  idempotency, matches the main resolver's pattern).
+
+### Design Law check (CONVENTIONS §13)
+- **Conflict**: weight cut is a pre-fight tension point — will the
+  fighter make weight? Title fights on the line.
+- **Investment**: the player manages fighters' weight cut difficulty
+  (signing fighters who cut easier, moving them up a weight class).
+- **Anticipation**: "will he make weight?" before every fight.
+- **Stories**: "The champion missed weight by 3.5kg and was stripped.
+  The interim title fight is set." / "The prospect missed weight in
+  his debut — the fight proceeded at catch-weight, he gassed in round
+  2 and lost by TKO."
+
+### No raw numbers in UI (CONVENTIONS §14)
+- `cut_outcome` is stored as an enum string ('made_weight',
+  'missed_small', etc.) — the interpretation layer (Task 19) will
+  translate to player-facing descriptors.
+- `cardio_penalty` and `purse_penalty_pct` are raw integers in the
+  DB; the UI will show "depleted cardio" / "forfeits 30% of purse"
+  instead of the raw numbers.
+
+
 ## [2.5.0] - 2026-07-22
 
 ### Added (Task 16 — Training camps, schema 2.5.0 MINOR)

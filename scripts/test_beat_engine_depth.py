@@ -1792,12 +1792,13 @@ def case_l_e2e():
         f"ko_tko_count={ko_count}/{N_SIMS}",
     ))
 
-    # L.3 result_type is one of the 8 valid values (ko_tko, submission,
+    # L.3 result_type is one of the 9 valid values (ko_tko, submission,
     # doctor_stoppage, corner_stoppage, dq, unanimous_decision,
-    # split_decision, draw).
+    # split_decision, draw, no_contest). v2.7.0 (Task 17): added
+    # 'no_contest' for weight-cut-cancelled fights.
     valid_types = {
         "ko_tko", "submission", "doctor_stoppage", "corner_stoppage", "dq",
-        "unanimous_decision", "split_decision", "draw",
+        "unanimous_decision", "split_decision", "draw", "no_contest",
     }
     observed_types = set(tallies["result_types"].keys())
     all_valid = observed_types.issubset(valid_types)
@@ -1808,18 +1809,20 @@ def case_l_e2e():
     ))
 
     # L.4 finish_round is the round where the finish happened (not
-    # scheduled_rounds) for finishes.
+    # scheduled_rounds) for finishes. v2.7.0: no_contest fights have
+    # finish_round=0 (the fight never started), which is valid.
     sched_rounds = conn.execute(
         "SELECT scheduled_rounds FROM fights WHERE fight_id=?", (fight_id,)
     ).fetchone()[0]
     finish_rounds = tallies["finish_rounds"]
     # For finishes, finish_round should be <= scheduled_rounds and > 0.
     # For decisions, finish_round should == scheduled_rounds.
-    # All finish_rounds should be > 0 (the resolver always sets it).
-    all_positive = all(r > 0 for r in finish_rounds if r is not None)
-    all_in_range = all(0 < r <= sched_rounds for r in finish_rounds if r is not None)
+    # For no_contest (weight cut cancellation), finish_round == 0.
+    # All finish_rounds should be >= 0.
+    all_positive = all(r >= 0 for r in finish_rounds if r is not None)
+    all_in_range = all(0 <= r <= sched_rounds for r in finish_rounds if r is not None)
     results.append((
-        f"L.4 finish_round is always > 0 and <= scheduled_rounds",
+        f"L.4 finish_round is always >= 0 and <= scheduled_rounds (v2.7.0: 0=no_contest)",
         all_positive and all_in_range,
         f"all_positive={all_positive}, all_in_range={all_in_range}, "
         f"scheduled_rounds={sched_rounds}",

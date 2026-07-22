@@ -160,6 +160,48 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 #
 # Migration name: v2_6_0_world_seed_prep.
 #
+# v2.7.0 (Task 17 — Weight cuts) — MINOR bump. Adds the new
+# `weight_cut_log` table (one row per fighter per fight recording the
+# weight cut result: made_weight, weight_missed_kg, cut_outcome,
+# cardio_penalty, purse_penalty_pct). Per CONVENTIONS §1.1, adding a
+# new table is a MINOR bump. Per CONVENTIONS §5 (one table-group per
+# task), this task adds ONLY the `weight_cut_log` table — it is a
+# single logical group (fight preparation) that builds on the existing
+# `fighters.weight_cut_difficulty` column (Task 14.5) and the existing
+# `training_camps.camp_weight_cut_pressure` column (Task 16).
+#
+# Schema changes in this task:
+#   1. New `weight_cut_log` table — 14 columns. One row per fighter
+#      per scheduled fight, recording the cut outcome. The
+#      `cut_outcome` CHECK constrains to the 5 enumerated values
+#      ('made_weight', 'missed_small', 'missed_medium', 'missed_large',
+#      'cancelled'). FKs: fighter_id NOT NULL ON DELETE CASCADE,
+#      fight_id / event_id ON DELETE SET NULL (preserve cut history
+#      when a fight/event is deleted).
+#
+# Code changes in app.py (Task 17):
+#   - New `_run_weight_cut()` helper called from resolve_next_fight()
+#     BEFORE the fight resolves. For each of the 2 fighters, rolls
+#     against the miss probability (derived from weight_cut_difficulty
+#     + age + camp_weight_cut_pressure). If the fighter misses, picks
+#     a cut_outcome based on how badly they missed (small/medium/large).
+#   - New `_apply_weight_cut_penalty()` helper that applies the cardio
+#     penalty to the fighter's starting gas (for missed_small and
+#     missed_medium — the fight proceeds at catch-weight with reduced
+#     cardio). For missed_large, the fight is CANCELLED (returns early
+#     from resolve_next_fight with no fight resolution).
+#   - New `_record_weight_cut_log()` helper that writes the
+#     weight_cut_log row + a news item ("{Fighter} misses weight by
+#     X kg" or "{Fighter} makes weight").
+#
+# Code changes in tick_processor.py (Task 17):
+#   - The training camp progression (_progress_training_camp) now
+#     accrues camp_weight_cut_pressure for camps with camp_focus=
+#     'weight_cut' (reserved in Task 16). This pressure feeds into
+#     _run_weight_cut's miss probability.
+#
+# Migration name: v2_7_0_add_weight_cut_log.
+#
 # v2.4.0 (Task 15 — Injuries + medical recovery) — MINOR bump. Adds
 # the new `injuries` table (one row per injury a fighter suffers).
 # Per CONVENTIONS §1.1, adding a new table is a MINOR bump. Per
@@ -443,7 +485,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.6.0"
+CODE_SCHEMA_VERSION = "2.7.0"
 
 
 def _parse_version(v):
@@ -1535,6 +1577,61 @@ CREATE TABLE IF NOT EXISTS training_camps (
     created_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at                 TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- weight_cut_log (added v2.7.0, Task 17 — Weight cuts).
+--
+-- One row per fighter per scheduled fight, recording the weight cut
+-- outcome. Created by _run_weight_cut() in app.py, called from
+-- resolve_next_fight() BEFORE the fight resolves. The cut_outcome
+-- determines what happens:
+--   'made_weight'    — fighter made weight, no penalty, fight proceeds
+--   'missed_small'   — missed by < 1kg, fight proceeds at catch-weight,
+--                      offender forfeits 20% of purse to opponent
+--   'missed_medium'  — missed by 1-3kg, fight proceeds at catch-weight,
+--                      offender forfeits 30% of purse + starts with
+--                      reduced cardio (gas penalty)
+--   'missed_large'   — missed by > 3kg, fight CANCELLED (opponent gets
+--                      50% purse, offender gets nothing, fight_history
+--                      records a 'no_contest' result_type)
+--   'cancelled'      — the fight was cancelled before the cut (e.g.,
+--                      opponent's camp produced an injury). The fighter
+--                      didn't attempt the cut.
+--
+-- The miss probability is derived from:
+--   - fighters.weight_cut_difficulty (0-100, per-fighter static)
+--   - fighter age (older = harder cut, +1% per year over 30)
+--   - training_camps.camp_weight_cut_pressure (0-100, from weight_cut
+--     focused camps)
+--   - gym weight_cut_support (reduces miss probability)
+--
+-- The cardio_penalty is applied to the fighter's starting gas in
+-- resolve_next_fight (gas starts at 100 - cardio_penalty, floored at
+-- 50). This is the "hard cut cost the fighter his gas" story.
+--
+-- 14 columns. FKs: fighter_id NOT NULL ON DELETE CASCADE; fight_id /
+-- event_id ON DELETE SET NULL (preserve cut history when a fight/event
+-- is deleted). See docs/STAGES.md Task ID 17 for the brief.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS weight_cut_log (
+    weight_cut_log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id             INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    fight_id               INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,
+    event_id               INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+    weight_class_id        INTEGER REFERENCES weight_classes(weight_class_id) ON DELETE SET NULL,
+    cut_date               TEXT NOT NULL,
+    target_weight_kg       REAL NOT NULL,
+    actual_weight_kg       REAL,
+    weight_missed_kg       REAL NOT NULL DEFAULT 0.0,
+    cut_outcome            TEXT NOT NULL DEFAULT 'made_weight'
+                           CHECK (cut_outcome IN ('made_weight', 'missed_small',
+                                                  'missed_medium', 'missed_large',
+                                                  'cancelled')),
+    cardio_penalty         INTEGER NOT NULL DEFAULT 0 CHECK (cardio_penalty BETWEEN 0 AND 50),
+    purse_penalty_pct      INTEGER NOT NULL DEFAULT 0 CHECK (purse_penalty_pct BETWEEN 0 AND 100),
+    is_title_fight         INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0, 1)),
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -1931,6 +2028,32 @@ def _migrate_v2_6_0_world_seed_prep(conn):
         )
 
 
+def _migrate_v2_7_0_add_weight_cut_log(conn):
+    """Task 17 — weight cuts. Adds the weight_cut_log table."""
+    if not _has_table(conn, "weight_cut_log"):
+        conn.execute(
+            "CREATE TABLE weight_cut_log (\n"
+            "    weight_cut_log_id      INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id             INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    fight_id               INTEGER REFERENCES fights(fight_id) ON DELETE SET NULL,\n"
+            "    event_id               INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    weight_class_id        INTEGER REFERENCES weight_classes(weight_class_id) ON DELETE SET NULL,\n"
+            "    cut_date               TEXT NOT NULL,\n"
+            "    target_weight_kg       REAL NOT NULL,\n"
+            "    actual_weight_kg       REAL,\n"
+            "    weight_missed_kg       REAL NOT NULL DEFAULT 0.0,\n"
+            "    cut_outcome            TEXT NOT NULL DEFAULT 'made_weight'\n"
+            "                           CHECK (cut_outcome IN ('made_weight', 'missed_small',\n"
+            "                                                  'missed_medium', 'missed_large',\n"
+            "                                                  'cancelled')),\n"
+            "    cardio_penalty         INTEGER NOT NULL DEFAULT 0 CHECK (cardio_penalty BETWEEN 0 AND 50),\n"
+            "    purse_penalty_pct      INTEGER NOT NULL DEFAULT 0 CHECK (purse_penalty_pct BETWEEN 0 AND 100),\n"
+            "    is_title_fight         INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0, 1)),\n"
+            "    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 # The ordered registry of migrations. Each entry is
 # (migration_name, version_introduced, function). The runner applies
 # them in order, skipping any already recorded in schema_migrations.
@@ -1942,6 +2065,7 @@ MIGRATIONS = [
     ("v2_4_0_add_injuries",        "2.4.0", _migrate_v2_4_0_add_injuries),
     ("v2_5_0_add_training_camps",  "2.5.0", _migrate_v2_5_0_add_training_camps),
     ("v2_6_0_world_seed_prep",     "2.6.0", _migrate_v2_6_0_world_seed_prep),
+    ("v2_7_0_add_weight_cut_log",  "2.7.0", _migrate_v2_7_0_add_weight_cut_log),
 ]
 
 
