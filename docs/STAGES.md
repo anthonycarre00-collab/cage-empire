@@ -987,7 +987,42 @@ driven by personality and recent fight results.
 
 ### Task ID 22 — Rivalries
 
-**Brief (needs expansion).** Add `rivalries` table. Built from callouts,
+**Status: DONE (schema 3.1.0 → 3.2.0 MINOR).** New `rivalries` table
+(16 columns, 7 rivalry types via CHECK, rivalry_heat 0-100, head-to-
+head fight counts, voice-layer-driven origin_description). Entirely
+event-bus-driven via `src/rivalries.py` (subscribes to FIGHT_RESOLVED,
+TITLE_CHANGED, TICK_ADVANCED per CONVENTIONS §15.4). NO raw numbers
+in any description text (CONVENTIONS §14) — every description uses
+voice.describe_career_stage for both fighters.
+
+Three subscribers:
+  - `_check_social_beefs` (TICK_ADVANCED) — scans social_posts for
+    callout/trash_talk accumulation. 3+ posts between a pair spawns
+    a 'callout' rivalry (initial heat 50). For existing rivalries,
+    applies +5 per callout/trash_talk and -10 per apology post
+    since the last escalation.
+  - `_process_fight_rivalry` (FIGHT_RESOLVED) — existing rivalry:
+    +15 heat (or +25 for title fights) + increment fights_count /
+    fighter_a_wins / fighter_b_wins / draws. New rivalry from
+    weight cut miss (bad_blood) or close decision (rematch_hungry,
+    score_margin <= 2).
+  - `_process_title_rivalry` (TITLE_CHANGED) — dethroning (reigns_
+    count > 1) creates or escalates a 'title_rivalry' between the
+    new and former champion (initial heat 70). Vacant-claim
+    (reigns_count == 1) does NOT create a rivalry.
+
+Readers: `get_rivalry(conn, a, b)`, `get_active_rivalries(conn,
+fighter_id)`, `get_rivalry_heat(conn, a, b)`. The fight engine
+(`resolve_next_fight` in app.py) is NOT modified per the brief —
+the readers are provided for a future task to consume when wiring
+rivalry-heat modifiers into the beat engine (high heat > 70 →
++aggression, -composure modifiers; title_rivalry → extra
+importance/hype).
+
+Acceptance test: `scripts/test_rivalries.py` — 78 sub-checks across
+10 cases. All PASS.
+
+**Original brief.** Add `rivalries` table. Built from callouts,
 bad decisions, missed weights, close fights, stolen opportunities.
 Affects fight hype and fighter performance (higher `aggression` +
 lower `composure` in rivalry fights).

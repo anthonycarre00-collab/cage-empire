@@ -5710,6 +5710,26 @@ class App(tk.Tk):
             _register_social()
         except ImportError:
             pass  # social.py not available — legacy behavior
+        # v3.2.0 (Task 22): register the rivalries subscribers on the
+        # global event bus. The rivalries system writes pairwise
+        # rivalry records to the rivalries table in response to
+        # FIGHT_RESOLVED (close decisions, weight cut misses, fights
+        # between existing rivals), TITLE_CHANGED (title changes
+        # hands → title_rivalry), and TICK_ADVANCED (accumulated
+        # social_posts callouts/trash_talks spawn 'callout'
+        # rivalries). All descriptions use voice descriptors per
+        # CONVENTIONS §14 — no raw numbers. The fight engine
+        # (resolve_next_fight in app.py) is NOT modified per the
+        # brief — readers (get_rivalry, get_active_rivalries) are
+        # provided for a future task to consume when wiring rivalry
+        # heat into the beat engine (high heat → +aggression,
+        # -composure modifiers). Lazy import for the same reasons as
+        # news.py / social.py above.
+        try:
+            from rivalries import register_subscribers as _register_rivalries
+            _register_rivalries()
+        except ImportError:
+            pass  # rivalries.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

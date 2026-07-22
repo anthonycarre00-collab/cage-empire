@@ -8,6 +8,82 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Task 22 — Rivalries, schema 3.1.0 → 3.2.0 MINOR)
+- New `rivalries` table — pairwise rivalries between two fighters.
+  16 columns: rivalry_id PK, fighter_a_id + fighter_b_id FKs (NOT
+  NULL ON DELETE CASCADE, UNIQUE pair — fighter_a_id is always the
+  lower ID for canonical ordering), rivalry_heat (0-100 DEFAULT 50
+  CHECK BETWEEN 0 AND 100), rivalry_type (TEXT NOT NULL CHECK IN
+  7 values: callout, bad_blood, title_rivalry, rematch_hungry,
+  style_clash, disrespect, stolen_opportunity), origin_event
+  (TEXT — short context marker), origin_description (TEXT —
+  voice-layer-driven description, NO raw numbers per CONVENTIONS
+  §14), fights_count + fighter_a_wins + fighter_b_wins + draws
+  (head-to-head record), is_active (0/1), last_escalation_date
+  (TEXT — tracks the last TICK_ADVANCED beef scan), created_at +
+  updated_at. Migration `v3_2_0_add_rivalries`.
+- New `src/rivalries.py` — entirely event-bus-driven (subscribes
+  to FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED per CONVENTIONS
+  §15.4):
+  * `_check_social_beefs` (TICK_ADVANCED subscriber) — scans
+    social_posts for accumulated callout/trash_talk posts between
+    two fighters. For existing rivalries, applies +5 heat per new
+    callout/trash_talk post and -10 per apology since the last
+    escalation. For pairs with 3+ callout/trash_talk posts and no
+    existing rivalry, creates a new 'callout' rivalry (initial
+    heat 50).
+  * `_process_fight_rivalry` (FIGHT_RESOLVED subscriber) — if the
+    fight was between existing rivals, increments fights_count +
+    fighter_a/b_wins/draws and applies +15 heat (or +25 for title
+    fights). If the fight was NOT between rivals but a fighter
+    missed weight (per weight_cut_log), creates a 'bad_blood'
+    rivalry. If no rivalry exists and the result was a close
+    decision (score_margin <= 2), creates a 'rematch_hungry'
+    rivalry.
+  * `_process_title_rivalry` (TITLE_CHANGED subscriber) — if a
+    title changes hands (reigns_count > 1 — dethroning, not
+    vacant-claim), creates or escalates a 'title_rivalry' between
+    the new champion and the former champion. Initial heat 70.
+  * `get_rivalry(conn, a, b)` — reader. Returns the rivalry row
+    for a fighter pair (canonical pair ordering, order-independent).
+  * `get_active_rivalries(conn, fighter_id)` — reader. Returns
+    all active rivalries involving the fighter, sorted by heat DESC.
+  * `get_rivalry_heat(conn, a, b)` — convenience reader for the
+    upcoming fight-engine integration task (high heat > 70 →
+    +aggression, -composure modifiers in the beat engine).
+  * Rivalry heat escalation: +5 per callout/trash_talk post, +15
+    per fight between rivals, +25 per title fight, +10 for weight
+    cut miss, -10 per apology post. Heat clamps at 100 (CHECK +
+    code clamp).
+  * Voice layer integration: every rivalry description uses
+    voice.describe_career_stage for both fighters — "A bad blood
+    rivalry between John Vale (reigning champion) and Marcus Reed
+    (top prospect). The rivalry started with a weight-cut miss
+    before their fight." NO raw numbers in any description text.
+- App `__init__` now calls `rivalries.register_subscribers()` so
+  the UI starts with the rivalries system wired to the event bus.
+  Lazy import inside __init__ keeps a missing rivalries.py from
+  breaking the app (same pattern as news.py + social.py).
+- New acceptance test `scripts/test_rivalries.py` — 78 sub-checks
+  across 10 cases (A schema, B _check_social_beefs, C
+  _process_fight_rivalry, D _process_title_rivalry, E readers,
+  F heat escalation, G no raw numbers, H event bus integration,
+  I Design Law, X seeded-fight smoke bonus). All PASS.
+- All 27 acceptance tests pass (26 existing + 1 new). 1600+ sub-checks.
+
+### Notes
+- The fight engine (`resolve_next_fight` in app.py) is NOT modified
+  per the brief — readers (`get_rivalry`, `get_active_rivalries`,
+  `get_rivalry_heat`) are provided for a future task to consume when
+  wiring rivalry-heat modifiers into the beat engine (high heat →
+  +aggression, -composure modifiers; title_rivalry → extra
+  importance/hype).
+- No new inline side effects in `resolve_next_fight` or `run_tick`
+  (CONVENTIONS §15.4 — event bus is ADDITIVE, not a replacement).
+- `style_clash` and `stolen_opportunity` rivalry types are
+  reserved in the CHECK constraint — they can be used by future
+  tasks (matchmaking, title-shot promises) without a schema change.
+
 ### Added (Task 21 — Social media + beefs, schema 3.0.0 → 3.1.0 MINOR)
 - New `social_posts` table — fighter-driven social media posts + beef
   escalation. 9 post types via CHECK constraint (callout, trash_talk,

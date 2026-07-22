@@ -505,7 +505,58 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.1.0"
+CODE_SCHEMA_VERSION = "3.2.0"
+
+
+# v3.2.0 (Task 22 — Rivalries) — MINOR bump. Adds the new `rivalries`
+# table (one row per pairwise rivalry between two fighters). Per
+# CONVENTIONS §1.1, adding a new table is a MINOR bump. Per §5 (one
+# table-group per task), this task adds ONLY the `rivalries` table —
+# it is a single logical group (Conflict pillar of the Design Law §13)
+# that builds on Task 21's `social_posts.is_beef_escalation` column
+# (callouts + trash_talk between fighters seed rivalries) and the
+# existing `fighters` + `fights` + `titles` tables.
+#
+# Schema changes in this task:
+#   1. New `rivalries` table — 16 columns. One row per pairwise
+#      rivalry between two fighters. The `rivalry_type` CHECK
+#      constrains to 7 enumerated values ('callout', 'bad_blood',
+#      'title_rivalry', 'rematch_hungry', 'style_clash',
+#      'disrespect', 'stolen_opportunity'). `rivalry_heat` 0-100
+#      drives fight-hype + aggression/composure modifiers.
+#      `is_active` 0/1 marks whether the rivalry is still simmering
+#      (inactive after both retire, or after a long quiet period).
+#      UNIQUE (fighter_a_id, fighter_b_id) — one rivalry per pair
+#      (fighter_a_id is always the lower fighter_id for canonical
+#      ordering). FKs: both fighter columns NOT NULL ON DELETE
+#      CASCADE.
+#
+# Code changes:
+#   - New `src/rivalries.py` — entirely event-bus-driven (CONVENTIONS
+#     §15.4). Subscribes to TICK_ADVANCED (_check_social_beefs),
+#     FIGHT_RESOLVED (_process_fight_rivalry), and TITLE_CHANGED
+#     (_process_title_rivalry). Writes voice-layer-driven origin
+#     descriptions (CONVENTIONS §14 — no raw numbers in any text).
+#   - Reader functions: get_rivalry(conn, a_id, b_id) returns the row
+#     for a fighter pair (or None); get_active_rivalries(conn,
+#     fighter_id) returns all active rivalries involving that fighter.
+#     The fight engine (resolve_next_fight in app.py) is NOT modified
+#     per the brief — the readers are provided for a future task to
+#     consume.
+#
+# Rivalry heat escalation:
+#   - Each callout/trash_talk social post between rivals: +5 heat
+#   - Each fight between rivals: +15 heat
+#   - Title fight between rivals: +25 heat
+#   - Weight cut miss against a rival: +10 heat
+#   - Apology social post: -10 heat
+#   - Heat caps at 100 (CHECK constraint + code clamp)
+#
+# Migration name: v3_2_0_add_rivalries.
+#
+# v3.1.0 (Task 21 — Social media + beefs) — MINOR bump. Adds the new
+# `social_posts` table. See the long comment block above the table
+# definition for full details.
 
 
 def _parse_version(v):
@@ -1819,6 +1870,75 @@ CREATE TABLE IF NOT EXISTS social_posts (
     is_beef_escalation INTEGER NOT NULL DEFAULT 0 CHECK (is_beef_escalation IN (0, 1)),
     created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- rivalries (added v3.2.0, Task 22 — Rivalries).
+--
+-- One row per pairwise rivalry between two fighters. Created by
+-- src/rivalries.py (event-bus subscribers) in response to TICK_ADVANCED
+-- (social beefs accumulation), FIGHT_RESOLVED (close decisions, weight
+-- cut misses, fights between existing rivals), and TITLE_CHANGED (title
+-- changes hands between two fighters → title_rivalry).
+--
+-- Rivalry heat escalation (handled in src/rivalries.py):
+--   Each callout/trash_talk social post between rivals: +5 heat
+--   Each fight between rivals: +15 heat
+--   Title fight between rivals: +25 heat
+--   Weight cut miss against a rival: +10 heat
+--   Apology social post: -10 heat
+--   Heat caps at 100 (CHECK + code clamp)
+--
+-- 7 rivalry types (CHECK constraint):
+--   callout             — built from accumulated callouts/trash_talk
+--                         posts between two fighters (3+ posts)
+--   bad_blood           — built from a non-fight incident (weight cut
+--                         miss against a rival, etc.)
+--   title_rivalry       — built when a title changes hands between
+--                         two fighters (champion vs former champion)
+--   rematch_hungry      — built after a close/controversial decision
+--                         that demands a rematch
+--   style_clash         — reserved for when two fighters with strongly
+--                         opposing style archetypes meet (future task
+--                         may seed this from matchmaking)
+--   disrespect          — built from post-fight unsportsmanlike
+--                         behavior (trash_talk after a loss)
+--   stolen_opportunity  — reserved for when a contender loses a
+--                         promised title shot (future task may seed
+--                         this from rankings + title-shot promises)
+--
+-- fighter_a_id is always the LOWER fighter_id (canonical ordering),
+-- so the UNIQUE (fighter_a_id, fighter_b_id) constraint prevents
+-- duplicate rivalries regardless of who initiated. The
+-- fighter_a_wins / fighter_b_wins / draws columns track head-to-head
+-- fight results between the two (updated by _process_fight_rivalry).
+--
+-- origin_description holds a voice-layer-driven description of how
+-- the rivalry started (CONVENTIONS §14 — no raw numbers). Example:
+--   "A bad blood rivalry between John Vale (reigning champion) and
+--    Marcus Reed (top prospect). The rivalry started with callouts
+--    on social media."
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rivalries (
+    rivalry_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_a_id      INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    fighter_b_id      INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    rivalry_heat      INTEGER NOT NULL DEFAULT 50 CHECK (rivalry_heat BETWEEN 0 AND 100),
+    rivalry_type      TEXT NOT NULL CHECK (rivalry_type IN (
+        'callout', 'bad_blood', 'title_rivalry', 'rematch_hungry',
+        'style_clash', 'disrespect', 'stolen_opportunity'
+    )),
+    origin_event      TEXT,
+    origin_description TEXT,
+    fights_count      INTEGER NOT NULL DEFAULT 0,
+    fighter_a_wins    INTEGER NOT NULL DEFAULT 0,
+    fighter_b_wins    INTEGER NOT NULL DEFAULT 0,
+    draws             INTEGER NOT NULL DEFAULT 0,
+    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    last_escalation_date TEXT,
+    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    updated_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (fighter_a_id, fighter_b_id)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2344,6 +2464,38 @@ def _migrate_v3_1_0_add_social_posts(conn):
         )
 
 
+def _migrate_v3_2_0_add_rivalries(conn):
+    """Task 22 — Rivalries. Adds the rivalries table.
+
+    Migration name: v3_2_0_add_rivalries. Idempotent — checks for the
+    table's existence before creating.
+    """
+    if not _has_table(conn, "rivalries"):
+        conn.execute(
+            "CREATE TABLE rivalries (\n"
+            "    rivalry_id        INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_a_id      INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    fighter_b_id      INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    rivalry_heat      INTEGER NOT NULL DEFAULT 50 CHECK (rivalry_heat BETWEEN 0 AND 100),\n"
+            "    rivalry_type      TEXT NOT NULL CHECK (rivalry_type IN (\n"
+            "        'callout', 'bad_blood', 'title_rivalry', 'rematch_hungry',\n"
+            "        'style_clash', 'disrespect', 'stolen_opportunity'\n"
+            "    )),\n"
+            "    origin_event      TEXT,\n"
+            "    origin_description TEXT,\n"
+            "    fights_count      INTEGER NOT NULL DEFAULT 0,\n"
+            "    fighter_a_wins    INTEGER NOT NULL DEFAULT 0,\n"
+            "    fighter_b_wins    INTEGER NOT NULL DEFAULT 0,\n"
+            "    draws             INTEGER NOT NULL DEFAULT 0,\n"
+            "    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),\n"
+            "    last_escalation_date TEXT,\n"
+            "    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    updated_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_a_id, fighter_b_id)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2355,6 +2507,7 @@ MIGRATIONS = [
     ("v2_9_0_add_scouting_reports","2.9.0", _migrate_v2_9_0_add_scouting_reports),
     ("v3_0_0_add_finance_transactions","3.0.0", _migrate_v3_0_0_add_finance_transactions),
     ("v3_1_0_add_social_posts",    "3.1.0", _migrate_v3_1_0_add_social_posts),
+    ("v3_2_0_add_rivalries",       "3.2.0", _migrate_v3_2_0_add_rivalries),
 ]
 
 

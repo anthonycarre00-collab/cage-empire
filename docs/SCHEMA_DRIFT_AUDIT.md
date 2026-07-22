@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-23 — Task 21 (social media + beefs).
-> **Current schema version:** 3.1.0 (47 tables, +1 new table this task).
+> **Last revised:** 2026-07-24 — Task 22 (rivalries).
+> **Current schema version:** 3.2.0 (48 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -192,7 +192,7 @@ historical fights have no round data.
 |---|---|---|---|---|
 | `social_posts` | yes | no | yes (Task 21) | `OK` — v3.1.0 added 9-column social_posts table (9 post types via CHECK, engagement + is_beef_escalation columns). Written by src/social.py event-bus subscribers (FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED). NO raw numbers in post_text per §14. |
 | `social_accounts` | yes | no | no | `MISSING` — Task 21 chose to skip the separate accounts table. Fighter identity on the `fighters` table is sufficient; the player isn't managing account credentials. If a future task adds account-level state (followers count, verified status, suspended flag), this table can be added then. |
-| `rivalries` | yes | no | no | `MISSING` — Task ID 22 (Stage 4). Task 21's `social_posts.is_beef_escalation` column feeds this future table. |
+| `rivalries` | yes | no | yes (Task 22) | `OK` — v3.2.0 added 16-column rivalries table (7 rivalry types via CHECK, rivalry_heat 0-100, head-to-head fight counts, is_active flag, voice-layer-driven origin_description). Written by src/rivalries.py event-bus subscribers (FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED). Feeds from social_posts callouts/trash_talks + weight_cut_log misses + close decisions + title changes. NO raw numbers in any description per §14. |
 
 ---
 
@@ -421,14 +421,14 @@ This is a minor convention deviation. The tests are:
 | Scouting & analysis | 3 | 0 | 0 | 3 tables (Task 18, 24) |
 | News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, Task 24) |
 | Rankings & titles | 2 | 0 | 2 | 0 |
-| Social & rivalries | 3 | 0 | 1 (social_posts, Task 21) | 2 tables (rivalries Task 22; social_accounts deliberately skipped) |
+| Social & rivalries | 3 | 0 | 2 (social_posts Task 21, rivalries Task 22) | 1 table (social_accounts deliberately skipped) |
 | Regen & name pools | 10 | 0 | 3 (consolidated) | 0 tables (7 consolidated/dropped by design — see §M) |
 | Voice & templates | 4 | 0 | 0 | 4 tables (Task 19, 23) |
 | Legacy & history | 5 | 0 | 1 (fight_history) | 4 tables |
 | Portraits & art | 2 | 0 | 0 | 2 tables (Task 29) |
 | Finances | 1 | 0 | 0 | 1 table (Task 20) |
 | Modding | 1 | 0 | 0 | 1 table (Task 29) |
-| **TOTAL TABLES** | **~60** | **24** | **37** | **~23 tables** (down from ~34 because 7 regen tables were consolidated into 3) |
+| **TOTAL TABLES** | **~60** | **24** | **48** (47 user + 1 sqlite_sequence) | **~12 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, matchup_analysis, fighter_bios variants, hall_of_fame polish, etc.) |
 | **TOTAL THIN COLUMNS** | — | — | — | **~67 columns** (geography 20 + promotions/gyms 16 + fighters 14 + staff 17) |
 | **WRONG (critical)** | — | — | — | **fighter_attributes (4/24) + fighter_personality (3/17)** — 34 columns missing |
 
@@ -438,9 +438,12 @@ This is a minor convention deviation. The tests are:
   table count is ~60).
 - Built v1.2.0: 24 tables.
 - Built v1.9.0: 37 tables (+13 from Tasks 2-14).
-- Gap: ~23 tables and ~67 thin columns + 34 WRONG (critical) columns
-  in fighter_attributes + fighter_personality.
-- 12 acceptance tests, 500+ sub-checks, all passing.
+- Built v3.2.0 (Task 22): 48 tables (47 user + 1 sqlite_sequence).
+  +11 from Tasks 15-22: injuries (15), training_camps (16),
+  fighter_bios + hall_of_fame (16.5), weight_cut_log (17),
+  fighter_descriptors (19), scouting_reports (18),
+  finance_transactions (20), social_posts (21), rivalries (22).
+- 27 acceptance tests, 1600+ sub-checks, all passing.
 
 **Most critical gaps (priority order):**
 1. **fighter_attributes + fighter_personality extension** (Z.1) —
