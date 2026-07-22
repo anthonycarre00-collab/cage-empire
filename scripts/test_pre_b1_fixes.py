@@ -687,7 +687,7 @@ def main():
     if fight2_row:
         fight2_id = fight2_row[0]
         conn.execute(
-            "UPDATE fights SET bout_type='title_fight' WHERE fight_id=?",
+            "UPDATE fights SET bout_type='title_fight', is_title_fight=1 WHERE fight_id=?",
             (fight2_id,),
         )
         conn.commit()

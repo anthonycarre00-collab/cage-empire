@@ -9,6 +9,47 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
 #
+# v2.2.0 (Task pre-B2-fix) — MINOR bump. Adds three new columns to two
+# existing tables to separate "card position" from "title-fight status"
+# ahead of Task B2 (engine depth — fatigue + momentum + finishes +
+# commentary). The pre-existing `fights.bout_type` column was doing
+# double duty (card position AND title-fight flag) — a fight can be a
+# main event AND a title fight, but a single TEXT column cannot express
+# both. The fix splits the concept:
+#   1. `fights.card_slot` — TEXT NOT NULL DEFAULT 'main_event' CHECK
+#      (card_slot IN ('main_event','co_main','featured_prelim','prelim',
+#      'opener')). Pure card-position column. Future Task B2 + booking
+#      UI will read this to compute fight importance.
+#   2. `fights.is_title_fight` — INTEGER NOT NULL DEFAULT 0 CHECK
+#      (is_title_fight IN (0,1)). Pure title-fight flag. Code now checks
+#      `is_title_fight=1` instead of the deprecated `bout_type='title_fight'`
+#      comparison. The `bout_type` column is kept for backward
+#      compatibility (deprecated — do not write new code that reads it).
+#   3. `event_cards.is_co_main` — INTEGER NOT NULL DEFAULT 0 CHECK
+#      (is_co_main IN (0,1)). Was in the v1.6 spec but missing from
+#      the original build. Symmetric to the existing `is_main_event`
+#      column. Future booking UI will set this for the second-biggest
+#      fight on the card.
+#
+# Code changes in app.py:
+#   - `_resolve_title_after_fight()` now checks `fights.is_title_fight=1`
+#     instead of `fights.bout_type='title_fight'`.
+#   - `resolve_next_fight()` computes `fight_history.title_at_stake`
+#     from `fights.is_title_fight` instead of `fights.bout_type`.
+#   - `schedule_next_event()` INSERT now sets `card_slot='main_event',
+#     is_title_fight=0` on auto-scheduled fights (alongside the
+#     deprecated `bout_type='main_event'`).
+# Seed change in seed_data.py:
+#   - The seeded title-fight INSERT now sets `card_slot='main_event',
+#     is_title_fight=1` (alongside the deprecated `bout_type='title_fight'`).
+#
+# Per CONVENTIONS §1.1 this is a MINOR bump (adding new columns to
+# existing tables — purely additive, no breaking change to data shape).
+# The `bout_type` column is NOT removed (that would be a MAJOR bump and
+# would require a backfill migration). Future tasks should treat
+# `bout_type` as deprecated and read `card_slot` + `is_title_fight`
+# instead. Migration name: v2_2_0_fight_importance_columns.
+#
 # v2.1.0 (Task B1) — MINOR bump. First beat-level fight engine release.
 # Adds two new tables that the rewritten `resolve_next_fight()` in
 # app.py populates as it simulates each round:
@@ -92,7 +133,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.1.0"
+CODE_SCHEMA_VERSION = "2.2.0"
 
 
 def _parse_version(v):
@@ -563,7 +604,32 @@ CREATE TABLE IF NOT EXISTS fights (
     fight_id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
     weight_class_id INTEGER NOT NULL REFERENCES weight_classes(weight_class_id) ON DELETE RESTRICT,
+    -- `bout_type` is DEPRECATED as of v2.2.0 (Task pre-B2-fix). It was
+    -- doing double duty (card position AND title-fight flag) which a
+    -- single TEXT column cannot express — a fight can be a main event
+    -- AND a title fight. The two new columns below split the concept:
+    --   - `card_slot` — pure card position (main_event/co_main/
+    --     featured_prelim/prelim/opener).
+    --   - `is_title_fight` — pure title-fight flag (0/1).
+    -- `bout_type` is kept for backward compatibility (no MAJOR bump,
+    -- no backfill migration) but new code MUST read card_slot +
+    -- is_title_fight instead. The existing seed still sets
+    -- bout_type='title_fight' for the seeded title fight and
+    -- bout_type='main_event' for auto-scheduled fights — these values
+    -- are now redundant with is_title_fight but are kept so any
+    -- external reader that still checks bout_type keeps working.
     bout_type TEXT NOT NULL,
+    -- 2 new columns added v2.2.0 (Task pre-B2-fix). Both have CHECK
+    -- constraints (safe — these are NEW columns so no existing data
+    -- can violate them). `card_slot` defaults to 'main_event' so
+    -- existing INSERTs that don't specify a card_slot get the most
+    -- common value; `is_title_fight` defaults to 0 so existing
+    -- INSERTs that don't specify it get the safer non-title-fight
+    -- value. The seed (seed_data.py) and schedule_next_event (app.py)
+    -- explicitly set both columns on every INSERT so the defaults are
+    -- only a safety net for ad-hoc / external INSERTs.
+    card_slot TEXT NOT NULL DEFAULT 'main_event' CHECK (card_slot IN ('main_event','co_main','featured_prelim','prelim','opener')),
+    is_title_fight INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0,1)),
     round_limit INTEGER NOT NULL DEFAULT 3,
     scheduled_rounds INTEGER NOT NULL DEFAULT 3,
     winner_fighter_id INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
@@ -594,6 +660,15 @@ CREATE TABLE IF NOT EXISTS event_cards (
     card_position INTEGER NOT NULL,
     card_tier TEXT NOT NULL,
     is_main_event INTEGER NOT NULL DEFAULT 0 CHECK (is_main_event IN (0,1)),
+    -- 1 new column added v2.2.0 (Task pre-B2-fix). Symmetric to the
+    -- existing `is_main_event` column. Was in the v1.6 spec but
+    -- missing from the original build (flagged THIN in
+    -- SCHEMA_DRIFT_AUDIT.md §G). The DEFAULT 0 keeps existing rows
+    -- valid; the seed and schedule_next_event both explicitly set
+    -- is_co_main=0 (the seeded and auto-scheduled main events are
+    -- main events, not co-mains). Future booking UI (Task B2+ will
+    -- read this to identify the second-biggest fight on the card).
+    is_co_main INTEGER NOT NULL DEFAULT 0 CHECK (is_co_main IN (0,1)),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -961,7 +1036,7 @@ def main():
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
-            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_add_beat_engine",),
+            (f"v{CODE_SCHEMA_VERSION.replace('.', '_')}_fight_importance_columns",),
         )
         conn.execute("INSERT INTO simulation_clock (clock_id, current_date, current_day, current_week, current_month, current_year) VALUES (1, '2026-07-20', 1, 1, 7, 2026)")
         conn.commit()

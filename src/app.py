@@ -1239,10 +1239,11 @@ def _update_rankings_after_resolution(conn, winner_id, loser_id,
 #
 # After a fight resolves and the rankings ELO update (Task ID 10)
 # runs, this helper transfers or vacates the title if the fight was
-# a title fight (bout_type='title_fight'). Called unconditionally by
-# `resolve_next_fight()` but returns None early if the fight is not a
-# title fight (defensive — the caller doesn't need to check
-# bout_type).
+# a title fight (is_title_fight=1 — the canonical check since v2.2.0,
+# Task pre-B2-fix; the legacy `bout_type='title_fight'` check is
+# DEPRECATED). Called unconditionally by `resolve_next_fight()` but
+# returns None early if the fight is not a title fight (defensive —
+# the caller doesn't need to check is_title_fight).
 #
 # Transfer rules:
 #   - VACANT title + non-draw: winner becomes champion. Set
@@ -1281,10 +1282,12 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
     """Transfer or vacate the title after a title fight resolution.
 
     Rules (Task ID 11):
-      - Only fires if the fight's bout_type is 'title_fight'. Called
-        unconditionally by resolve_next_fight() but returns early if
-        the fight is not a title fight (defensive — the caller
-        doesn't need to check bout_type).
+      - Only fires if the fight's `is_title_fight=1` (canonical check
+        since v2.2.0 / Task pre-B2-fix — the legacy `bout_type='title_fight'`
+        comparison is DEPRECATED). Called unconditionally by
+        resolve_next_fight() but returns early if the fight is not a
+        title fight (defensive — the caller doesn't need to check
+        is_title_fight).
       - Looks up the title row for (promotion_id, weight_class_id).
         If no title row exists (defensive — shouldn't happen with
         the seed, but a new weight class added without a title would
@@ -1333,14 +1336,16 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
     Returns:
         title_id (int) if a title change occurred, else None.
     """
-    # 1. Fetch the fight's bout_type. If it's not 'title_fight',
-    #    this is a no-op (defensive — the caller doesn't need to
-    #    check bout_type before calling).
+    # 1. Fetch the fight's is_title_fight flag (v2.2.0 canonical check).
+    #    If it's not 1, this is a no-op (defensive — the caller doesn't
+    #    need to check is_title_fight before calling). The legacy
+    #    `bout_type='title_fight'` comparison is DEPRECATED — kept on
+    #    the column for backward compatibility but no longer read.
     fight_row = conn.execute(
-        "SELECT bout_type FROM fights WHERE fight_id = ?",
+        "SELECT is_title_fight FROM fights WHERE fight_id = ?",
         (fight_id,),
     ).fetchone()
-    if not fight_row or fight_row[0] != 'title_fight':
+    if not fight_row or fight_row[0] != 1:
         return None
 
     # 2. Fetch the title row for (promotion_id, weight_class_id).
@@ -1804,9 +1809,17 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     # 7. Insert the fight + 2 participants + 1 event_cards row. Mirror
     # the seed pattern (main_event, 3 rounds, red/blue corners, card
     # position 1 / card_tier 'main_event' / is_main_event 1).
+    # v2.2.0 (Task pre-B2-fix): the INSERT now also sets
+    # `card_slot='main_event'` and `is_title_fight=0` explicitly (the
+    # deprecated `bout_type='main_event'` is kept for backward
+    # compatibility — external readers that still check bout_type keep
+    # working). Auto-scheduled fights are never title fights by
+    # default — the player / booking UI (future Task B2+) decides
+    # when to promote a fight to a title fight.
     new_fight_id = conn.execute(
         "INSERT INTO fights (event_id, weight_class_id, bout_type, "
-        "round_limit, scheduled_rounds) VALUES (?, ?, 'main_event', 3, 3)",
+        "card_slot, is_title_fight, round_limit, scheduled_rounds) "
+        "VALUES (?, ?, 'main_event', 'main_event', 0, 3, 3)",
         (new_event_id, weight_class_id),
     ).lastrowid
     conn.execute(
@@ -1821,7 +1834,8 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     )
     conn.execute(
         "INSERT INTO event_cards (event_id, fight_id, card_position, "
-        "card_tier, is_main_event) VALUES (?, ?, 1, 'main_event', 1)",
+        "card_tier, is_main_event, is_co_main) "
+        "VALUES (?, ?, 1, 'main_event', 1, 0)",
         (new_event_id, new_fight_id),
     )
 
@@ -2014,10 +2028,12 @@ def resolve_next_fight(conn):
     # perspective). New in v1.3.0 (Task ID 4) — separate from the
     # mutable `fighter_career` counters. The UNIQUE (fight_id, fighter_id)
     # constraint enforces one row per fighter per fight. `title_at_stake`
-    # is populated based on `fights.bout_type` (1 if 'title_fight',
-    # 0 otherwise) — added in v1.6.0 (Task ID 11). `score_margin` is
-    # the total damage differential (B1 redefinition — was the old
-    # power-score differential in Task 3). Read by upcoming
+    # is populated based on `fights.is_title_fight` (1 if is_title_fight=1,
+    # 0 otherwise) — added in v1.6.0 (Task ID 11), updated to read the
+    # new `is_title_fight` column in v2.2.0 (Task pre-B2-fix; the
+    # legacy `bout_type='title_fight'` comparison is DEPRECATED).
+    # `score_margin` is the total damage differential (B1 redefinition —
+    # was the old power-score differential in Task 3). Read by upcoming
     # rankings, legacy, and stats-based commentary work (Tasks 10, 11,
     # 14, 19, 23) — see docs/STAGES.md Task ID 4.
     #
@@ -2031,15 +2047,17 @@ def resolve_next_fight(conn):
     # the sensible behaviour. (This is what keeps
     # scripts/test_fight_resolver.py passing after Task ID 4.)
     # ----------------------------------------------------------------
-    # Determine if this was a title fight (Task ID 11). The
-    # fight_history rows get title_at_stake=1 if so, 0 otherwise.
+    # Determine if this was a title fight (Task ID 11, updated v2.2.0).
+    # The fight_history rows get title_at_stake=1 if so, 0 otherwise.
     # This is read by upcoming legacy/Hall of Fame work to count
-    # title fights per fighter.
+    # title fights per fighter. The canonical check since v2.2.0 is
+    # `fights.is_title_fight=1` (the legacy `bout_type='title_fight'`
+    # comparison is DEPRECATED).
     bout_type_row = conn.execute(
-        "SELECT bout_type FROM fights WHERE fight_id = ?",
+        "SELECT is_title_fight FROM fights WHERE fight_id = ?",
         (fight_id,),
     ).fetchone()
-    is_title_fight = bool(bout_type_row and bout_type_row[0] == 'title_fight')
+    is_title_fight = bool(bout_type_row and bout_type_row[0] == 1)
     title_at_stake_val = 1 if is_title_fight else 0
 
     conn.execute(
@@ -2112,13 +2130,15 @@ def resolve_next_fight(conn):
 
     # ----------------------------------------------------------------
     # Resolve title (Task ID 11). If this was a title fight
-    # (bout_type='title_fight'), transfer or vacate the belt. Returns
-    # the title_id if a title change occurred (new champion crowned
-    # from vacant OR title changed hands), else None. The title_id is
-    # used below to enrich the news/commentary with a "(TITLE
-    # CHANGE!)" suffix. The helper is a no-op for non-title fights
-    # (returns None early). For draws, winner_id/loser_id are not
-    # used by the helper (it detects the draw and skips the transfer).
+    # (is_title_fight=1 — the canonical check since v2.2.0 / Task
+    # pre-B2-fix; the legacy `bout_type='title_fight'` comparison is
+    # DEPRECATED), transfer or vacate the belt. Returns the title_id
+    # if a title change occurred (new champion crowned from vacant OR
+    # title changed hands), else None. The title_id is used below to
+    # enrich the news/commentary with a "(TITLE CHANGE!)" suffix. The
+    # helper is a no-op for non-title fights (returns None early). For
+    # draws, winner_id/loser_id are not used by the helper (it detects
+    # the draw and skips the transfer).
     # ----------------------------------------------------------------
     title_change_id = _resolve_title_after_fight(
         conn,

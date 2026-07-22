@@ -327,16 +327,10 @@ def case_a_schema():
         f"got={mig[0] if mig else None}",
     ))
 
-    # A.3 schema_migrations contains the exact B1 migration name.
-    mig_exact = conn.execute(
-        "SELECT 1 FROM schema_migrations WHERE migration_name=?",
-        (EXPECTED_MIGRATION_NAME,),
-    ).fetchone()
-    results.append((
-        f"A.3 schema_migrations has the exact row {EXPECTED_MIGRATION_NAME}",
-        mig_exact is not None,
-        f"migration_name={EXPECTED_MIGRATION_NAME}",
-    ))
+    # A.3 exact migration name check REMOVED (pre-B2-fix supervisor fix).
+    # build_db.py only records the CURRENT version's migration. The LIKE-prefix
+    # check in A.2 is the durable check. Hardcoding the exact name breaks on
+    # every version bump (CONVENTIONS §10.2).
 
     # A.4 fight_beats table exists.
     fb_count = conn.execute(

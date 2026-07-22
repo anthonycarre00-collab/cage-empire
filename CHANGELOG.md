@@ -9,6 +9,150 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 ### Added
+- `fights.card_slot` column (Task pre-B2-fix, schema 2.2.0 MINOR) —
+  TEXT NOT NULL DEFAULT 'main_event' CHECK (card_slot IN ('main_event',
+  'co_main','featured_prelim','prelim','opener')). Pure card-position
+  column that splits the overloaded `bout_type` concept (which was
+  doing double duty as both card position AND title-fight flag — a
+  fight can be a main event AND a title fight, but a single TEXT
+  column cannot express both). Future Task B2 (engine depth — fatigue
+  + momentum + finishes + commentary) and the booking UI will read
+  `card_slot` to compute fight importance (a main event carries more
+  pressure than an opener). The DEFAULT 'main_event' keeps existing
+  INSERTs valid; seed_data.py and schedule_next_event() both set the
+  column explicitly on every INSERT.
+- `fights.is_title_fight` column (Task pre-B2-fix, schema 2.2.0 MINOR)
+  — INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0,1)). Pure
+  title-fight flag that splits the overloaded `bout_type` concept.
+  Canonical signal that `_resolve_title_after_fight()` and
+  `resolve_next_fight()` (for `fight_history.title_at_stake`) now
+  check instead of the deprecated `bout_type='title_fight'`
+  comparison. The DEFAULT 0 keeps existing INSERTs valid; the seed
+  (seed_data.py) sets is_title_fight=1 on the seeded title fight,
+  schedule_next_event() sets is_title_fight=0 on auto-scheduled
+  fights.
+- `event_cards.is_co_main` column (Task pre-B2-fix, schema 2.2.0
+  MINOR) — INTEGER NOT NULL DEFAULT 0 CHECK (is_co_main IN (0,1)).
+  Symmetric to the existing `is_main_event` column. Was in the v1.6
+  spec but missing from the original build (flagged THIN in
+  SCHEMA_DRIFT_AUDIT.md §G). Future booking UI (Task B2+) will set
+  this for the second-biggest fight on the card. The DEFAULT 0 keeps
+  existing rows valid; seed_data.py and schedule_next_event() both
+  set is_co_main=0 explicitly on every INSERT.
+- `scripts/test_fight_importance.py` acceptance test (Task pre-B2-fix)
+  — NEW acceptance test covering the schema additions and the code
+  changes that switch from `bout_type='title_fight'` to
+  `is_title_fight=1` as the canonical title-fight check. Uses
+  `build_db.CODE_SCHEMA_VERSION` dynamically per CONVENTIONS §10 —
+  no hardcoded version strings.
+
+### Changed
+- `_resolve_title_after_fight()` in app.py (Task pre-B2-fix) — now
+  checks `SELECT is_title_fight FROM fights WHERE fight_id=?` +
+  `if not fight_row or fight_row[0] != 1: return None` instead of
+  the deprecated `SELECT bout_type FROM fights WHERE fight_id=?` +
+  `if not fight_row or fight_row[0] != 'title_fight': return None`.
+  The `bout_type` column is kept for backward compatibility but is
+  no longer read by this function.
+- `resolve_next_fight()` in app.py (Task pre-B2-fix) — the
+  `fight_history.title_at_stake` computation now reads
+  `SELECT is_title_fight FROM fights WHERE fight_id=?` and computes
+  `is_title_fight = bool(bout_type_row and bout_type_row[0] == 1)`
+  instead of the deprecated `SELECT bout_type FROM fights WHERE
+  fight_id=?` + `is_title_fight = bool(bout_type_row and
+  bout_type_row[0] == 'title_fight')`. The local variable name
+  `bout_type_row` is kept (legacy reference) but it now holds the
+  `is_title_fight` value.
+- `schedule_next_event()` in app.py (Task pre-B2-fix) — the
+  auto-scheduled fights INSERT now sets `card_slot='main_event'`,
+  `is_title_fight=0` explicitly alongside the deprecated
+  `bout_type='main_event'`. The event_cards INSERT now sets
+  `is_co_main=0` explicitly alongside `is_main_event=1`. Auto-
+  scheduled fights are never title fights by default — the player /
+  booking UI decides when to promote a fight to a title fight.
+- `seed_data.py` (Task pre-B2-fix) — the seeded title-fight INSERT
+  now sets `card_slot='main_event'`, `is_title_fight=1` explicitly
+  alongside the deprecated `bout_type='title_fight'`. The event_cards
+  INSERT for the seeded main event now sets `is_co_main=0` explicitly
+  alongside `is_main_event=1`. The seeded title fight is the
+  canonical test case for the new is_title_fight=1 code path.
+- All comments referencing `bout_type='title_fight'` updated to
+  mention `is_title_fight=1` as the new canonical check (Task
+  pre-B2-fix). The `bout_type` column is explicitly marked
+  DEPRECATED in build_db.py, app.py, and seed_data.py comments.
+  External readers that still check `bout_type` continue to work
+  (the column is not removed — that would require a MAJOR schema
+  bump and a backfill migration).
+
+### Deprecated
+- `fights.bout_type` column (Task pre-B2-fix) — DEPRECATED. Was
+  doing double duty (card position + title-fight flag); now split
+  into `card_slot` (card position) and `is_title_fight` (title-fight
+  flag). Kept for backward compatibility — no MAJOR schema bump, no
+  backfill migration. New code MUST read `card_slot` +
+  `is_title_fight` instead. Future MAJOR bump (Task TBD) will
+  remove the column once all readers are migrated.
+
+### Known issues
+- `test_titles.py` cases D, E, H, and I (Task 11 acceptance test) FAIL
+  7 assertions total (D-number decision D1 in the worklog). The test's
+  `convert_next_fight_to_title_fight(conn)` helper updates only
+  `fights.bout_type='title_fight'` without also setting
+  `is_title_fight=1`. With the new canonical check, the helper would
+  need to set BOTH columns. Case H also flips `bout_type='main_event'`
+  on the seeded title fight but doesn't clear `is_title_fight=0`, so
+  the helper still treats it as a title fight. Case I has the same
+  pattern. Cases A, B, C, and J still PASS (the seeded title fight
+  has is_title_fight=1 set by the updated seed, so the canonical
+  title-fight test path works end-to-end). NOT modified per
+  CONVENTIONS §11 — flagged for the supervisor. The supervisor should
+  update `convert_next_fight_to_title_fight` to also set
+  `is_title_fight=1`, and update case H / I.1 / I.2 to also clear
+  `is_title_fight=0` when reverting to a non-title main event.
+- `test_pre_b1_fixes.py` case E step 2 (Task pre-B1-fixes acceptance
+  test) FAILS its "fighter 2's title_reigns = 1" assertion (D-number
+  decision D2 in the worklog). The test's inline UPDATE that converts
+  fight 2 to a title fight (mirrored from test_titles.py) sets only
+  `bout_type='title_fight'`, not `is_title_fight=1`. NOT modified per
+  CONVENTIONS §11 — flagged for the supervisor. The supervisor should
+  update the inline UPDATE in test_pre_b1_fixes.py case E to also
+  set `is_title_fight=1`.
+- `test_beat_engine.py` case A.3 (Task B1 acceptance test) FAILS its
+  exact-migration-name assertion (D-number decision D3 in the
+  worklog). The test asserts `schema_migrations` contains the exact
+  row `v2_1_0_add_beat_engine` (hardcoded constant
+  `EXPECTED_MIGRATION_NAME`). The pre-B2-fix task changed the
+  migration name to `v2_2_0_fight_importance_columns` (the
+  brief-specified name), so the exact-name assertion is stale. The
+  dynamic-prefix check (A.2) still PASSES. This is the same
+  CONVENTIONS §10.2 / §10.4 anti-pattern that test_pre_b1_fixes.py
+  case A.3 had before the B1 supervisor fix — the B1 supervisor fix
+  removed the exact-name check from test_pre_b1_fixes but missed
+  test_beat_engine's identical pattern. NOT modified per CONVENTIONS
+  §11 — flagged for the supervisor. The supervisor should remove
+  the exact-migration-name check from test_beat_engine.py case A.3
+  (the dynamic-prefix check in A.2 is the durable version per
+  CONVENTIONS §10.2).
+- `test_beat_engine.py` case G.7 reads `fights.bout_type` to derive
+  `expected_title_at_stake` (D-number decision D4 in the worklog).
+  This still works correctly because the seeded fight has both
+  `bout_type='title_fight'` AND `is_title_fight=1` (the new
+  canonical flag), so the expected and actual values match. No
+  assertion failure. Flagged for the supervisor — should switch
+  to reading `is_title_fight` (the deprecated `bout_type` read is
+  a CONVENTIONS §10 anti-pattern even when it happens to work).
+- 12 of 15 existing tests PASS unchanged (test_fighter_attributes,
+  test_fight_history, test_schema_versioning, test_promotion_filter,
+  test_event_lifecycle, test_event_scheduler, test_contracts,
+  test_rankings, test_retirement, test_free_agency, test_regen,
+  test_fight_resolver). The 3 with stale-assertion regressions are
+  documented above (D1, D2, D3) — no functional regressions. New
+  test test_fight_importance.py PASSES (32/32 checks).
+
+
+## [2.1.0] - 2026-07-21
+
+### Added
 - `fight_beats` table (Task B1, schema 2.1.0 MINOR) — one row per
   discrete exchange within a round. Each beat records the phase
   (standing / clinch / cage / ground_top / ground_bottom / scramble),

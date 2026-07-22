@@ -131,9 +131,9 @@ tab added in Task 9.
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
 | `events` | yes (rich: + prestige, glamour_score) | yes (thin: missing prestige, glamour_score) | yes (thin) | `THIN` — missing ~2 columns. Event lifecycle (scheduled → in_progress → completed) added Task 7. |
-| `fights` | yes | yes | yes | `OK` — bout_type now includes 'title_fight' (Task 11) |
+| `fights` | yes | yes | yes (+card_slot +is_title_fight in v2.2.0) | `OK` — bout_type now includes 'title_fight' (Task 11) |
 | `fight_participants` | yes (rich: + official_result, score_total) | yes (thin: missing these) | yes (thin) | `THIN` — missing 2 columns |
-| `event_cards` | yes (rich: + is_co_main, notes) | yes (thin: missing these) | yes (thin) | `THIN` — missing 2 columns |
+| `event_cards` | yes (rich: + is_co_main, notes) | yes (thin: missing these) | yes (+is_co_main in v2.2.0, still missing notes) | `THIN` — missing 1 column (notes) |
 | `fight_rounds` | yes (round_number, fighter_a/b_damage, control_time, knockdowns, takedowns, strikes_landed, momentum_state, round_winner_fighter_id) | no | no | `MISSING` — **still missing**. The audit originally said "Task ID 3 or 4" would add it. Neither did. The resolver produces a finish_round but doesn't store per-round stats. Needed for Task 23 (commentary beats), Task 24 (punditry), Task 26 (show rating). **A new task is needed.** |
 
 **Notes.** `fight_rounds` is the most significant missing table in

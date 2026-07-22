@@ -216,7 +216,7 @@ def convert_next_fight_to_title_fight(conn):
         return None
     fight_id = row[0]
     conn.execute(
-        "UPDATE fights SET bout_type='title_fight' WHERE fight_id=?",
+        "UPDATE fights SET bout_type='title_fight', is_title_fight=1 WHERE fight_id=?",
         (fight_id,),
     )
     return fight_id
@@ -954,7 +954,7 @@ def main():
     wc_id = get_weight_class_id(conn, "Lightweight")
 
     # Change the seeded fight's bout_type to 'main_event' (not 'title_fight').
-    conn.execute("UPDATE fights SET bout_type='main_event' WHERE fight_id=1")
+    conn.execute("UPDATE fights SET bout_type='main_event', is_title_fight=0 WHERE fight_id=1")
     conn.commit()
 
     # Set f1 all-90 so the resolve is a non-draw.
@@ -1030,7 +1030,7 @@ def main():
 
     # I.2: Call with valid fight_id but bout_type='main_event' → None.
     # Change the seeded fight's bout_type to 'main_event'.
-    conn.execute("UPDATE fights SET bout_type='main_event' WHERE fight_id=1")
+    conn.execute("UPDATE fights SET bout_type='main_event', is_title_fight=0 WHERE fight_id=1")
     conn.commit()
     try:
         ret = app._resolve_title_after_fight(

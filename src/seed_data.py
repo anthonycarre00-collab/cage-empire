@@ -124,10 +124,13 @@ def _seed_initial_ranking(conn, fighter_id, weight_class_id, promotion_id):
 # ----------------------------------------------------------------
 # Vacant title seeder (Task ID 11). One title per (promotion,
 # weight_class) pair. The title starts vacant — the first title
-# fight (bout_type='title_fight') transfers the belt to the winner
-# via `_resolve_title_after_fight()` in app.py. The seed creates
-# two titles (AC Lightweight + RFL Lightweight) so the title-
-# transfer logic can be exercised end-to-end on the first resolve.
+# fight (is_title_fight=1 — the canonical check since v2.2.0 / Task
+# pre-B2-fix; the legacy `bout_type='title_fight'` comparison is
+# DEPRECATED but kept for backward compatibility) transfers the belt
+# to the winner via `_resolve_title_after_fight()` in app.py. The
+# seed creates two titles (AC Lightweight + RFL Lightweight) so the
+# title-transfer logic can be exercised end-to-end on the first
+# resolve.
 # Foundation for Task 8's schedule_next_event() (future: champion
 # vs #1 contender), Task 14 (regen — retiring champions vacate),
 # Task 22 (rivalries — title fight rivalries are the most heated).
@@ -138,9 +141,11 @@ def _seed_vacant_title(conn, promotion_id, weight_class_id):
 
     Called by the seed for every (promotion, weight_class) pair. The
     title starts vacant (current_champion_fighter_id IS NULL,
-    is_vacant=1). The first title fight (bout_type='title_fight')
-    will transfer the belt to the winner via _resolve_title_after_fight()
-    in app.py.
+    is_vacant=1). The first title fight (is_title_fight=1 — the
+    canonical check since v2.2.0 / Task pre-B2-fix; the legacy
+    `bout_type='title_fight'` comparison is DEPRECATED but kept for
+    backward compatibility) will transfer the belt to the winner via
+    _resolve_title_after_fight() in app.py.
 
     Uses INSERT OR IGNORE so the seed is idempotent — re-running
     seed_data.py won't crash on the UNIQUE (promotion_id,
@@ -678,19 +683,32 @@ def main():
 
         # ----------------------------------------------------------------
         # Seed a vacant title for AC Lightweight (Task ID 11). The
-        # first title fight (bout_type='title_fight') transfers the
-        # belt to the winner via _resolve_title_after_fight() in
-        # app.py. The seeded main event below is a title fight so the
-        # title-transfer logic is exercised end-to-end on the first
-        # resolve.
+        # first title fight (is_title_fight=1 — the canonical check
+        # since v2.2.0 / Task pre-B2-fix; the legacy
+        # `bout_type='title_fight'` comparison is DEPRECATED but kept
+        # for backward compatibility) transfers the belt to the winner
+        # via _resolve_title_after_fight() in app.py. The seeded main
+        # event below is a title fight so the title-transfer logic is
+        # exercised end-to-end on the first resolve.
         # ----------------------------------------------------------------
         _seed_vacant_title(conn, promo_id, wc_id)  # Task ID 11
 
         event_id = one(conn, "INSERT INTO events (promotion_id, venue_id, market_id, event_name, event_date, event_type) VALUES (?, ?, ?, ?, ?, ?)", (promo_id, venue_id, market_id, "Alpha Combat: Test Night", "2026-08-15", "fight_night"))
-        fight_id = one(conn, "INSERT INTO fights (event_id, weight_class_id, bout_type, round_limit, scheduled_rounds) VALUES (?, ?, ?, ?, ?)", (event_id, wc_id, "title_fight", 3, 3))
+        # v2.2.0 (Task pre-B2-fix): the seeded title-fight INSERT now
+        # also sets `card_slot='main_event'` and `is_title_fight=1`
+        # explicitly (the deprecated `bout_type='title_fight'` is kept
+        # for backward compatibility — external readers that still
+        # check bout_type keep working). The new columns are the
+        # canonical signal that app.py reads; bout_type is a redundant
+        # back-compat field.
+        fight_id = one(conn, "INSERT INTO fights (event_id, weight_class_id, bout_type, card_slot, is_title_fight, round_limit, scheduled_rounds) VALUES (?, ?, ?, ?, ?, ?, ?)", (event_id, wc_id, "title_fight", "main_event", 1, 3, 3))
         conn.execute("INSERT INTO fight_participants (fight_id, fighter_id, corner) VALUES (?, ?, ?)", (fight_id, fighter_ids[0], "red"))
         conn.execute("INSERT INTO fight_participants (fight_id, fighter_id, corner) VALUES (?, ?, ?)", (fight_id, fighter_ids[1], "blue"))
-        conn.execute("INSERT INTO event_cards (event_id, fight_id, card_position, card_tier, is_main_event) VALUES (?, ?, ?, ?, ?)", (event_id, fight_id, 1, "main_event", 1))
+        # event_cards: explicit is_co_main=0 (the seeded main event is
+        # the main event, not the co-main). v2.2.0 added the is_co_main
+        # column; the seed sets it explicitly so the row is unambiguous
+        # even if a future task changes the column DEFAULT.
+        conn.execute("INSERT INTO event_cards (event_id, fight_id, card_position, card_tier, is_main_event, is_co_main) VALUES (?, ?, ?, ?, ?, ?)", (event_id, fight_id, 1, "main_event", 1, 0))
 
         # ----------------------------------------------------------------
         # Second promotion (Rival Fight League) — inert for now, no AI
