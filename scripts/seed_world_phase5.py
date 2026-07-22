@@ -50,14 +50,14 @@ def _bio_champion_reign(f):
     losses = f['record_losses']
     defenses = f['title_defenses']
     reign_len = f['reign_days']
-    return (
-        f"{name} is the current {promo} {wc} champion, having held the belt for "
-        f"{reign_len} days with {defenses} title defense{'s' if defenses != 1 else ''}. "
-        f"With a professional record of {wins}-{losses}, {f['first_name']} has established "
-        f"{'an elite' if wins > 20 else 'a solid'} resume at the highest level of the sport. "
-        f"Trained out of {f['gym_name']}, the {f['age']}-year-old "
-        f"{f['style_archetype_name'].lower()} continues to defend the title against all comers."
-    )
+    # 3 variants to avoid repetition
+    variants = [
+        f"{name} sits atop the {promo} {wc} division with the confidence of a champion who has earned every inch of the belt. {reign_len} days into the reign, {f['first_name']} has defended {defenses} time{'s' if defenses != 1 else ''} and shows no signs of loosening 'his' grip. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} trains at {f['gym_name']}, where the game plan is simple: keep winning.",
+        f"The {promo} {wc} title has found a home around {f['first_name']} {f['last_name']}'s waist. Since claiming the belt {reign_len} days ago, the {f['age']}-year-old has turned back {defenses} challenger{'s' if defenses != 1 else ''} with the kind of disciplined {_archetype_noun(f['style_archetype_name'])} approach drilled into 'him' at {f['gym_name']}. At {wins}-{losses}, the resume speaks for itself.",
+        f"{reign_len} days as {promo} {wc} champion. {defenses} successful defenses. A {wins}-{losses} record forged in the sport's toughest rooms. {f['first_name']} {f['last_name']} didn't stumble into this — the {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} put in the work at {f['gym_name']} and now reaps the reward. The question isn't whether 'he' belongs at the top, but how long 'he' stays there.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 def _bio_hype_prospect(f):
@@ -67,14 +67,13 @@ def _bio_hype_prospect(f):
     promo = f['promotion_name']
     wins = f['record_wins']
     losses = f['record_losses']
-    return (
-        f"{name} is one of the most talked-about prospects in {promo}'s {wc} division. "
-        f"At just {f['age']} years old, {f['first_name']} has compiled a "
-        f"{wins}-{losses} record with flashes of brilliance that have scouts buzzing. "
-        f"Training at {f['gym_name']} under elite coaching, the young "
-        f"{f['style_archetype_name'].lower()} has the potential to develop into a future "
-        f"title contender. The question is whether the hype is premature or the real deal."
-    )
+    variants = [
+        f"The buzz around {name} started before 'he' ever stepped into a {promo} cage. Now {wins}-{losses} later, the {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} is making the scouts look smart. Training at {f['gym_name']}, {f['first_name']} brings a maturity to 'his' game that belies the birth certificate. The {wc} division is on notice.",
+        f"{f['age']} years old, {wins}-{losses}, and already drawing comparisons to fighters who took a decade to reach this level. {f['first_name']} {f['last_name']} is the kind of prospect that makes {promo} matchmakers salivate — a {_archetype_noun(f['style_archetype_name'])} with the tools to dominate at {wc}. The work at {f['gym_name']} is paying off faster than anyone expected.",
+        f"Some prospects are hype. Some are the real thing. {name} is forcing {promo} to figure out which one 'he' is, fast. At {f['age']}, the {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has already compiled a {wins}-{losses} record that turned heads in the {wc} division. The ceiling is high — the question is how quickly 'he' reaches it.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 def _bio_grizzled_veteran(f):
@@ -83,14 +82,13 @@ def _bio_grizzled_veteran(f):
     wins = f['record_wins']
     losses = f['record_losses']
     total = wins + losses
-    return (
-        f"{name} has seen it all in a career spanning {total} professional fights. "
-        f"At {f['age']} years old, the {f['style_archetype_name'].lower()} out of "
-        f"{f['gym_name']} has fought the best of his era and has the {wins}-{losses} "
-        f"record to show for it. {f['first_name']} may not be the fighter 's/he' once was, "
-        f"but the experience and toughness remain. Every fight now is a question of how "
-        f"much is left in the tank."
-    )
+    variants = [
+        f"{total} professional fights. That number alone tells you what {name} is made of. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has been in there with champions, contenders, and hype trains — and sent most of them home disappointed. The {wins}-{losses} record is a war chest. These days, every fight is borrowed time.",
+        f"There's a version of MMA history you can't write without {f['first_name']} {f['last_name']}. Over {total} fights, the {_archetype_noun(f['style_archetype_name'])} from {f['gym_name']} has been the test opponents either pass or fail. At {f['age']}, the {wins}-{losses} veteran doesn't need to prove anything to anyone — but 'he' keeps showing up anyway.",
+        f"The young guys think they want smoke with {name}. They usually change their minds. {total} fights deep, {wins}-{losses}, and still going — the {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} has made {f['gym_name']} 'his' home base for a career that spans eras. Father Time is undefeated, but {f['first_name']} is making 'him' work for it.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 def _bio_fallen_contender(f):
@@ -98,14 +96,13 @@ def _bio_fallen_contender(f):
     name = f"{f['first_name']} {f['last_name']}"
     wins = f['record_wins']
     losses = f['record_losses']
-    return (
-        f"{name} was once considered a future champion, but the road has been rough lately. "
-        f"After climbing to a {wins}-{losses} record, the {f['age']}-year-old "
-        f"{f['style_archetype_name'].lower()} has hit a skid that has many wondering if "
-        f"the title window has closed. Training at {f['gym_name']}, {f['first_name']} is "
-        f"fighting to recapture the form that once made 'him/her' a contender. The next "
-        f"fight could be the turning point — or the last."
-    )
+    variants = [
+        f"There was a time when {name} felt inevitable — a fighter marching toward the title with each appearance. That was before the slide. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} still trains at {f['gym_name']}, still puts in the rounds, but the {wins}-{losses} record hides a recent skid that has the division writing 'him' off. One more loss could be the end. One win could be the start of something.",
+        f"The {_archetype_noun(f['style_archetype_name'])} from {f['gym_name']} who once had the division worried is now the division's afterthought. {f['first_name']} {f['last_name']} knows the story — {wins}-{losses} doesn't lie, but it doesn't tell the whole truth either. At {f['age']}, 'he' needs a performance that reminds everyone what 'he' was before the losses piled up.",
+        f"Scan the {_archetype_noun(f['style_archetype_name'])}'s record and you'll find the turning point — the fight where {name} stopped being a contender and started being a question mark. The {f['age']}-year-old still has the skill that got 'him' to {wins}-{losses}. What 'he' doesn't have anymore is margin for error. Every fight now is an audition for 'his' own future.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 def _bio_journeyman(f):
@@ -113,14 +110,13 @@ def _bio_journeyman(f):
     name = f"{f['first_name']} {f['last_name']}"
     wins = f['record_wins']
     losses = f['record_losses']
-    return (
-        f"{name} is the kind of gatekeeper every promotion needs — a tough, experienced "
-        f"veteran who separates the contenders from the pretenders. With a "
-        f"{wins}-{losses} record built over years of grinding, the {f['age']}-year-old "
-        f"{f['style_archetype_name'].lower()} out of {f['gym_name']} has fought everyone "
-        f"and beaten enough of them to stay employed. {f['first_name']} may never wear gold, "
-        f"but the sport needs fighters like this."
-    )
+    variants = [
+        f"Every promotion needs a fighter like {name}. Someone tough enough to test the prospects, experienced enough to expose the not-ready-yets, and professional enough to show up on short notice when the card falls apart. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has built a {wins}-{losses} career on being exactly that fighter.",
+        f"{wins}-{losses}. No title belt. No Hall of Fame campaign. But ask anyone in the {_archetype_noun(f['style_archetype_name'])}'s weight class about {name} and they'll nod respectfully. The {f['age']}-year-old from {f['gym_name']} has been the litmus test for a generation of fighters — beat 'him' and you're ready. Lose to 'him' and you're not.",
+        f"The unglamorous middle of the roster is where {f['first_name']} {f['last_name']} has made a living. {wins}-{losses} over a career that never quite reached the title picture but never fell out of it either. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} trains at {f['gym_name']}, shows up on weight, and fights whoever the promotion puts in front of 'him'. That's worth something.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 def _bio_cult_hero(f):
@@ -130,14 +126,13 @@ def _bio_cult_hero(f):
         name += f" '{f['nickname']}'"
     wins = f['record_wins']
     losses = f['record_losses']
-    return (
-        f"{name} isn't a champion, but you wouldn't know it from the crowd reaction. "
-        f"The {f['age']}-year-old {f['style_archetype_name'].lower()} out of "
-        f"{f['gym_name']} has built a cult following with an action-first style that "
-        f"makes every fight a must-watch. {f['first_name']}'s {wins}-{losses} record "
-        f"doesn't tell the whole story — this is a fighter who came to entertain, and "
-        f"the fans love 'him/her' for it."
-    )
+    variants = [
+        f"The crowd erupts before the announcer even finishes the name. {name} isn't the champion and probably won't ever be — but try telling that to the fans who tune in specifically to watch 'him' fight. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} has turned {wins}-{losses} into a cult following by doing one thing: coming to fight, every single time.",
+        f"Some fighters win titles. Some fighters win fans. {f['first_name']} {f['last_name']} does the second one better than almost anyone in the sport. The {f['age']}-year-old {_archetype_noun(f['style_archetype_name'])} from {f['gym_name']} has a {wins}-{losses} record that won't make the Hall of Fame — but ask the arena faithful who they came to see and 'his' name comes up first.",
+        f"You won't find {name} atop any rankings. You will find 'him' in the highlight reels, in the post-fight bonus records, and in the memories of fans who were in the building when 'he' did something nobody expected. {wins}-{losses}, {f['age']} years old, {_archetype_noun(f['style_archetype_name'])} out of {f['gym_name']} — and absolutely incapable of a boring fight.",
+    ]
+    import random as _r
+    return _r.choice(variants).replace("'his'", "his").replace("'him'", "him").replace("'he'", "he")
 
 
 BIO_TEMPLATES = {
@@ -148,6 +143,27 @@ BIO_TEMPLATES = {
     "journeyman":        _bio_journeyman,
     "cult_hero":         _bio_cult_hero,
 }
+
+
+# Map style_archetype_name → natural noun phrase for use in bios.
+# "Balanced" doesn't work as a noun ("the 32-year-old balanced" reads
+# awkwardly); "well-rounded fighter" does. The other archetypes work
+# as nouns ("striker", "wrestler", "grappler") but get "specialist"
+# appended for variety in some contexts.
+_ARCHETYPE_NOUN = {
+    "Balanced":              "well-rounded fighter",
+    "Striker":               "striker",
+    "Grappler":              "grappler",
+    "Wrestler":              "wrestler",
+    "Brawler":               "brawler",
+    "Counter-Striker":       "counter-striker",
+    "Submission Specialist": "submission specialist",
+}
+
+
+def _archetype_noun(name):
+    """Convert a style_archetype_name to a natural noun phrase."""
+    return _ARCHETYPE_NOUN.get(name, "fighter")
 
 
 def _pick_bio_tone(f):

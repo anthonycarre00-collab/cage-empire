@@ -222,7 +222,73 @@ def main():
     existing_gym_names = {r[0] for r in conn.execute("SELECT name FROM gyms").fetchall()}
     used_names.update(existing_gym_names)
 
+    # ----------------------------------------------------------------
+    # FIRST: ensure every nation with cities has at least 2 gyms.
+    # The population-weighted distribution below can leave small nations
+    # (Ireland, Cuba, Dagestan, Sweden) with 0 gyms, which breaks
+    # realism — fighters from those nations would have no home gym.
+    # We seed a minimum of 2 "local" tier gyms per nation before the
+    # weighted distribution runs.
+    # ----------------------------------------------------------------
+    nations_with_cities = conn.execute(
+        "SELECT DISTINCT n.nation_id, n.name FROM nations n "
+        "JOIN cities c ON c.nation_id=n.nation_id"
+    ).fetchall()
+    for nation_id, nation_name in nations_with_cities:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM gyms WHERE nation_id=?", (nation_id,)
+        ).fetchone()[0]
+        min_gyms = 3  # ensure at least 3 gyms per nation
+        while existing < min_gyms:
+            # Pick a city in this nation
+            city_row = conn.execute(
+                "SELECT city_id, region_id FROM cities WHERE nation_id=? "
+                "ORDER BY RANDOM() LIMIT 1",
+                (nation_id,),
+            ).fetchone()
+            if city_row is None:
+                break
+            cid, rid = city_row
+            name = _gen_gym_name(rng)
+            tries = 0
+            while name in used_names and tries < 10:
+                name = _gen_gym_name(rng)
+                tries += 1
+            if name in used_names:
+                break
+            used_names.add(name)
+            # Local tier specs for minimum-coverage gyms
+            f, m, s, d = (rng.randint(25, 55), rng.randint(30, 55), rng.randint(35, 60), rng.randint(35, 60))
+            rep = rng.randint(15, 40)
+            cost = rng.uniform(20, 60)
+            culture = rng.choice(CULTURE_TONES)
+            weight_cut = rng.randint(20, 60)
+            conn.execute(
+                "INSERT INTO gyms (name, city_id, nation_id, region_id, "
+                "reputation, membership_cost, facility_quality, "
+                "medical_support, sparring_depth, development_focus, "
+                "culture_tone, weight_cut_support) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, cid, nation_id, rid, rep, cost, f, m, s, d, culture, weight_cut),
+            )
+            existing += 1
+
+    # Now run the weighted distribution for the remaining target counts
+    # (subtract the minimum-coverage gyms already created from the local target)
+    local_already = conn.execute(
+        "SELECT COUNT(*) FROM gyms"
+    ).fetchone()[0]
+    # Recalculate tier targets — reduce 'local' by what we already created
+    tier_targets_adjusted = []
     for tier, target_count in tier_targets:
+        if tier == "local":
+            # Estimate how many local gyms we already created (rough: all minimum-coverage gyms are local)
+            remaining = max(0, target_count - local_already)
+            tier_targets_adjusted.append((tier, remaining))
+        else:
+            tier_targets_adjusted.append((tier, target_count))
+
+    for tier, target_count in tier_targets_adjusted:
         n_created = 0
         attempts = 0
         while n_created < target_count and attempts < target_count * 5:

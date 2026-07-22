@@ -192,13 +192,17 @@ def _pick_personality_archetype(rng, conn):
 
 
 def _pick_name(nation_name, gender, rng, conn, used_names):
-    """Pick a unique (first, last, nickname) for a fighter from the
-    nation's name pool. Returns (first, last, nickname, gender_str).
+    """Pick a unique (first, last) for a fighter from the nation's name
+    pool. Returns (first, last, nickname, gender_str).
+
+    CRITICAL: uniqueness is tracked on (first, last) only — nickname is
+    NOT part of the uniqueness key, because the player sees "First Last"
+    in the UI, not "First 'Nickname' Last". Two fighters with the same
+    first+last but different nicknames would still look identical in a
+    roster list.
     """
-    # Gender string in DB: 'male' or 'female'
     gender_str = "male" if gender == "male" else "female"
     name_type = f"first_{gender_str}"
-    # Get first names for this nation
     first_rows = conn.execute(
         "SELECT name_value FROM name_pools WHERE name_type=? AND region=?",
         (name_type, nation_name),
@@ -219,20 +223,29 @@ def _pick_name(nation_name, gender, rng, conn, used_names):
         lasts = ["Smith"]
     if not nicks:
         nicks = ["The Fighter"]
-    # Try up to 50 times to get a unique combo
-    for _ in range(50):
+    # Try up to 100 times to get a unique (first, last) combo
+    for _ in range(100):
         first = rng.choice(firsts)
         last = rng.choice(lasts)
-        # 40% chance of having a nickname
-        has_nick = rng.random() < 0.40
-        nick = rng.choice(nicks) if has_nick else None
-        key = (first, last, nick)
+        key = (first, last)
         if key not in used_names:
             used_names.add(key)
+            # 40% chance of having a nickname
+            has_nick = rng.random() < 0.40
+            nick = rng.choice(nicks) if has_nick else None
             return (first, last, nick, gender_str)
-    # Fallback: append a number to the last name
-    suffix = rng.randint(1, 99)
-    return (first, f"{last}{suffix}", None, gender_str)
+    # Fallback: if we still can't find a unique combo (small name pool),
+    # append a roman-numeral-style suffix to the last name.
+    for suffix in ("Jr", "II", "III", "IV", "V"):
+        new_last = f"{last} {suffix}"
+        if (first, new_last) not in used_names:
+            used_names.add((first, new_last))
+            return (first, new_last, None, gender_str)
+    # Last resort: random number
+    suffix = rng.randint(1, 999)
+    new_last = f"{last}{suffix}"
+    used_names.add((first, new_last))
+    return (first, new_last, None, gender_str)
 
 
 def _pick_gym(nation_id, rng, conn):
@@ -322,13 +335,14 @@ def main():
     ).fetchall():
         promos_by_tier[row[1]].append((row[0], row[2]))
 
-    # Track used names for uniqueness
+    # Track used names for uniqueness — on (first, last) only per the
+    # _pick_name docstring (nickname is NOT part of the uniqueness key).
     used_names = set()
     # Pre-load any existing names (in case of partial run)
     for r in conn.execute(
-        "SELECT first_name, last_name, nickname FROM fighters"
+        "SELECT first_name, last_name FROM fighters"
     ).fetchall():
-        used_names.add((r[0], r[1], r[2]))
+        used_names.add((r[0], r[1]))
 
     rng = random.Random(20260723)
 
@@ -406,6 +420,19 @@ def main():
             pers = fighter_gen.generate_personality_block(pers_arch_id, conn)
             physical = fighter_gen.generate_physical_block()
             potential = fighter_gen.generate_potential()
+
+            # Widen personality variation — fighter_gen produces values in
+            # ~32-68 range (50 + ±10 bias + ±8 noise). Real fighters have
+            # more extreme personalities (a Brawler should have aggression
+            # 70-90, a Methodical fighter should have patience 70-90).
+            # Scale each personality value AWAY from 50 by a random factor
+            # (1.3-2.0x the distance from 50), clamped to [10, 95].
+            for k in pers:
+                base = pers[k]
+                dist_from_50 = base - 50
+                scale = rng.uniform(1.3, 2.0)
+                widened = int(50 + dist_from_50 * scale + rng.randint(-5, 5))
+                pers[k] = max(10, min(95, widened))
 
             # Scale attributes UP toward potential for prime/declining/veteran
             # (a 32-year-old prime fighter has grown into their potential)
