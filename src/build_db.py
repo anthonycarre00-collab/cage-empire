@@ -578,13 +578,14 @@ CREATE TABLE IF NOT EXISTS regions (
 
 CREATE TABLE IF NOT EXISTS weight_classes (
     weight_class_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     gender TEXT NOT NULL DEFAULT 'male' CHECK (gender IN ('male', 'female')),
     min_weight_kg REAL,
     max_weight_kg REAL,
     display_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (name, gender)
 );
 
 CREATE TABLE IF NOT EXISTS cities (
@@ -1197,7 +1198,7 @@ CREATE TABLE IF NOT EXISTS name_pools (
     name_value      TEXT NOT NULL,
     region          TEXT,
     created_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-    UNIQUE (name_type, name_value)
+    UNIQUE (name_type, name_value, region)
 );
 
 CREATE TABLE IF NOT EXISTS regen_lineage (
