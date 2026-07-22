@@ -162,6 +162,26 @@ def _check_injury_recovery(conn, current_date):
             ),
         )
 
+        # Phase A5 — publish INJURY_RECOVERED on the event bus. The
+        # news engine subscribes to write a richer clearance news item
+        # (the inline item above is the placeholder; the event-driven
+        # item has voice descriptors). The morale system also picks up
+        # injury recoveries on TICK_ADVANCED (+5 morale), but the
+        # event-driven path lets the news engine write a richer item
+        # immediately (no polling delay). Lazy import.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.INJURY_RECOVERED,
+                'injury_id': injury_id,
+                'fighter_id': fighter_id,
+                'current_date': current_date,
+                'event_date': current_date,
+            })
+        except ImportError:
+            pass
+
         recovered.append((injury_id, fighter_id))
 
         # v2.8.0 (Task 19): update descriptor snapshot — career_health
@@ -930,6 +950,25 @@ def _check_retirements(conn, current_date):
             ),
         )
 
+        # Phase A5 — publish FIGHTER_RETIRED on the event bus. The
+        # news engine subscribes to write a richer career-retrospective
+        # news item (the inline item above is the placeholder; the
+        # event-driven item has voice descriptors + reign phrase +
+        # legacy phrase). The event fires immediately on retirement
+        # (no polling delay) — the existing TICK_ADVANCED polling
+        # subscriber in news.py remains as a backstop.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.FIGHTER_RETIRED,
+                'fighter_id': fighter_id,
+                'current_date': current_date,
+                'event_date': current_date,
+            })
+        except ImportError:
+            pass
+
         # ----------------------------------------------------------------
         # Regen engine (Task ID 14). When a fighter retires, generate
         # a replacement fighter from the name pools with the same
@@ -1233,6 +1272,25 @@ def _check_contract_expiry(conn, current_date):
                     current_date,
                 ),
             )
+            # Phase A5 — publish CONTRACT_EXPIRED on the event bus.
+            # The news engine subscribes to write a richer free-agency
+            # news item (the inline item above is the placeholder; the
+            # event-driven item has voice descriptors + career stage
+            # + attribute summary). Lazy import to avoid circular
+            # dependency issues at module load.
+            try:
+                from event_bus import get_bus, Events
+                bus = get_bus()
+                bus.publish(conn, {
+                    'type': Events.CONTRACT_EXPIRED,
+                    'fighter_id': fighter_id,
+                    'promotion_id': None,  # contract expired — no current promo
+                    'contract_id': contract_id,
+                    'current_date': current_date,
+                    'event_date': current_date,
+                })
+            except ImportError:
+                pass
             expired.append((contract_id, fighter_id))
         else:
             # Staff/broadcast contract, OR fighter contract for an

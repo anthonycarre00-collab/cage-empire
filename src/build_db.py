@@ -2716,6 +2716,35 @@ def _build_fresh(conn):
         "(clock_id, current_date, current_day, current_week, current_month, current_year) "
         "VALUES (1, '2026-07-20', 1, 1, 7, 2026)"
     )
+    # Phase A (A4) — seed the 5 news sources. INSERT OR IGNORE so
+    # this is idempotent (a re-run with the sources already present
+    # is a no-op). The existing 'System Feed' source is created on
+    # demand by app.write_news / _check_retirements / etc. — we
+    # seed it here so the fresh DB has all 5 sources from the start
+    # (otherwise the first news publish creates 'System Feed' before
+    # 'CAGE Wire' exists, which is fine but messier). Frequency
+    # drives the weighted-random source selection in news.py's
+    # _get_random_news_source.
+    conn.executemany(
+        "INSERT OR IGNORE INTO news_sources "
+        "(name, credibility, sensationalism, bias, regional_reach, "
+        "reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            # Official inline news (app.write_news, retirement, etc.).
+            # Neutral credibility, low sensationalism, official voice.
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+            # The news engine's default rich-template source. Tabloid
+            # flair — punches up headlines, lower credibility.
+            ("CAGE Wire", 75, 60, 50, 70, 80, 90),
+            # A4 — 4 new sources for variety. Each has a distinct
+            # voice: tabloid (sensational), broadsheet (analytical),
+            # aggregator (social-driven), opinion (pundit-driven).
+            ("The Cage Wire", 30, 80, 60, 50, 50, 70),
+            ("MMA Analytica", 90, 20, 30, 80, 95, 50),
+            ("Social Sphere", 50, 60, 50, 70, 60, 60),
+            ("The Pundit's Desk", 60, 50, 40, 60, 70, 40),
+        ],
+    )
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) "
         "VALUES (?, ?)",

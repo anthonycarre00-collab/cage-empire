@@ -552,6 +552,25 @@ def generate_scouting_report(conn, scout_id, target_fighter_id,
          "neutral", "scouting", target_fighter_id, current_date),
     )
 
+    # Phase A5 — publish SCOUT_REPORT_GENERATED on the event bus.
+    # The news engine subscribes to write a richer scouting news item
+    # (the inline item above has raw confidence %; the event-driven
+    # item uses voice descriptors per §14). Lazy import to avoid any
+    # circular dependency.
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.SCOUT_REPORT_GENERATED,
+            'fighter_id': target_fighter_id,
+            'scout_id': scout_id,
+            'promotion_id': promotion_id,
+            'current_date': current_date,
+            'event_date': current_date,
+        })
+    except ImportError:
+        pass
+
 
 def mark_stale_reports(conn, fighter_id):
     """Mark all scouting reports for a fighter as stale.

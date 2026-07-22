@@ -1,9 +1,9 @@
-"""CAGE EMPIRE News Engine (Task 23).
+"""CAGE EMPIRE News Engine (Task 23, extended Phase A — A4 + A5 + A6).
 
 Template-based news generation driven by the event bus (Task 18.5).
-Subscribes to FIGHT_RESOLVED, TITLE_CHANGED, and TICK_ADVANCED and
-writes rich, varied, voice-layer-driven news items to the existing
-news_items table.
+Subscribes to FIGHT_RESOLVED, TITLE_CHANGED, TICK_ADVANCED, and 12
+other event types (Phase A5) and writes rich, varied, voice-layer-
+driven news items to the existing news_items table.
 
 CONVENTIONS compliance:
   §13 — Design Law: every news item tells a story. The engine uses
@@ -23,13 +23,41 @@ CONVENTIONS compliance:
         app.py / tick_processor.py remain untouched — the news
         engine is ADDITIVE.
 
-EVENTS SUBSCRIBED:
+NEWS SOURCE VARIETY (A4):
+  The engine picks a weighted-random news source per news item from
+  the 5 sources seeded by build_db._build_fresh (System Feed, CAGE
+  Wire, The Cage Wire, MMA Analytica, Social Sphere, The Pundit's
+  Desk). Each source has a distinct tone — tabloids (The Cage Wire)
+  prepend scandalous prefixes ("SHOCK:"), broadsheets (MMA
+  Analytica) prepend analytical prefixes ("Analysis:"), etc. System
+  Feed is excluded from the random pool (reserved for inline news).
+
+EVENTS SUBSCRIBED (Phase A5):
   FIGHT_RESOLVED → generate_fight_news + generate_injury_news
   TITLE_CHANGED  → generate_title_news
   TICK_ADVANCED  → generate_retirement_news (polls for newly
                    retired fighters identified by the existing
                    inline 'retirement' topic news written by
-                   tick_processor._check_retirements)
+                   tick_processor._check_retirements) +
+                   prune_old_news (A6 weekly pruning)
+  CAMP_COMPLETED → generate_camp_news
+  CAMP_INJURY    → generate_camp_injury_news
+  FIGHT_CANCELLED → generate_fight_cancelled_news
+  INJURY_CREATED → generate_injury_created_news
+  INJURY_RECOVERED → generate_injury_recovered_news
+  FIGHTER_RETIRED → generate_fighter_retired_news (career retrospective)
+  FIGHTER_SIGNED → generate_fighter_signed_news
+  FIGHTER_GENERATED → generate_fighter_generated_news
+  CONTRACT_EXPIRED → generate_contract_expired_news
+  SCOUT_REPORT_GENERATED → generate_scout_report_news
+  WEIGHT_CUT_COMPLETED → generate_weight_cut_news
+  EVENT_COMPLETED → generate_event_recap_news
+
+NEWS PRUNING (A6):
+  On each weekly tick (current_day % 7 == 0), news_items older than
+  365 days are deleted EXCEPT for items with topic IN ('title',
+  'retirement', 'hall_of_fame') which are kept forever. The prune
+  is a hard DELETE (no archive table — keep it simple).
 
 USAGE:
   from news import register_subscribers
@@ -37,10 +65,8 @@ USAGE:
 
 The news engine writes all items with topic='news_engine' so they
 can be filtered from the existing hardcoded news (topic='fight',
-'injury', 'retirement', 'training', etc.). The news_source is the
-'CAGE Wire' wire service — distinct from 'System Feed' so the
-player can see at a glance which items came from the rich template
-engine vs. the legacy inline strings.
+'injury', 'retirement', 'training', etc.). The news_source is
+selected per item from the 5 sources via _get_random_news_source.
 """
 
 import random
@@ -58,6 +84,42 @@ from voice import (
 
 NEWS_TOPIC = "news_engine"
 NEWS_SOURCE_NAME = "CAGE Wire"
+
+# A4 — news source roster. Each entry: (name, credibility, sensationalism,
+# bias, regional_reach, reliability, frequency). Frequency drives the
+# weighted-random selection in _get_random_news_source. The seed list
+# is also INSERTed into news_sources by build_db._build_fresh (so the
+# fresh DB has them from the start). This list is the source of truth —
+# build_db seeds it, news.py lazily re-seeds it on the world DB if any
+# are missing.
+_SEED_NEWS_SOURCES = [
+    ("System Feed", 70, 40, 50, 60, 80, 80),
+    (NEWS_SOURCE_NAME, 75, 60, 50, 70, 80, 90),
+    ("The Cage Wire", 30, 80, 60, 50, 50, 70),
+    ("MMA Analytica", 90, 20, 30, 80, 95, 50),
+    ("Social Sphere", 50, 60, 50, 70, 60, 60),
+    ("The Pundit's Desk", 60, 50, 40, 60, 70, 40),
+]
+
+# A4 — source-tone prefix per source name. Tabloids punch up headlines
+# ("SHOCK:" / "SCANDAL:" / "BOMBSHELL:"); broadsheets add analytical
+# framing ("Analysis:" / "In Depth:"); aggregators hedge ("Buzzing:"
+# / "Trending:"); opinion desks opine ("Opinion:" / "Take:"). System
+# Feed and CAGE Wire stay neutral (no prefix — they read as wire
+# service copy). The prefix is added by _apply_source_tone BEFORE the
+# headline so the digit-free invariant (§14) still holds.
+_SOURCE_TONE_PREFIX = {
+    "System Feed":        None,
+    NEWS_SOURCE_NAME:     None,
+    "The Cage Wire":      ("SHOCK", "SCANDAL", "BOMBSHELL", "EXCLUSIVE",
+                           "CONTROVERSY"),
+    "MMA Analytica":      ("Analysis", "In Depth", "By the Numbers",
+                           "Strategic Breakdown", "Tactical Read"),
+    "Social Sphere":      ("Buzzing", "Trending", "Going Viral",
+                           "Feeds Lit", "Social Storm"),
+    "The Pundit's Desk":  ("Opinion", "Take", "Hot Take", "Viewpoint",
+                           "Pundit's Notebook"),
+}
 
 # Word-form maps for digit-free text (CONVENTIONS §14).
 _ROUND_WORDS = {
@@ -233,6 +295,7 @@ def _get_news_source(conn):
     which items came from the rich template engine (Task 23) vs.
     the legacy inline strings.
     """
+    _ensure_seed_sources(conn)
     row = conn.execute(
         "SELECT news_source_id FROM news_sources WHERE name=?",
         (NEWS_SOURCE_NAME,),
@@ -245,6 +308,96 @@ def _get_news_source(conn):
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (NEWS_SOURCE_NAME, 75, 60, 50, 70, 80, 90),
     ).lastrowid
+
+
+def _ensure_seed_sources(conn):
+    """A4 — idempotently INSERT OR IGNORE all 5 seed news sources.
+
+    Called lazily from _get_news_source and _get_random_news_source
+    so the world DB (which uses --migrate, never --fresh) gets the
+    sources the first time news.py runs. On the fresh DB (which
+    _build_fresh already seeds), this is a no-op.
+    """
+    conn.executemany(
+        "INSERT OR IGNORE INTO news_sources "
+        "(name, credibility, sensationalism, bias, regional_reach, "
+        "reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        _SEED_NEWS_SOURCES,
+    )
+
+
+def _get_random_news_source(conn, rng=None):
+    """A4 — pick a weighted-random news source for a news item.
+
+    Weighted by the source's `frequency` column (higher frequency =
+    more likely to be picked). Ensures all 5 seed sources exist
+    first (lazy idempotent INSERT). Returns the news_source_id.
+
+    The 'System Feed' source is excluded from the random pool — it's
+    reserved for inline news (app.write_news, retirement announce-
+    ments, contract expiry, etc.) that should always read as "the
+    official wire." The news engine's rich-template items use any of
+    the other 5 sources (CAGE Wire, The Cage Wire, MMA Analytica,
+    Social Sphere, The Pundit's Desk).
+    """
+    if rng is None:
+        rng = random.Random()
+    _ensure_seed_sources(conn)
+    rows = conn.execute(
+        "SELECT news_source_id, frequency FROM news_sources "
+        "WHERE name != 'System Feed'"
+    ).fetchall()
+    if not rows:
+        # Defensive — fall back to the CAGE Wire source.
+        return _get_news_source(conn)
+    weights = [(src_id, freq if freq and freq > 0 else 1)
+               for src_id, freq in rows]
+    total = sum(w for _, w in weights)
+    roll = rng.random() * total
+    cumulative = 0.0
+    for src_id, w in weights:
+        cumulative += w
+        if roll <= cumulative:
+            return src_id
+    return weights[-1][0]
+
+
+def _source_name(conn, src_id):
+    """Return the news source name for a news_source_id (or None)."""
+    if src_id is None:
+        return None
+    row = conn.execute(
+        "SELECT name FROM news_sources WHERE news_source_id=?",
+        (src_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _apply_source_tone(headline, src_name, rng=None):
+    """A4 — prepend a source-flavored tag to the headline.
+
+    Tabloids (The Cage Wire) get a scandalous prefix ("SHOCK: ...").
+    Broadsheets (MMA Analytica) get an analytical prefix
+    ("Analysis: ..."). Aggregators (Social Sphere) get a trending
+    prefix ("Trending: ..."). Opinion desks (The Pundit's Desk) get
+    an op-ed prefix ("Opinion: ..."). System Feed and CAGE Wire stay
+    neutral (no prefix — wire service voice).
+
+    The prefix is uppercase for tabloids (sensational) and title-cased
+    for broadsheets/opinion (analytical). Never introduces digit
+    characters (CONVENTIONS §14).
+    """
+    if rng is None:
+        rng = random.Random()
+    prefixes = _SOURCE_TONE_PREFIX.get(src_name)
+    if not prefixes:
+        return headline
+    prefix = rng.choice(prefixes)
+    # Tabloids get ALL CAPS + colon (sensational). Broadsheets/
+    # aggregators/opinion get title-case + colon (analytical).
+    if src_name == "The Cage Wire":
+        return f"{prefix.upper()}: {headline}"
+    return f"{prefix}: {headline}"
 
 
 def _fighter_full_name(conn, fighter_id):
@@ -393,15 +546,30 @@ def _promotion_name(conn, promo_id):
 
 def _write_news_item(conn, headline, body, sentiment="neutral",
                      event_id=None, fight_id=None, fighter_id=None,
-                     promotion_id=None, published_at=None):
-    """Write a news_engine topic news item to news_items."""
-    src_id = _get_news_source(conn)
+                     promotion_id=None, published_at=None, rng=None,
+                     source_id=None):
+    """Write a news_engine topic news item to news_items.
+
+    A4 — if source_id is None (the default), pick a weighted-random
+    news source via _get_random_news_source. The source's tone is
+    applied to the headline via _apply_source_tone (tabloids get
+    "SHOCK:" prefixes, broadsheets get "Analysis:" prefixes, etc.).
+    Pass source_id explicitly to bypass the random pick + tone
+    (used by subscribers that have a specific source already chosen,
+    e.g., the CAGE Wire for legacy consistency on certain items).
+    """
+    if rng is None:
+        rng = random.Random()
+    if source_id is None:
+        source_id = _get_random_news_source(conn, rng=rng)
+    src_name = _source_name(conn, source_id)
+    final_headline = _apply_source_tone(headline, src_name, rng=rng)
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
         "sentiment, topic, event_id, fight_id, fighter_id, "
         "promotion_id, published_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (src_id, headline, body, sentiment, NEWS_TOPIC,
+        (source_id, final_headline, body, sentiment, NEWS_TOPIC,
          event_id, fight_id, fighter_id, promotion_id, published_at),
     )
 
@@ -986,6 +1154,678 @@ def generate_retirement_news(conn, event):
 
 
 # ----------------------------------------------------------------
+# A5 — subscribers for the previously-unsubscribed event types.
+# Each subscriber writes a single news_engine item per event with a
+# short, voice-layer-driven headline + body. The subscribers are
+# defensive — missing fields in the event dict cause a silent return
+# (no crash). The body uses career-stage + attribute descriptors
+# from voice.py (no raw numbers per §14).
+# ----------------------------------------------------------------
+
+# Shared headline pools per topic (at least 3 variants each for
+# variety — the test verifies at least 3 distinct headlines over
+# multiple calls).
+
+_CAMP_COMPLETED_HEADLINES = [
+    "{fighter} wraps training camp",
+    "Camp in the books for {fighter}",
+    "{fighter} finishes camp — ready for the cage",
+    "Training camp complete for {fighter}",
+]
+
+_CAMP_INJURY_HEADLINES = [
+    "{fighter} suffers training injury",
+    "Camp derailed — {fighter} goes down",
+    "{fighter} injured in training",
+    "Setback in camp for {fighter}",
+]
+
+_FIGHT_CANCELLED_HEADLINES = [
+    "Fight cancelled — {fighter} misses weight",
+    "Weight cut claims another fight — {fighter} off the card",
+    "{fighter} misses weight; bout scrapped",
+    "Scale claims {fighter} — fight cancelled",
+]
+
+_INJURY_RECOVERED_HEADLINES = [
+    "{fighter} cleared to return",
+    "{fighter} back from injury",
+    "Medical clearance for {fighter}",
+    "{fighter} returns to active duty",
+]
+
+_FIGHTER_SIGNED_HEADLINES = [
+    "{fighter} signs with {promotion}",
+    "{promotion} inks {fighter}",
+    "{fighter} joins {promotion} roster",
+    "New deal — {fighter} signs with {promotion}",
+]
+
+_FIGHTER_GENERATED_HEADLINES = [
+    "New prospect {fighter} emerges",
+    "{fighter} arrives on the scene",
+    "Fresh face — {fighter} debuts",
+    "Scouts take note of {fighter}",
+]
+
+_CONTRACT_EXPIRED_HEADLINES = [
+    "{fighter}'s contract expires — free agency beckons",
+    "{fighter} hits the open market",
+    "{fighter} becomes a free agent",
+    "Contract up — {fighter} unsigned",
+]
+
+_SCOUT_REPORT_HEADLINES = [
+    "Scout report filed on {fighter}",
+    "Scouting notebook: {fighter}",
+    "{fighter} under the scout's microscope",
+    "New scouting report — {fighter}",
+]
+
+_WEIGHT_CUT_HEADLINES = [
+    "Weigh-in results — {fighter} hits the mark",
+    "{fighter} makes weight",
+    "Scale watch — {fighter} on weight",
+    "{fighter} completes the cut",
+]
+
+_EVENT_RECAP_HEADLINES = [
+    "{promotion} event recap",
+    "Card in the books — {promotion} recap",
+    "{promotion} event wraps",
+    "Recap: {promotion} latest card",
+]
+
+
+def _short_descriptor_summary(conn, fighter_id, rng=None):
+    """Return a single-attribute descriptor summary (lighter than the
+    2-attribute _fighter_descriptor_summary). Used by the A5 short news
+    items so they don't all read identically. Falls back to a generic
+    phrase if the fighter has no attributes row.
+    """
+    if rng is None:
+        rng = random.Random()
+    desc = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+    return desc or "with a serviceable skill set"
+
+
+def generate_camp_news(conn, event):
+    """A5 — subscriber for CAMP_COMPLETED.
+
+    Writes a short news_engine item announcing the fighter finished
+    their training camp. Uses career stage + a single attribute
+    descriptor in the body (no raw numbers per §14).
+    """
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(conn, fighter_id, rng=rng)
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    headline = rng.choice(_CAMP_COMPLETED_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"{fighter_full}, {_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, has wrapped training camp and is ready for "
+        f"their next outing. The work is done — now it's about "
+        f"executing on fight night."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="positive",
+        fighter_id=fighter_id, rng=rng,
+        published_at=event.get("current_date"),
+    )
+
+
+def generate_camp_injury_news(conn, event):
+    """A5 — subscriber for CAMP_INJURY."""
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(conn, fighter_id, rng=rng)
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    headline = rng.choice(_CAMP_INJURY_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"Bad news out of camp — {fighter_full}, "
+        f"{_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, has suffered a training injury. The setback "
+        f"disrupts their preparation; a return timeline will follow "
+        f"once the medical team evaluates the damage."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="negative",
+        fighter_id=fighter_id, rng=rng,
+        published_at=event.get("current_date"),
+    )
+
+
+def generate_fight_cancelled_news(conn, event):
+    """A5 — subscriber for FIGHT_CANCELLED.
+
+    Published by app.py's weight cut cancellation path. The event
+    payload includes missed_fighter_id (the fighter who missed weight)
+    and opponent_id (the fighter who made weight). Both get a news
+    mention — the offender for missing weight, the opponent for the
+    bad luck of losing their fight.
+    """
+    missed_id = event.get("missed_fighter_id")
+    opponent_id = event.get("opponent_id")
+    fight_id = event.get("fight_id")
+    event_id = event.get("event_id")
+    promo_id = event.get("promotion_id")
+    event_date = event.get("event_date")
+    if missed_id is None:
+        return
+    rng = random.Random()
+    missed_full = _fighter_full_name(conn, missed_id)
+    missed_last = _fighter_last_name(conn, missed_id)
+    career_stage = _fighter_career_stage(
+        conn, missed_id, rng=rng, current_date=event_date,
+    )
+    attr_summary = _short_descriptor_summary(conn, missed_id, rng=rng)
+    headline = rng.choice(_FIGHT_CANCELLED_HEADLINES).format(
+        fighter=missed_last,
+    )
+    body = (
+        f"The bout has been cancelled after {missed_full}, "
+        f"{_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, missed weight. "
+    )
+    if opponent_id is not None:
+        opp_full = _fighter_full_name(conn, opponent_id)
+        body += (
+            f"{opp_full} loses their spot on the card through no "
+            f"fault of their own — the sport can be cruel that way."
+        )
+    else:
+        body += "No opponent was named for the reshuffle."
+    _write_news_item(
+        conn, headline, body, sentiment="negative",
+        event_id=event_id, fight_id=fight_id, fighter_id=missed_id,
+        promotion_id=promo_id, published_at=event_date, rng=rng,
+    )
+
+
+def generate_injury_created_news(conn, event):
+    """A5 — subscriber for INJURY_CREATED.
+
+    The event payload includes injury_id (or fight_id + fighter_id).
+    Looks up the injury row to extract type/severity/return date and
+    writes a news item. Mirrors generate_injury_news (which is fired
+    by FIGHT_RESOLVED) but is fired by the explicit INJURY_CREATED
+    event so non-fight injuries (training camp injuries, etc.) also
+    get coverage.
+    """
+    injury_id = event.get("injury_id")
+    fight_id = event.get("fight_id")
+    event_id = event.get("event_id")
+    promo_id = event.get("promotion_id")
+    event_date = event.get("event_date") or event.get("current_date")
+    fighter_id = event.get("fighter_id")
+    # If injury_id is provided, look up the injury row.
+    if injury_id is not None:
+        row = conn.execute(
+            "SELECT fighter_id, injury_type, severity, body_area, "
+            "projected_return_date FROM injuries WHERE injury_id=?",
+            (injury_id,),
+        ).fetchone()
+        if not row:
+            return
+        fighter_id, injury_type, severity, body_area, ret_date = row
+    else:
+        if fighter_id is None:
+            return
+        # No injury_id — try to look up by fight_id + fighter_id.
+        row = conn.execute(
+            "SELECT injury_type, severity, body_area, "
+            "projected_return_date FROM injuries "
+            "WHERE fighter_id=? AND (fight_id=? OR fight_id IS NULL) "
+            "ORDER BY injury_id DESC LIMIT 1",
+            (fighter_id, fight_id if fight_id is not None else -1),
+        ).fetchone()
+        if not row:
+            return
+        injury_type, severity, body_area, ret_date = row
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng, current_date=event_date,
+    )
+    attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+    sev_phrase = _severity_phrase(severity)
+    ret_phrase = _return_phrase(ret_date, event_date)
+    injury_phrase = f"a {sev_phrase} {injury_type or 'injury'}"
+    headline = rng.choice(_INJURY_HEADLINES).format(
+        fighter=fighter_last, injury=injury_phrase,
+    )
+    body = rng.choice(_INJURY_BODY_TEMPLATES).format(
+        fighter_full=fighter_full, fighter_last=fighter_last,
+        career_stage=career_stage, art=_article_for(career_stage),
+        attr_summary=attr_summary,
+        injury=injury_phrase, return_phrase=ret_phrase,
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="negative",
+        event_id=event_id, fight_id=fight_id, fighter_id=fighter_id,
+        promotion_id=promo_id, published_at=event_date, rng=rng,
+    )
+
+
+def generate_injury_recovered_news(conn, event):
+    """A5 — subscriber for INJURY_RECOVERED."""
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    headline = rng.choice(_INJURY_RECOVERED_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"{fighter_full}, {_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, has been cleared to return to competition. "
+        f"The medical team has signed off — the comeback trail begins."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="positive",
+        fighter_id=fighter_id, rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_fighter_retired_news(conn, event):
+    """A5 — subscriber for FIGHTER_RETIRED.
+
+    Writes a career-retrospective news item using the same template
+    pool as generate_retirement_news (the polling-based TICK_ADVANCED
+    subscriber). The new event-driven subscriber fires immediately
+    on retirement (no polling delay) and writes a single item; the
+    polling subscriber still runs as a backstop for any retirement
+    that somehow didn't publish the event (defensive).
+    """
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    current_date = event.get("current_date") or event.get("event_date")
+    rng = random.Random()
+    # Reuse the rich retirement body builder by calling the existing
+    # generate_retirement_news logic — but only for this one fighter.
+    # Build the news item inline (avoid the polling dance).
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng, current_date=current_date,
+    )
+    attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+    career_row = conn.execute(
+        "SELECT record_wins, record_losses, record_draws, "
+        "title_reigns, career_health "
+        "FROM fighter_career WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if career_row:
+        wins, losses, draws, reigns, health = career_row
+        wins_word = _num_word(wins or 0)
+        losses_word = _num_word(losses or 0)
+        reigns = reigns or 0
+    else:
+        wins_word = "several"
+        losses_word = "several"
+        reigns = 0
+    if reigns > 0:
+        reigns_word = _num_word(reigns)
+        reign_phrase = f"A {reigns_word}-time champion,"
+    else:
+        reign_phrase = "A respected competitor,"
+    legacy_phrase = rng.choice(_LEGACY_PHRASES).format(
+        wins=wins_word, losses=losses_word,
+    )
+    promo_row = conn.execute(
+        "SELECT current_promotion_id FROM fighters WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    promo_id = promo_row[0] if promo_row else None
+    promotion_name = _promotion_name(conn, promo_id)
+    headline = rng.choice(_RETIREMENT_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = rng.choice(_RETIREMENT_BODY_TEMPLATES).format(
+        fighter_full=fighter_full, fighter_last=fighter_last,
+        career_stage=career_stage,
+        art=_article_for(career_stage),
+        attr_summary=attr_summary, reign_phrase=reign_phrase,
+        legacy_phrase=legacy_phrase,
+        promotion_name=promotion_name,
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        fighter_id=fighter_id, promotion_id=promo_id,
+        published_at=current_date, rng=rng,
+    )
+
+
+def generate_fighter_signed_news(conn, event):
+    """A5 — subscriber for FIGHTER_SIGNED."""
+    fighter_id = event.get("fighter_id")
+    promotion_id = event.get("promotion_id")
+    if fighter_id is None or promotion_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    promotion_name = _promotion_name(conn, promotion_id)
+    headline = rng.choice(_FIGHTER_SIGNED_HEADLINES).format(
+        fighter=fighter_last, promotion=promotion_name,
+    )
+    body = (
+        f"{fighter_full}, {_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, has signed with {promotion_name}. The "
+        f"promotion bolsters its roster — the fighter gets a fresh "
+        f"start. Both sides will be hoping this is the beginning of "
+        f"a long and profitable relationship."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="positive",
+        fighter_id=fighter_id, promotion_id=promotion_id, rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_fighter_generated_news(conn, event):
+    """A5 — subscriber for FIGHTER_GENERATED.
+
+    Fires when the regen engine (tick_processor._check_retirements)
+    creates a replacement fighter. The event payload includes the new
+    fighter_id. Writes a "new prospect emerges" news item.
+    """
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    headline = rng.choice(_FIGHTER_GENERATED_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"A new face has emerged on the scene: {fighter_full}, "
+        f"{_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}. Whether they prove to be the next big thing "
+        f"or just another name on the regional circuit remains to be "
+        f"seen — but the scouts are paying attention."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        fighter_id=fighter_id, rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_contract_expired_news(conn, event):
+    """A5 — subscriber for CONTRACT_EXPIRED."""
+    fighter_id = event.get("fighter_id")
+    promotion_id = event.get("promotion_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    promotion_name = _promotion_name(conn, promotion_id)
+    headline = rng.choice(_CONTRACT_EXPIRED_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"{fighter_full}, {_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}, is now a free agent after their contract "
+        f"with {promotion_name} expired. The open market awaits — "
+        f"promotions will be weighing whether the fighter is worth "
+        f"the investment, and the fighter will be weighing where "
+        f"their next chapter should unfold."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        fighter_id=fighter_id, promotion_id=promotion_id, rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_scout_report_news(conn, event):
+    """A5 — subscriber for SCOUT_REPORT_GENERATED."""
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    attr_summary = _short_descriptor_summary(conn, fighter_id, rng=rng)
+    headline = rng.choice(_SCOUT_REPORT_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    body = (
+        f"A new scout report has been filed on {fighter_full}, "
+        f"{_article_for(career_stage)} {career_stage}, "
+        f"{attr_summary}. The evaluation is in — the question now is "
+        f"whether the fighter lives up to the billing or outperforms "
+        f"the scouting department's projections."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        fighter_id=fighter_id, rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_weight_cut_news(conn, event):
+    """A5 — subscriber for WEIGHT_CUT_COMPLETED.
+
+    Fires after the weigh-in completes for both fighters on a fight.
+    The event payload includes fighter_id, fight_id, event_id,
+    weight_class_id, cut_outcome, weight_missed_kg. Writes a
+    weigh-in results news item — no raw numbers per §14 (uses
+    word-form phrases for the miss margin).
+    """
+    fighter_id = event.get("fighter_id")
+    if fighter_id is None:
+        return
+    rng = random.Random()
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    fighter_last = _fighter_last_name(conn, fighter_id)
+    career_stage = _fighter_career_stage(
+        conn, fighter_id, rng=rng,
+        current_date=event.get("current_date") or event.get("event_date"),
+    )
+    cut_outcome = event.get("cut_outcome", "made_weight") or "made_weight"
+    headline = rng.choice(_WEIGHT_CUT_HEADLINES).format(
+        fighter=fighter_last,
+    )
+    if cut_outcome == "made_weight":
+        outcome_phrase = "made weight without issue"
+    elif cut_outcome == "missed_small":
+        outcome_phrase = "missed weight by a slim margin"
+    elif cut_outcome == "missed_medium":
+        outcome_phrase = "missed weight by a noticeable margin"
+    elif cut_outcome == "missed_large":
+        outcome_phrase = "missed weight badly — the fight is in jeopardy"
+    elif cut_outcome == "cancelled":
+        outcome_phrase = "missed weight by a wide margin; the fight was cancelled"
+    else:
+        outcome_phrase = "completed the cut"
+    body = (
+        f"{fighter_full}, {_article_for(career_stage)} {career_stage}, "
+        f"{outcome_phrase} at the official weigh-in. The scale never "
+        f"lies — and on fight week, it can be as much of an opponent "
+        f"as the fighter across the cage."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral"
+        if cut_outcome == "made_weight" else "negative",
+        fight_id=event.get("fight_id"),
+        event_id=event.get("event_id"),
+        fighter_id=fighter_id,
+        promotion_id=event.get("promotion_id"), rng=rng,
+        published_at=event.get("current_date") or event.get("event_date"),
+    )
+
+
+def generate_event_recap_news(conn, event):
+    """A5 — subscriber for EVENT_COMPLETED.
+
+    Fires when an event transitions to 'completed' (all fights
+    resolved). Writes a short recap news item naming the promotion
+    and (if available) the headline result of the main event.
+    Includes a career-stage descriptor for the winner so the recap
+    has a voice-layer presence (CONVENTIONS §14 — no raw numbers).
+    """
+    event_id = event.get("event_id")
+    promotion_id = event.get("promotion_id")
+    event_date = event.get("event_date") or event.get("current_date")
+    if event_id is None:
+        return
+    rng = random.Random()
+    promotion_name = _promotion_name(conn, promotion_id)
+    headline = rng.choice(_EVENT_RECAP_HEADLINES).format(
+        promotion=promotion_name,
+    )
+    # Find the main event result for the body (highest card_slot
+    # fight with a winner). Word-form result_label — no raw numbers.
+    main_row = conn.execute(
+        "SELECT f.winner_fighter_id, f.loser_fighter_id, f.result_type "
+        "FROM fights f WHERE f.event_id=? "
+        "AND f.winner_fighter_id IS NOT NULL "
+        "ORDER BY f.card_slot DESC LIMIT 1",
+        (event_id,),
+    ).fetchone()
+    if main_row:
+        winner_id, loser_id, result_type = main_row
+        winner_full = _fighter_full_name(conn, winner_id) if winner_id else "the winner"
+        loser_full = _fighter_full_name(conn, loser_id) if loser_id else "the loser"
+        result_label = _result_label(result_type)
+        # Voice-layer career stage for the winner — gives the recap
+        # a voice presence (§14 — no raw numbers; "reigning champion"
+        # / "top prospect" etc.).
+        winner_stage = _fighter_career_stage(
+            conn, winner_id, rng=rng, current_date=event_date,
+        ) if winner_id else "competitor"
+        body = (
+            f"The {promotion_name} card is in the books. In the main "
+            f"event, {winner_full} — {_article_for(winner_stage)} "
+            f"{winner_stage} — earned {result_label} over "
+            f"{loser_full}. The rest of the card delivered its share "
+            f"of storylines; the division reshuffles as the dust "
+            f"settles and the fighters turn an eye toward what "
+            f"comes next."
+        )
+    else:
+        body = (
+            f"The {promotion_name} card has wrapped. The full results "
+            f"are filtering through the wire — the division reshuffles "
+            f"as the dust settles and the fighters turn an eye toward "
+            f"what comes next."
+        )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        event_id=event_id, promotion_id=promotion_id, rng=rng,
+        published_at=event_date,
+    )
+
+
+# ----------------------------------------------------------------
+# A6 — news pruning. Weekly TICK_ADVANCED subscriber that deletes
+# news_items older than 365 days EXCEPT for items with topic IN
+# ('title', 'retirement', 'hall_of_fame') which are kept forever
+# (title change news, retirements, and HoF inductions are legacy
+# artifacts the player wants to browse years later).
+# ----------------------------------------------------------------
+
+# Topics that are exempt from pruning (kept forever).
+_NEWS_PRUNE_KEEP_TOPICS = frozenset({"title", "retirement", "hall_of_fame"})
+
+# Pruning threshold — news older than this many days is pruned.
+_NEWS_PRUNE_AGE_DAYS = 365
+
+
+def _is_weekly_tick(conn):
+    """Return True if the current sim day is a multiple of 7 (weekly tick)."""
+    row = conn.execute(
+        "SELECT simulation_clock.current_day "
+        "FROM simulation_clock WHERE clock_id=1"
+    ).fetchone()
+    if not row or row[0] is None:
+        return False
+    return (row[0] % 7) == 0
+
+
+def prune_old_news(conn, event):
+    """A6 — weekly TICK_ADVANCED subscriber that prunes old news items.
+
+    Deletes news_items older than _NEWS_PRUNE_AGE_DAYS (365) EXCEPT
+    for items with topic IN ('title', 'retirement', 'hall_of_fame')
+    which are kept forever (title change news, retirements, and HoF
+    inductions are legacy artifacts).
+
+    Pruning is a hard DELETE (no archive table — the brief explicitly
+    says "keep it simple"). Runs only on weekly ticks (current_day %
+    7 == 0) to avoid deleting on every daily tick (which would be
+    wasteful and could surprise a player mid-week).
+
+    The prune uses published_at < date(current_date, '-365 days') to
+    compute the cutoff. If published_at is NULL (shouldn't happen —
+    the column has a DEFAULT), the row is kept (defensive — we don't
+    want to delete news with unknown publish dates).
+    """
+    if not _is_weekly_tick(conn):
+        return
+    current_date = event.get("current_date")
+    if not current_date:
+        return
+    # Build the keep-topic IN (...) clause. The topics are hardcoded
+    # constants so SQL injection isn't a concern, but use a parameter
+    # list for clarity.
+    placeholders = ",".join("?" for _ in _NEWS_PRUNE_KEEP_TOPICS)
+    conn.execute(
+        f"DELETE FROM news_items "
+        f"WHERE published_at IS NOT NULL "
+        f"AND published_at < date(?, '-{365} days') "
+        f"AND topic NOT IN ({placeholders})",
+        [current_date] + list(_NEWS_PRUNE_KEEP_TOPICS),
+    )
+
+
+# ----------------------------------------------------------------
 # REGISTRATION
 # ----------------------------------------------------------------
 
@@ -1000,6 +1840,7 @@ def register_subscribers():
     """
     from event_bus import get_bus, Events
     bus = get_bus()
+    # Original subscribers (Task 23).
     bus.subscribe(
         Events.FIGHT_RESOLVED, generate_fight_news,
         name="news.generate_fight_news",
@@ -1015,4 +1856,60 @@ def register_subscribers():
     bus.subscribe(
         Events.TICK_ADVANCED, generate_retirement_news,
         name="news.generate_retirement_news",
+    )
+    # A5 — fill the unsubscribed event types. Each subscriber writes
+    # a single news_engine item per event with a voice-layer-driven
+    # headline + body.
+    bus.subscribe(
+        Events.CAMP_COMPLETED, generate_camp_news,
+        name="news.generate_camp_news",
+    )
+    bus.subscribe(
+        Events.CAMP_INJURY, generate_camp_injury_news,
+        name="news.generate_camp_injury_news",
+    )
+    bus.subscribe(
+        Events.FIGHT_CANCELLED, generate_fight_cancelled_news,
+        name="news.generate_fight_cancelled_news",
+    )
+    bus.subscribe(
+        Events.INJURY_CREATED, generate_injury_created_news,
+        name="news.generate_injury_created_news",
+    )
+    bus.subscribe(
+        Events.INJURY_RECOVERED, generate_injury_recovered_news,
+        name="news.generate_injury_recovered_news",
+    )
+    bus.subscribe(
+        Events.FIGHTER_RETIRED, generate_fighter_retired_news,
+        name="news.generate_fighter_retired_news",
+    )
+    bus.subscribe(
+        Events.FIGHTER_SIGNED, generate_fighter_signed_news,
+        name="news.generate_fighter_signed_news",
+    )
+    bus.subscribe(
+        Events.FIGHTER_GENERATED, generate_fighter_generated_news,
+        name="news.generate_fighter_generated_news",
+    )
+    bus.subscribe(
+        Events.CONTRACT_EXPIRED, generate_contract_expired_news,
+        name="news.generate_contract_expired_news",
+    )
+    bus.subscribe(
+        Events.SCOUT_REPORT_GENERATED, generate_scout_report_news,
+        name="news.generate_scout_report_news",
+    )
+    bus.subscribe(
+        Events.WEIGHT_CUT_COMPLETED, generate_weight_cut_news,
+        name="news.generate_weight_cut_news",
+    )
+    bus.subscribe(
+        Events.EVENT_COMPLETED, generate_event_recap_news,
+        name="news.generate_event_recap_news",
+    )
+    # A6 — news pruning (weekly tick).
+    bus.subscribe(
+        Events.TICK_ADVANCED, prune_old_news,
+        name="news.prune_old_news",
     )

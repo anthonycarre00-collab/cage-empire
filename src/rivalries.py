@@ -1,4 +1,4 @@
-"""CAGE EMPIRE Rivalries System (Task 22).
+"""CAGE EMPIRE Rivalries System (Task 22, extended Phase A — A2 + A3 + A8).
 
 Pairwise rivalries between fighters, entirely event-bus-driven
 (Task 18.5). Subscribes to FIGHT_RESOLVED, TITLE_CHANGED, and
@@ -28,40 +28,30 @@ CONVENTIONS compliance:
         functions (§15.4). The existing side effects remain
         untouched. The fight engine (resolve_next_fight in app.py) is
         NOT modified per the brief — readers (get_rivalry,
-        get_active_rivalries) are provided for a future task to
-        consume when wiring rivalry-heat modifiers into the beat
-        engine.
+        get_active_rivalries) are provided for the A8 fight-engine
+        modifier (heat > 70 → +aggression, -composure).
 
 RIVALRY HEAT ESCALATION:
   Each callout/trash_talk social post between rivals: +5 heat
   Each fight between rivals: +15 heat
   Title fight between rivals: +25 heat
   Weight cut miss against a rival: +10 heat
-  Apology social post: -10 heat
+  Apology social post: -15 heat (A2: bumped from -10)
   Heat caps at 100 (CHECK + code clamp)
 
-RIVALRY TYPES:
-  callout             — built from accumulated callouts/trash_talk
-                        posts between two fighters (3+ posts on the
-                        TICK_ADVANCED beef scan).
-  bad_blood           — built from a non-fight incident (weight cut
-                        miss against a rival, etc.).
-  title_rivalry       — built when a title changes hands between two
-                        fighters (champion vs former champion).
-  rematch_hungry      — built after a close/controversial decision
-                        that demands a rematch (score_margin small).
-  style_clash         — reserved for when two fighters with strongly
-                        opposing style archetypes meet (future task
-                        may seed this from matchmaking; the type is
-                        in the CHECK constraint so it can be used
-                        without a schema change).
-  disrespect          — built from post-fight unsportsmanlike
-                        behavior (e.g., a loser trash_talk post
-                        immediately after a loss). The FIGHT_RESOLVED
-                        subscriber checks for this.
-  stolen_opportunity  — reserved for when a contender loses a
-                        promised title shot (future task may seed
-                        this from rankings + title-shot promises).
+RIVALRY HEAT DECAY (A2):
+  On each weekly tick (current_day % 7 == 0), every active rivalry
+  loses -1 heat. Below heat=20, the rivalry goes dormant
+  (is_active=0). Dormant rivalries are preserved (no DELETE) and
+  re-activate automatically when a fresh escalation bumps heat back
+  above 20.
+
+SAME-ROSTER RESTRICTIONS (A3):
+  Callouts/trash-talk posts only graduate into a tracked rivalry
+  when the fighter pair is in the same promotion. Cross-promotion
+  callouts are allowed only for same-weight-class pairs with a 5%
+  chance (the rare inter-promotion superfight). Free agents (no
+  current_promotion_id) bypass the gate — they can call out anyone.
 
 USAGE:
   from rivalries import register_subscribers
@@ -99,11 +89,25 @@ _HEAT_CALLOUT_POST = +5     # callout or trash_talk social post between rivals
 _HEAT_FIGHT_BETWEEN_RIVALS = +15
 _HEAT_TITLE_FIGHT_BETWEEN_RIVALS = +25
 _HEAT_WEIGHT_CUT_MISS = +10
-_HEAT_APOLOGY_POST = -10    # apology reduces heat (de-escalation)
+_HEAT_APOLOGY_POST = -15    # apology reduces heat (de-escalation) — A2: bumped from -10 to -15
 
 # Maximum heat value (mirrors the CHECK constraint).
 _MAX_HEAT = 100
 _MIN_HEAT = 0
+
+# A2 — weekly heat decay. Active rivalries lose -1 heat per sim week
+# (days that are multiples of 7). When heat drops below the dormancy
+# threshold, is_active is set to 0 (dormant). A dormant rivalry keeps
+# its row (the history is preserved) but no longer qualifies as
+# "active" for fight-engine modifiers (A8) or news/social targeting.
+_HEAT_WEEKLY_DECAY = -1
+_HEAT_DORMANCY_THRESHOLD = 20
+
+# A3 — same-roster restrictions. Cross-promotion callouts are only
+# allowed between fighters in the same weight class, with a small
+# probability. Inter-promotion beefs generate extra hype but are
+# rare — most callouts stay within a promotion's roster.
+_CROSS_PROMO_CALLOUT_CHANCE = 0.05
 
 # Close-decision threshold — score_margin <= this in a decision
 # result triggers 'rematch_hungry' rivalry creation.
@@ -404,19 +408,35 @@ def _escalate_rivalry(conn, fighter_a_id, fighter_b_id, heat_delta,
     if a is None:
         return
     row = conn.execute(
-        "SELECT rivalry_id, rivalry_heat FROM rivalries "
+        "SELECT rivalry_id, rivalry_heat, is_active FROM rivalries "
         "WHERE fighter_a_id=? AND fighter_b_id=?",
         (a, b),
     ).fetchone()
     if not row:
         return
-    rivalry_id, current_heat = row
+    rivalry_id, current_heat, is_active = row
     new_heat = _clamp_heat((current_heat or 0) + heat_delta)
+    # A2 — re-activate dormant rivalries when heat is bumped back
+    # above the dormancy threshold (e.g., a fresh callout post). This
+    # is the inverse of _decay_rivalry_heat's dormancy logic. Together
+    # they form a hysteresis loop: decay sends a quiet rivalry to
+    # sleep, escalation wakes it back up when the beef resumes.
+    reactivate = (not is_active) and (new_heat >= _HEAT_DORMANCY_THRESHOLD)
+
+    def _do_update(sql, params):
+        """Execute the UPDATE; if reactivate=True, also flip is_active=1."""
+        conn.execute(sql, params)
+        if reactivate:
+            conn.execute(
+                "UPDATE rivalries SET is_active=1, "
+                "updated_at=CURRENT_TIMESTAMP WHERE rivalry_id=?",
+                (rivalry_id,),
+            )
 
     if increment_fights:
         # Determine which side won. winner_id maps to fighter_a or b.
         if is_draw:
-            conn.execute(
+            _do_update(
                 "UPDATE rivalries SET rivalry_heat=?, "
                 "fights_count = fights_count + 1, "
                 "draws = draws + 1, "
@@ -432,7 +452,7 @@ def _escalate_rivalry(conn, fighter_a_id, fighter_b_id, heat_delta,
             else:
                 # winner isn't in this rivalry — defensive no-op for
                 # the win column but still bump fights_count + heat.
-                conn.execute(
+                _do_update(
                     "UPDATE rivalries SET rivalry_heat=?, "
                     "fights_count = fights_count + 1, "
                     "last_escalation_date=?, updated_at=CURRENT_TIMESTAMP "
@@ -440,7 +460,7 @@ def _escalate_rivalry(conn, fighter_a_id, fighter_b_id, heat_delta,
                     (new_heat, current_date, rivalry_id),
                 )
                 return
-            conn.execute(
+            _do_update(
                 f"UPDATE rivalries SET rivalry_heat=?, "
                 f"fights_count = fights_count + 1, "
                 f"{win_col} = {win_col} + 1, "
@@ -450,14 +470,14 @@ def _escalate_rivalry(conn, fighter_a_id, fighter_b_id, heat_delta,
             )
         else:
             # No winner and not a draw — defensive. Just bump heat.
-            conn.execute(
+            _do_update(
                 "UPDATE rivalries SET rivalry_heat=?, "
                 "last_escalation_date=?, updated_at=CURRENT_TIMESTAMP "
                 "WHERE rivalry_id=?",
                 (new_heat, current_date, rivalry_id),
             )
     else:
-        conn.execute(
+        _do_update(
             "UPDATE rivalries SET rivalry_heat=?, "
             "last_escalation_date=?, updated_at=CURRENT_TIMESTAMP "
             "WHERE rivalry_id=?",
@@ -550,6 +570,13 @@ def _check_social_beefs(conn, event):
     # both directions of the (fighter_id, target_fighter_id) pair.
     # Canonical ordering (lower, higher) is computed in Python so
     # the pair count is symmetric.
+    #
+    # A3 — same-roster restrictions. Callouts across promotions are
+    # only allowed if both fighters are in the same weight class AND
+    # a 5% random gate passes (the rare inter-promotion superfight
+    # callout). Cross-promo pairs that fail this gate are skipped —
+    # the beef stays on social_posts (so the heat is recorded) but
+    # doesn't graduate into a tracked rivalry.
     candidate_pairs = {}
     posts = conn.execute(
         "SELECT fighter_id, target_fighter_id FROM social_posts "
@@ -578,6 +605,10 @@ def _check_social_beefs(conn, event):
         ).fetchone()
         if existing:
             continue
+        # A3 — cross-promotion gate. Same-promotion pairs always pass.
+        # Cross-promotion pairs require same weight class + 5% chance.
+        if not _cross_promo_callout_allowed(conn, a_id, b_id, rng=rng):
+            continue
         # Create a new 'callout' rivalry. The origin narrative uses
         # word forms (no digit characters per §14).
         if count <= 4:
@@ -597,6 +628,115 @@ def _check_social_beefs(conn, event):
             initial_heat=50,
             rng=rng, current_date=current_date,
         )
+
+
+def _cross_promo_callout_allowed(conn, a_id, b_id, rng=None):
+    """A3 — gate cross-promotion callouts.
+
+    Returns True if:
+      - both fighters share the same current_promotion_id, OR
+      - the fighters are in different promotions BUT share the same
+        weight_class_id AND a 5% random gate passes (the rare
+        inter-promotion superfight callout).
+
+    Returns False otherwise. Free agents (current_promotion_id IS
+    NULL) are treated as "any promotion" — they can call out anyone
+    in any weight class (a free agent has nothing to lose and is
+    hunting for any fight). This avoids the corner case where a
+    free agent's callouts never spawn a rivalry.
+    """
+    if rng is None:
+        rng = random.Random()
+    row = conn.execute(
+        "SELECT a.current_promotion_id, a.weight_class_id, "
+        "b.current_promotion_id, b.weight_class_id "
+        "FROM fighters a, fighters b "
+        "WHERE a.fighter_id=? AND b.fighter_id=?",
+        (a_id, b_id),
+    ).fetchone()
+    if not row:
+        return False
+    promo_a, wc_a, promo_b, wc_b = row
+    # Free agents (no promotion) bypass the gate.
+    if promo_a is None or promo_b is None:
+        return True
+    # Same promotion — always allowed.
+    if promo_a == promo_b:
+        return True
+    # Cross-promotion — same weight class + 5% chance.
+    if wc_a is None or wc_b is None or wc_a != wc_b:
+        return False
+    return rng.random() < _CROSS_PROMO_CALLOUT_CHANCE
+
+
+def _is_weekly_tick(conn):
+    """Return True if the current sim day is a multiple of 7 (weekly tick).
+
+    Mirrors morale._is_weekly_tick — the sim runs daily, so we treat
+    days 7, 14, 21, ... as the weekly tick for heat decay.
+    """
+    row = conn.execute(
+        "SELECT simulation_clock.current_day "
+        "FROM simulation_clock WHERE clock_id=1"
+    ).fetchone()
+    if not row or row[0] is None:
+        return False
+    return (row[0] % 7) == 0
+
+
+def _decay_rivalry_heat(conn, event):
+    """A2 — weekly TICK_ADVANCED subscriber that decays rivalry heat.
+
+    Runs only on weekly ticks (current_day % 7 == 0). For each active
+    rivalry:
+      - Apply -1 heat (the natural cooling of a feud that isn't being
+        fueled by fresh callouts, fights, or news).
+      - If heat drops below _HEAT_DORMANCY_THRESHOLD (20), set
+        is_active=0 (dormant). The rivalry row is preserved — its
+        history (fights_count, head-to-head wins, origin story)
+        remains queryable, but it no longer qualifies as "active"
+        for fight-engine modifiers (A8) or news targeting.
+
+    A dormant rivalry can be re-activated by a fresh callout/trash_talk
+    post: the _check_social_beefs subscriber will count new posts and
+    apply +5 heat per post, but does NOT re-activate the is_active
+    flag. Re-activation happens here — if a post lifts the heat back
+    above the threshold on a subsequent weekly tick, the rivalry
+    becomes active again. (A fight between rivals in _process_fight_
+    rivalry also bumps heat but doesn't re-activate; this subscriber
+    picks that up on the next weekly tick.)
+
+    This subscriber fires BEFORE _check_social_beefs in registration
+    order so the decay is applied first, then any fresh-callout heat
+    is layered on top — net effect: a rivalry that's actively being
+    fueled stays hot; one that's gone quiet cools off.
+    """
+    if not _is_weekly_tick(conn):
+        return
+
+    current_date = event.get("current_date")
+    rows = conn.execute(
+        "SELECT rivalry_id, rivalry_heat FROM rivalries "
+        "WHERE is_active = 1"
+    ).fetchall()
+    for rivalry_id, current_heat in rows:
+        current_heat = current_heat if current_heat is not None else 0
+        new_heat = _clamp_heat(current_heat + _HEAT_WEEKLY_DECAY)
+        if new_heat < _HEAT_DORMANCY_THRESHOLD:
+            # Cool below the dormancy line — set inactive. The row
+            # is preserved (we don't DELETE — the history matters
+            # for legacy/news lookups).
+            conn.execute(
+                "UPDATE rivalries SET rivalry_heat=?, is_active=0, "
+                "updated_at=CURRENT_TIMESTAMP WHERE rivalry_id=?",
+                (new_heat, rivalry_id),
+            )
+        elif new_heat != current_heat:
+            conn.execute(
+                "UPDATE rivalries SET rivalry_heat=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE rivalry_id=?",
+                (new_heat, rivalry_id),
+            )
 
 
 # ----------------------------------------------------------------
@@ -889,6 +1029,15 @@ def register_subscribers():
     """
     from event_bus import get_bus, Events
     bus = get_bus()
+    # A2 — register the heat decay subscriber FIRST so it runs before
+    # _check_social_beefs on every weekly tick. This lets decay apply
+    # first, then any fresh-callout heat from the beef scan layers on
+    # top. Net effect: a rivalry being fueled stays hot; one that's
+    # gone quiet cools off and may go dormant.
+    bus.subscribe(
+        Events.TICK_ADVANCED, _decay_rivalry_heat,
+        name="rivalries.decay_rivalry_heat",
+    )
     bus.subscribe(
         Events.TICK_ADVANCED, _check_social_beefs,
         name="rivalries.check_social_beefs",

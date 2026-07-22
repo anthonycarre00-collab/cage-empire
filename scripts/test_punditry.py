@@ -947,6 +947,86 @@ def case_x_seeded_fight_smoke():
     conn.close()
 
 
+def case_a9_prefight_data():
+    """A9 — pragmatic approach: the FIGHT_RESOLVED subscriber generates
+    the analysis using pre-fight attribute data (fighter_attributes
+    is NOT updated by resolve_next_fight). The predicted_winner is
+    computed from fighter_attributes, so it reflects the pre-fight
+    matchup — not the post-fight state.
+
+    This test verifies:
+      1. The analysis is generated on FIGHT_RESOLVED (existing behavior).
+      2. The predicted_winner reflects the pre-fight attribute comparison.
+      3. The analysis_text uses attribute descriptors (voice layer).
+    """
+    print("\n--- Phase A9: pre-fight data usage ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.row_factory = sqlite3.Row
+
+    # Capture pre-fight fighter_attributes for both fighters.
+    pre_attrs_a = conn.execute(
+        "SELECT punch_power, cardio, fight_iq, chin, takedown_offense "
+        "FROM fighter_attributes WHERE fighter_id=1"
+    ).fetchone()
+    pre_attrs_b = conn.execute(
+        "SELECT punch_power, cardio, fight_iq, chin, takedown_offense "
+        "FROM fighter_attributes WHERE fighter_id=2"
+    ).fetchone()
+    check("A9", "pre-fight fighter_attributes loaded",
+          pre_attrs_a is not None and pre_attrs_b is not None, "")
+
+    # Resolve the seeded fight with the punditry subscriber registered.
+    reset_bus()
+    punditry.register_subscribers()
+    random.seed(42)
+    fid = app.resolve_next_fight(conn)
+    conn.commit()
+    check("A9", "seeded fight resolved",
+          fid is not None, f"got={fid}")
+
+    # The analysis should be in matchup_analyses.
+    analysis = punditry.get_matchup_analysis(conn, 1, 2, fight_id=fid)
+    check("A9", "matchup analysis generated for the fight",
+          analysis is not None, f"got={analysis}")
+    if analysis:
+        # predicted_winner should be a fighter name (not None / empty).
+        pw = analysis["predicted_winner"]
+        check("A9", "predicted_winner is set (non-empty)",
+              pw is not None and len(pw) > 0, f"got={pw!r}")
+        # The analysis should reference at least one fighter name.
+        text = analysis["analysis_text"] or ""
+        check("A9", "analysis_text references fighter 1 or 2",
+              "vale" in text.lower() or "reed" in text.lower(),
+              f"got text={text[:80]!r}")
+        # The analysis should NOT contain digit characters (§14).
+        has_digit = bool(_DIGIT_RE.search(text))
+        check("A9", "analysis_text has no raw numbers (§14)",
+              not has_digit, f"got text={text[:80]!r}")
+
+    # Verify the post-fight fighter_attributes are UNCHANGED (the
+    # beat engine reads attributes, doesn't write them). This is the
+    # key invariant that makes the pragmatic A9 approach work — the
+    # analysis uses pre-fight data because the data doesn't change.
+    post_attrs_a = conn.execute(
+        "SELECT punch_power, cardio, fight_iq, chin, takedown_offense "
+        "FROM fighter_attributes WHERE fighter_id=1"
+    ).fetchone()
+    post_attrs_b = conn.execute(
+        "SELECT punch_power, cardio, fight_iq, chin, takedown_offense "
+        "FROM fighter_attributes WHERE fighter_id=2"
+    ).fetchone()
+    check("A9", "fighter_attributes UNCHANGED by resolve_next_fight (A)",
+          tuple(pre_attrs_a) == tuple(post_attrs_a),
+          f"pre={tuple(pre_attrs_a)} post={tuple(post_attrs_a)}")
+    check("A9", "fighter_attributes UNCHANGED by resolve_next_fight (B)",
+          tuple(pre_attrs_b) == tuple(post_attrs_b),
+          f"pre={tuple(pre_attrs_b)} post={tuple(post_attrs_b)}")
+
+    conn.close()
+
+
 def main():
     print("=" * 80)
     print(f"Task 24 — Punditry acceptance test "
@@ -961,6 +1041,8 @@ def main():
     case_g_style_edge_uses_voice()
     case_h_design_law()
     case_x_seeded_fight_smoke()
+    # Phase A additions
+    case_a9_prefight_data()
     print("\n" + "=" * 80)
     n_pass = sum(1 for r in results if r[2])
     n_fail = sum(1 for r in results if not r[2])

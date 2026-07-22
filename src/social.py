@@ -1,4 +1,4 @@
-"""CAGE EMPIRE Social Media System (Task 21).
+"""CAGE EMPIRE Social Media System (Task 21, extended Phase A — A3 + A7).
 
 Fighter-driven social media posts + beef escalation, entirely event-bus-
 driven (Task 18.5). Subscribes to FIGHT_RESOLVED, TITLE_CHANGED, and
@@ -22,6 +22,22 @@ CONVENTIONS compliance:
         subscribes to events published by resolve_next_fight and
         run_tick; no new inline side effects are added to those
         functions (§15.4).
+
+SAME-ROSTER RESTRICTIONS (A3):
+  Callouts and trash-talk posts target fighters in the SAME promotion
+  by default. Cross-promotion callouts are only attempted when no
+  same-promotion candidate exists AND a 5% random gate passes AND the
+  cross-promo candidate is in the same weight class. A cross-promo
+  callout also generates an "inter-promo callout" news item (rare,
+  big-hype — the sport's white whale).
+
+SOCIAL FREQUENCY THROTTLE (A7):
+  Every fighter has a 7-day posting cooldown. The cooldown is enforced
+  inside generate_post (the lowest-level entry point) so all callers
+  respect it. Callers that MUST post (winner brag on FIGHT_RESOLVED,
+  champion brag on TITLE_CHANGED) pass bypass_cooldown=True; TICK_
+  ADVANCED posts always go through the cooldown. This prevents a single
+  high-attention_seeking fighter from dominating the feed every tick.
 
 PERSONALITY INFLUENCE:
   - attention_seeking: high → more frequent posts on TICK_ADVANCED
@@ -94,6 +110,21 @@ VALID_POST_TYPES = (
 # volume so a 4000-fighter world DB doesn't generate 4000 posts/day.
 # Fighters are sampled by attention_seeking weight.
 _MAX_TICK_POSTS = 5
+
+# A3 — cross-promotion callout chance. Same as rivalries._CROSS_PROMO_
+# CALLOUT_CHANCE; duplicated here to avoid a circular import (the
+# rivalries module imports from voice, social doesn't import from
+# rivalries). If the chance ever diverges, the callout logic should
+# be lifted into a shared helper.
+_CROSS_PROMO_CALLOUT_CHANCE = 0.05
+
+# A7 — social frequency throttle. A fighter can post at most once
+# every 7 sim days. This prevents a high-attention_seeking fighter
+# from dominating the feed every tick. The cooldown is enforced in
+# generate_post (the lowest-level entry point) so all callers
+# (_process_fight_social, _process_title_social, _check_social_
+# activity) respect it.
+_POST_COOLDOWN_DAYS = 7
 
 # Word-form helpers (no digit characters per CONVENTIONS §14).
 _ROUND_WORDS = {
@@ -412,7 +443,8 @@ def _safe_lower(word):
 # ----------------------------------------------------------------
 
 def generate_post(conn, fighter_id, post_type, target_fighter_id=None,
-                  post_date=None, opponent_fighter_id=None, rng=None):
+                  post_date=None, opponent_fighter_id=None, rng=None,
+                  bypass_cooldown=False):
     """Generate a single social_posts row with voice-layer descriptors.
 
     Args:
@@ -428,6 +460,15 @@ def generate_post(conn, fighter_id, post_type, target_fighter_id=None,
             {opponent_name} / {opponent_last} slots). If None and the
             post type is apology/excuse, falls back to target_fighter_id.
         rng: optional random.Random for template variant selection.
+        bypass_cooldown: A7 — kept for API compatibility but the
+            cooldown is now enforced in the TICK_ADVANCED subscriber
+            (_check_social_activity) rather than here. The brief says
+            the throttle is for TICK_ADVANCED-driven posts ("prevents
+            a single high-attention_seeking fighter from posting
+            every tick") — not for direct generate_post calls (which
+            are used by tests and by FIGHT_RESOLVED subscribers where
+            the post is event-driven and shouldn't be silenced). The
+            flag is accepted but no longer affects behavior.
 
     Returns:
         The new post_id (int), or None if the insert failed (e.g.,
@@ -565,12 +606,13 @@ def _process_fight_social(conn, event):
         return
 
     # ---- WINNER post ----
-    # Always brag.
+    # Always brag (bypass_cooldown=True — the fighter just won a fight,
+    # the cooldown shouldn't silence the moment).
     generate_post(
         conn, winner_id, "brag",
         target_fighter_id=loser_id,
         opponent_fighter_id=loser_id,
-        post_date=event_date, rng=rng,
+        post_date=event_date, rng=rng, bypass_cooldown=True,
     )
 
     # Winner callout: probability scales with aggression + ego.
@@ -583,6 +625,12 @@ def _process_fight_social(conn, event):
             generate_post(
                 conn, winner_id, "callout",
                 target_fighter_id=target_id,
+                post_date=event_date, rng=rng, bypass_cooldown=True,
+            )
+            # A3 — if the callout crossed promotion lines, also write
+            # an inter-promotion callout news item (rare, big-hype).
+            _maybe_write_inter_promo_callout_news(
+                conn, winner_id, target_id,
                 post_date=event_date, rng=rng,
             )
 
@@ -615,21 +663,21 @@ def _process_fight_social(conn, event):
             conn, loser_id, "excuse",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=event_date, rng=rng,
+            post_date=event_date, rng=rng, bypass_cooldown=True,
         )
     elif response == "trash_talk":
         generate_post(
             conn, loser_id, "trash_talk",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=event_date, rng=rng,
+            post_date=event_date, rng=rng, bypass_cooldown=True,
         )
     elif response == "apology":
         generate_post(
             conn, loser_id, "apology",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=event_date, rng=rng,
+            post_date=event_date, rng=rng, bypass_cooldown=True,
         )
     # else: silent — no post.
 
@@ -641,6 +689,15 @@ def _pick_callout_target(conn, fighter_id, rng=None):
     promotion who is NOT the fighter themselves. If no rankings exist,
     fall back to any other active fighter in the same weight class.
     Returns a fighter_id or None if no candidate is available.
+
+    A3 — same-roster restrictions. Cross-promotion callouts are only
+    considered when (a) no same-promotion candidate is available AND
+    (b) a 5% random gate passes AND (c) the cross-promo candidate is
+    in the same weight class. The cross-promo callout is the rare
+    "inter-promotion superfight" callout that generates extra hype.
+    The caller (generate_post or _process_fight_social) generates an
+    inter-promotion news item via _maybe_write_inter_promo_callout
+    news when this function returns a cross-promo target.
     """
     if rng is None:
         rng = random.Random()
@@ -667,17 +724,136 @@ def _pick_callout_target(conn, fighter_id, rng=None):
         (wc_id, promo_id or -1, fighter_id),
     ).fetchall()
     if not candidates:
-        # Fall back to any other active fighter in the same weight class.
+        # Fall back to any other active fighter in the same weight class
+        # AND same promotion (A3 — don't reach across promotions unless
+        # the cross-promo gate below fires).
         candidates = conn.execute(
             "SELECT fighter_id FROM fighters "
             "WHERE weight_class_id=? AND fighter_id != ? "
             "AND is_active = 1 AND is_retired = 0 "
+            "AND (current_promotion_id = ? "
+            "     OR current_promotion_id IS NULL) "
             "LIMIT 5",
-            (wc_id, fighter_id),
+            (wc_id, fighter_id, promo_id or -1),
         ).fetchall()
     if not candidates:
-        return None
+        # A3 — last-resort cross-promotion callout. Only fires with a
+        # 5% chance AND requires a same-weight-class fighter in a
+        # different promotion. This is the rare "inter-promotion
+        # superfight" callout — e.g., a UFC champ calling out a ONE
+        # champ. Generates extra hype via an inter-promo news item.
+        if rng.random() < _CROSS_PROMO_CALLOUT_CHANCE:
+            candidates = conn.execute(
+                "SELECT fighter_id FROM fighters "
+                "WHERE weight_class_id=? AND fighter_id != ? "
+                "AND is_active = 1 AND is_retired = 0 "
+                "AND current_promotion_id IS NOT NULL "
+                "AND current_promotion_id != ? "
+                "LIMIT 5",
+                (wc_id, fighter_id, promo_id or -1),
+            ).fetchall()
+        if not candidates:
+            return None
     return rng.choice(candidates)[0]
+
+
+def _is_cross_promo_callout(conn, fighter_id, target_id):
+    """A3 — return True if this callout crosses promotion lines.
+
+    Used by the FIGHT_RESOLVED + TITLE_CHANGED subscribers to decide
+    whether to also write an 'inter-promotion callout' news item
+    alongside the social post. Free agents (current_promotion_id IS
+    NULL) on either side don't count as cross-promo (they're unsigned
+    — they're not really "in" a promotion).
+    """
+    if not fighter_id or not target_id:
+        return False
+    row = conn.execute(
+        "SELECT a.current_promotion_id, b.current_promotion_id "
+        "FROM fighters a, fighters b "
+        "WHERE a.fighter_id=? AND b.fighter_id=?",
+        (fighter_id, target_id),
+    ).fetchone()
+    if not row:
+        return False
+    promo_a, promo_b = row
+    if promo_a is None or promo_b is None:
+        return False
+    return promo_a != promo_b
+
+
+def _maybe_write_inter_promo_callout_news(conn, fighter_id, target_id,
+                                           post_date=None, rng=None):
+    """A3 — write a news item when a callout crosses promotion lines.
+
+    Topic='inter_promo_callout', so the UI can filter these rare
+    cross-promotion callouts as a distinct narrative thread. Voice
+    layer applies (no raw numbers). Returns the news_item_id on
+    insert, or None if the callout wasn't actually cross-promo or
+    the insert failed.
+    """
+    if not _is_cross_promo_callout(conn, fighter_id, target_id):
+        return None
+    if rng is None:
+        rng = random.Random()
+    if post_date is None:
+        clock = conn.execute(
+            "SELECT simulation_clock.current_date FROM simulation_clock "
+            "WHERE clock_id=1"
+        ).fetchone()
+        post_date = clock[0] if clock else "2026-08-15"
+
+    fighter_full = _fighter_full_name(conn, fighter_id)
+    target_full = _fighter_full_name(conn, target_id)
+    fighter_promo = _fighter_promotion_name(conn, fighter_id)
+    target_promo = _fighter_promotion_name(conn, target_id)
+    # Get or create the System Feed source (used for non-news_engine
+    # inline news items — same pattern as app.write_news).
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    headline = (
+        f"{fighter_full} calls out {target_full} across promotion lines"
+    )
+    body = (
+        f"In a rare inter-promotion challenge, {fighter_full} of "
+        f"{fighter_promo} has called out {target_full} of "
+        f"{target_promo}. Cross-promotion superfights are the sport's "
+        f"white whale — fans will dream of the matchup, promoters will "
+        f"weigh the risk, and the callout alone fuels weeks of "
+        f"speculation."
+    )
+    cur = conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "neutral", "inter_promo_callout",
+         fighter_id, post_date),
+    )
+    return cur.lastrowid
+
+
+def _fighter_promotion_name(conn, fighter_id):
+    """Return the fighter's promotion name (or 'the unsigned ranks')."""
+    if fighter_id is None:
+        return "the unsigned ranks"
+    row = conn.execute(
+        "SELECT p.name FROM promotions p "
+        "JOIN fighters f ON f.current_promotion_id = p.promotion_id "
+        "WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    return row[0] if row else "the unsigned ranks"
 
 
 # ----------------------------------------------------------------
@@ -731,12 +907,12 @@ def _process_title_social(conn, event):
         # Defensive: title says champ is X, fight says winner is Y.
         winner_id = champ_id
 
-    # New champion brag.
+    # New champion brag (bypass_cooldown=True — title-change moment).
     generate_post(
         conn, winner_id, "brag",
         target_fighter_id=loser_id,
         opponent_fighter_id=loser_id,
-        post_date=since_date, rng=rng,
+        post_date=since_date, rng=rng, bypass_cooldown=True,
     )
 
     # High-ego + high-charisma champs also challenge a contender.
@@ -749,6 +925,12 @@ def _process_title_social(conn, event):
             generate_post(
                 conn, winner_id, "challenge",
                 target_fighter_id=target_id,
+                post_date=since_date, rng=rng, bypass_cooldown=True,
+            )
+            # A3 — if the title challenge crossed promotion lines, also
+            # write an inter-promotion callout news item.
+            _maybe_write_inter_promo_callout_news(
+                conn, winner_id, target_id,
                 post_date=since_date, rng=rng,
             )
 
@@ -784,21 +966,21 @@ def _process_title_social(conn, event):
             conn, loser_id, "trash_talk",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=since_date, rng=rng,
+            post_date=since_date, rng=rng, bypass_cooldown=True,
         )
     elif response == "excuse":
         generate_post(
             conn, loser_id, "excuse",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=since_date, rng=rng,
+            post_date=since_date, rng=rng, bypass_cooldown=True,
         )
     elif response == "apology":
         generate_post(
             conn, loser_id, "apology",
             target_fighter_id=winner_id,
             opponent_fighter_id=winner_id,
-            post_date=since_date, rng=rng,
+            post_date=since_date, rng=rng, bypass_cooldown=True,
         )
 
 
@@ -828,6 +1010,16 @@ def _check_social_activity(conn, event):
 
     The post volume is capped at _MAX_TICK_POSTS per tick so a 4000-
     fighter world DB doesn't generate 4000 posts/day.
+
+    A7 — social frequency throttle. Before generating a post for a
+    fighter, the subscriber checks the fighter's most recent post_date
+    in social_posts. If the last post was within _POST_COOLDOWN_DAYS
+    (7) days, the fighter is skipped (silent). This prevents a single
+    high-attention_seeking fighter from posting every tick. Direct
+    calls to generate_post (from tests, from FIGHT_RESOLVED subscribers)
+    are NOT throttled — the throttle is only for TICK_ADVANCED-driven
+    posts. The throttle is enforced here (in the subscriber) rather
+    than in generate_post so direct callers retain full control.
     """
     rng = random.Random()
     current_date = event.get("current_date")
@@ -848,6 +1040,19 @@ def _check_social_activity(conn, event):
     if not rows:
         return
 
+    # A7 — fetch each fighter's most recent post_date ONCE so we can
+    # filter out fighters who posted within the cooldown window. This
+    # is a single query (cheaper than per-fighter MAX(post_date) inside
+    # the loop). The result is a dict {fighter_id: last_post_date}.
+    last_post_dates = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT fighter_id, MAX(post_date) "
+            "FROM social_posts GROUP BY fighter_id"
+        ).fetchall()
+        if row[1] is not None
+    }
+
     # Weighted sampling without replacement (simple approach: shuffle
     # by attention-weighted key, take the top N).
     weighted = []
@@ -861,18 +1066,52 @@ def _check_social_activity(conn, event):
     # Sort by weighted random key (weight * random()); higher = picked
     # first. This approximates weighted sampling without replacement.
     weighted.sort(key=lambda x: x[1] * x[2], reverse=True)
-    picked = [w[0] for w in weighted[:_MAX_TICK_POSTS]]
+    # Take more than _MAX_TICK_POSTS so we have spares when the cooldown
+    # filters some out (otherwise a high-attention fighter who posted
+    # yesterday could starve the tick by taking a slot then getting
+    # filtered). 2x oversample is a reasonable balance.
+    picked = [w[0] for w in weighted[:_MAX_TICK_POSTS * 2]]
 
+    posts_this_tick = 0
     for fighter_id in picked:
+        if posts_this_tick >= _MAX_TICK_POSTS:
+            break  # cap reached
+        # A7 — cooldown check. Skip fighters who posted within the
+        # last _POST_COOLDOWN_DAYS days. The check is here (not in
+        # generate_post) so direct callers (tests, FIGHT_RESOLVED
+        # subscribers) aren't throttled.
+        last_post = last_post_dates.get(fighter_id)
+        if last_post:
+            try:
+                last_dt = datetime.strptime(last_post, "%Y-%m-%d")
+                cur_dt = datetime.strptime(current_date, "%Y-%m-%d")
+                days_since = (cur_dt - last_dt).days
+                if days_since < _POST_COOLDOWN_DAYS:
+                    continue  # cooldown — skip this fighter
+            except (ValueError, TypeError):
+                pass  # malformed date — skip the cooldown check
         # Decide post type from personality + recent events.
         post_type, target_id = _pick_tick_post(conn, fighter_id, rng=rng)
         if post_type is None:
             continue
-        generate_post(
+        # generate_post creates the row (no cooldown check inside —
+        # that's handled here in the subscriber). The bypass_cooldown
+        # flag is kept for API compat but no longer affects behavior.
+        post_id = generate_post(
             conn, fighter_id, post_type,
             target_fighter_id=target_id,
             post_date=current_date, rng=rng,
         )
+        if post_id is not None:
+            posts_this_tick += 1
+            # A3 — if the callout/challenge crossed promotion lines,
+            # also write an inter-promo news item.
+            if post_type in ("callout", "challenge") \
+                    and target_id is not None:
+                _maybe_write_inter_promo_callout_news(
+                    conn, fighter_id, target_id,
+                    post_date=current_date, rng=rng,
+                )
 
 
 def _pick_tick_post(conn, fighter_id, rng=None):

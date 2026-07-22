@@ -755,6 +755,136 @@ def case_x_title_changed_triggers():
     conn.close()
 
 
+def case_a3_cross_promo_callout_news():
+    """A3 — cross-promotion callouts generate an inter_promo_callout
+    news item. Same-promotion callouts do NOT generate one.
+    """
+    print("\n--- Phase A3: cross-promo callout news ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+
+    # The seeded DB has fighters 1,2 in Alpha Combat (promo 1) and
+    # fighters 3,4,5 in Rival Fight League (promo 2). All in the
+    # same weight class.
+
+    # Same-promotion callout — should NOT generate inter_promo news.
+    n_before = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='inter_promo_callout'"
+    ).fetchone()[0]
+    social._maybe_write_inter_promo_callout_news(
+        conn, 1, 2, post_date="2026-08-15", rng=random.Random(42),
+    )
+    conn.commit()
+    n_after = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='inter_promo_callout'"
+    ).fetchone()[0]
+    check("A3", "same-promo callout: no inter_promo news",
+          n_after == n_before, f"got delta={n_after - n_before}")
+
+    # Cross-promotion callout — SHOULD generate inter_promo news.
+    news_id = social._maybe_write_inter_promo_callout_news(
+        conn, 1, 3, post_date="2026-08-15", rng=random.Random(42),
+    )
+    conn.commit()
+    check("A3", "cross-promo callout: returns news_item_id",
+          news_id is not None, f"got={news_id}")
+    item = conn.execute(
+        "SELECT headline, body FROM news_items "
+        "WHERE topic='inter_promo_callout' ORDER BY news_item_id DESC LIMIT 1"
+    ).fetchone()
+    check("A3", "inter_promo news item has headline + body",
+          item is not None and item[0] and item[1],
+          f"got={item}")
+    if item:
+        # No raw numbers per §14.
+        has_digit = bool(_DIGIT_RE.search(item[0])) or bool(_DIGIT_RE.search(item[1]))
+        check("A3", "inter_promo news has no raw numbers (§14)",
+              not has_digit, f"headline={item[0][:60]!r}")
+        # Should mention both fighters.
+        check("A3", "inter_promo news mentions both fighters",
+              "vale" in (item[0] + item[1]).lower() or "reed" in (item[0] + item[1]).lower(),
+              f"headline={item[0][:60]!r}")
+
+    # Cross-promo detection helper.
+    is_cross = social._is_cross_promo_callout(conn, 1, 3)
+    check("A3", "_is_cross_promo_callout(1,3) → True",
+          is_cross is True, f"got={is_cross}")
+    is_same = social._is_cross_promo_callout(conn, 1, 2)
+    check("A3", "_is_cross_promo_callout(1,2) → False (same promo)",
+          is_same is False, f"got={is_same}")
+
+    conn.close()
+
+
+def case_a7_social_cooldown():
+    """A7 — TICK_ADVANCED-driven posts respect a 7-day cooldown per
+    fighter. A fighter who posted today is skipped on subsequent
+    ticks within 7 days. Direct calls to generate_post are NOT
+    throttled (the cooldown is enforced in _check_social_activity).
+    """
+    print("\n--- Phase A7: social frequency throttle ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    reset_bus()
+    social.register_subscribers()
+
+    # Direct call to generate_post — should NOT be throttled.
+    # Post twice on the same day; both should succeed.
+    pid1 = social.generate_post(
+        conn, 1, "hype", post_date="2026-08-15", rng=random.Random(1),
+    )
+    pid2 = social.generate_post(
+        conn, 1, "brag", post_date="2026-08-15", rng=random.Random(2),
+    )
+    conn.commit()
+    check("A7", "direct generate_post calls bypass cooldown (both succeed)",
+          pid1 is not None and pid2 is not None,
+          f"got pid1={pid1} pid2={pid2}")
+
+    # Now simulate a TICK_ADVANCED post. Fighter 1 posted on 2026-08-15.
+    # A TICK_ADVANCED on 2026-08-16 (1 day later) should skip fighter 1
+    # (within the 7-day cooldown). Force fighter 1 to be the only
+    # candidate by deactivating the others.
+    conn.execute(
+        "UPDATE fighters SET is_active=0 WHERE fighter_id IN (2,3,4,5)"
+    )
+    conn.commit()
+    bus = get_bus()
+    bus.publish(conn, {
+        "type": Events.TICK_ADVANCED,
+        "current_date": "2026-08-16",
+        "tick_type": "day",
+    })
+    conn.commit()
+    # Count posts from fighter 1 on 2026-08-16 — should be 0 (cooldown).
+    n_posts_day_after = conn.execute(
+        "SELECT COUNT(*) FROM social_posts "
+        "WHERE fighter_id=1 AND post_date='2026-08-16'"
+    ).fetchone()[0]
+    check("A7", "TICK_ADVANCED 1 day after last post: skipped (cooldown)",
+          n_posts_day_after == 0, f"got={n_posts_day_after}")
+
+    # A TICK_ADVANCED 8 days later (2026-08-23) should allow fighter 1
+    # to post again (cooldown expired).
+    bus.publish(conn, {
+        "type": Events.TICK_ADVANCED,
+        "current_date": "2026-08-23",
+        "tick_type": "day",
+    })
+    conn.commit()
+    n_posts_after_cooldown = conn.execute(
+        "SELECT COUNT(*) FROM social_posts "
+        "WHERE fighter_id=1 AND post_date='2026-08-23'"
+    ).fetchone()[0]
+    check("A7", "TICK_ADVANCED 8 days after last post: posts (cooldown expired)",
+          n_posts_after_cooldown >= 1,
+          f"got={n_posts_after_cooldown}")
+
+    conn.close()
+
+
 def main():
     print("=" * 80)
     print(f"Task 21 — Social media + beefs acceptance test "
@@ -769,6 +899,9 @@ def main():
     case_g_beef_escalation()
     case_h_design_law()
     case_x_title_changed_triggers()
+    # Phase A additions
+    case_a3_cross_promo_callout_news()
+    case_a7_social_cooldown()
     print("\n" + "=" * 80)
     n_pass = sum(1 for r in results if r[2])
     n_fail = sum(1 for r in results if not r[2])

@@ -2235,6 +2235,10 @@ def _update_event_status_after_resolution(conn, event_id):
         'completed'.
       - If the event is already 'completed', no change (defensive).
 
+    Phase A5 — when the event transitions to 'completed', publishes
+    EVENT_COMPLETED on the event bus (news engine subscribes to
+    write an event recap news item).
+
     This is a no-op if the event_id doesn't exist (defensive) — the
     UPDATE simply matches 0 rows and returns.
 
@@ -2256,6 +2260,16 @@ def _update_event_status_after_resolution(conn, event_id):
     else:
         new_status = "completed"
 
+    # Fetch the current status so we can detect the transition to
+    # 'completed' (Phase A5 — publish EVENT_COMPLETED on transition).
+    cur_row = conn.execute(
+        "SELECT status, promotion_id, event_date FROM events WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    prev_status = cur_row[0] if cur_row else None
+    promo_id = cur_row[1] if cur_row else None
+    event_date = cur_row[2] if cur_row else None
+
     # The `WHERE status != 'completed'` clause is defensive: if the
     # event is somehow already 'completed' (e.g., this function got
     # called twice on the same event after the last fight), we don't
@@ -2268,6 +2282,24 @@ def _update_event_status_after_resolution(conn, event_id):
         "WHERE event_id = ? AND status != 'completed'",
         (new_status, event_id),
     )
+
+    # Phase A5 — publish EVENT_COMPLETED on the transition to
+    # 'completed'. The news engine subscribes to write an event
+    # recap news item. The check (prev_status != 'completed' AND
+    # new_status == 'completed') ensures we publish exactly once
+    # per event (not on every call after completion).
+    if new_status == "completed" and prev_status != "completed":
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.EVENT_COMPLETED,
+                'event_id': event_id,
+                'promotion_id': promo_id,
+                'event_date': event_date,
+            })
+        except ImportError:
+            pass
 
 
 # ----------------------------------------------------------------
@@ -3306,6 +3338,32 @@ def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
          fight_id, event_id, event_date),
     )
 
+    # Phase A5 — publish WEIGHT_CUT_COMPLETED on the event bus. The
+    # news engine subscribes to write a richer weigh-in news item
+    # (the inline item above has raw kg numbers for the debug feed;
+    # the event-driven item uses word-form phrases per §14). The
+    # event payload includes the cut_outcome so subscribers can
+    # filter (e.g., a future "weight miss penalty" subscriber only
+    # fires on missed_* outcomes).
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.WEIGHT_CUT_COMPLETED,
+            'fighter_id': fighter_id,
+            'fight_id': fight_id,
+            'event_id': event_id,
+            'weight_class_id': weight_class_id,
+            'cut_outcome': cut_outcome,
+            'weight_missed_kg': weight_missed,
+            'actual_weight_kg': actual_weight,
+            'target_weight_kg': target_weight,
+            'event_date': event_date,
+            'current_date': event_date,
+        })
+    except ImportError:
+        pass
+
     return {
         "cut_outcome": cut_outcome,
         "cardio_penalty": cardio_penalty,
@@ -3961,6 +4019,29 @@ def _maybe_create_injury(conn, fighter_id, fight_id, event_id, event_date,
         fighter_id=fighter_id,
     )
 
+    # Phase A5 — publish INJURY_CREATED on the event bus. The news
+    # engine subscribes to write a richer injury news item (with
+    # voice descriptors + return-timeline phrase). The morale system
+    # also subscribes (defensive — it scans injuries on FIGHT_RESOLVED
+    # for fight injuries, but this event covers training camp
+    # injuries and other non-fight sources too). The event payload
+    # includes injury_id so subscribers can look up the full injury
+    # row (severity, projected_return_date, body_area, etc.).
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.INJURY_CREATED,
+            'injury_id': injury_id,
+            'fighter_id': fighter_id,
+            'fight_id': fight_id,
+            'event_id': event_id,
+            'event_date': start_date_str,
+            'current_date': start_date_str,
+        })
+    except ImportError:
+        pass
+
     return injury_id
 
 
@@ -4199,6 +4280,34 @@ def resolve_next_fight(conn):
              f"No winner will be declared.",
              "negative", "weight_cut", fight_id, event_id, event_date),
         )
+        # Phase A5 — publish FIGHT_CANCELLED on the event bus. The
+        # news engine + morale system subscribe to write a richer
+        # cancellation news item and apply the weight-cut-miss morale
+        # penalty (-5 for the offender, -3 for the opponent). The
+        # missed_fighter_id + opponent_id are passed in the event so
+        # subscribers don't have to look them up.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            # Determine which fighter missed (for the event payload).
+            if cut_a["cut_outcome"] == "missed_large" and cut_b["cut_outcome"] == "missed_large":
+                missed_id, opponent_id = a_id, b_id  # both missed — pick A as primary
+            elif cut_a["cut_outcome"] == "missed_large":
+                missed_id, opponent_id = a_id, b_id
+            else:
+                missed_id, opponent_id = b_id, a_id
+            bus.publish(conn, {
+                'type': Events.FIGHT_CANCELLED,
+                'fight_id': fight_id,
+                'event_id': event_id,
+                'promotion_id': promo_id,
+                'weight_class_id': weight_class_id,
+                'missed_fighter_id': missed_id,
+                'opponent_id': opponent_id,
+                'event_date': event_date,
+            })
+        except ImportError:
+            pass
         # Trigger event lifecycle (check if this was the last fight on the card)
         _update_event_status_after_resolution(conn, event_id)
         # If the event just completed, auto-schedule the next event
@@ -4209,6 +4318,62 @@ def resolve_next_fight(conn):
             schedule_next_event(conn, promotion_id=promo_id,
                                 from_event_date=event_date, weeks_out=4)
         return fight_id  # return the fight_id even though it was cancelled
+
+    # ----------------------------------------------------------------
+    # Phase A8 — rivalry morale/pressure effects on the fight.
+    #
+    # If the two fighters have an active rivalry (heat > 70), both
+    # fighters get +5 aggression and -5 composure for this fight —
+    # the bad blood makes them fight more recklessly. If heat > 90,
+    # the modifier doubles (+10 aggression, -10 composure) — this is
+    # the "volatile matchup" the brief calls out.
+    #
+    # This is a READ operation (CONVENTIONS §5.3 — the rivalries table
+    # ships with the get_rivalry reader). The modifier is applied to
+    # the in-memory stats_a / stats_b dicts that the beat engine
+    # reads — NO DB write side effect. The brief explicitly allows
+    # this exception to §15.4 (no inline side effects in resolve_
+    # next_fight) because it's a pure read + in-memory tweak.
+    #
+    # Lazy-import rivalries to avoid a circular dependency (rivalries
+    # imports voice, app imports a lot of things).
+    # ----------------------------------------------------------------
+    try:
+        from rivalries import get_rivalry, get_rivalry_heat
+        heat = get_rivalry_heat(conn, a_id, b_id)
+        if heat > 70:
+            # Double-check is_active — a dormant rivalry (heat > 70
+            # but is_active=0) shouldn't apply the modifier. The
+            # get_rivalry_heat helper returns 0 for non-existent
+            # rivalries, but a dormant one with heat=75 (set dormant
+            # by decay then never re-escalated) would still show 75.
+            riv = get_rivalry(conn, a_id, b_id)
+            is_active = False
+            if riv is not None:
+                try:
+                    is_active = bool(riv["is_active"])
+                except (KeyError, IndexError, TypeError):
+                    is_active = bool(riv[10] if len(riv) > 10 else False)
+            if is_active:
+                if heat > 90:
+                    aggression_boost = 10
+                    composure_penalty = 10
+                else:
+                    aggression_boost = 5
+                    composure_penalty = 5
+                # Clamp to [0, 100] — the beat engine reads these as
+                # 0-100 values; an over-100 aggression would skew the
+                # initiator selection without bound.
+                stats_a["aggression"] = max(0, min(100,
+                    (stats_a.get("aggression", 50) or 50) + aggression_boost))
+                stats_a["composure"] = max(0, min(100,
+                    (stats_a.get("composure", 50) or 50) - composure_penalty))
+                stats_b["aggression"] = max(0, min(100,
+                    (stats_b.get("aggression", 50) or 50) + aggression_boost))
+                stats_b["composure"] = max(0, min(100,
+                    (stats_b.get("composure", 50) or 50) - composure_penalty))
+    except ImportError:
+        pass  # rivalries module not available — skip the modifier
 
     # ----------------------------------------------------------------
     # v2.3.0 (Task B2): compute fight importance + pressure modifiers.
@@ -5099,6 +5264,28 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
         ),
     )
 
+    # Phase A5 — publish FIGHTER_SIGNED on the event bus. The news
+    # engine subscribes to write a richer signing news item with
+    # voice descriptors (career stage + attribute summary). The
+    # morale system also subscribes (+3 morale on signing — a fresh
+    # start is a morale lift). The event payload includes the
+    # contract_id so subscribers can look up contract terms if
+    # needed (e.g., a future "biggest contract of the year" news
+    # item).
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.FIGHTER_SIGNED,
+            'fighter_id': fighter_id,
+            'promotion_id': promotion_id,
+            'contract_id': contract_id,
+            'current_date': start_date,
+            'event_date': start_date,
+        })
+    except ImportError:
+        pass
+
     return contract_id
 
 
@@ -5672,6 +5859,24 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     # 14. Return the new fighter_id. The caller (tick_processor's
     #     _check_retirements) writes the regen_lineage row linking the
     #     retiring fighter to this replacement.
+    #
+    # Phase A5 — publish FIGHTER_GENERATED on the event bus. The news
+    # engine subscribes to write a richer "new prospect emerges" news
+    # item (the inline 'prospect' topic item above is the placeholder;
+    # the event-driven item has voice descriptors). Lazy import to
+    # avoid any circular dependency issues.
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.FIGHTER_GENERATED,
+            'fighter_id': fid,
+            'current_date': published_at,
+            'event_date': published_at,
+        })
+    except ImportError:
+        pass
+
     return fid
 
 

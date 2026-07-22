@@ -1,4 +1,4 @@
-"""CAGE EMPIRE Punditry System (Task 24).
+"""CAGE EMPIRE Punditry System (Task 24, refined Phase A — A9).
 
 Matchup analysis (the pundit's pre-fight prediction for a fighter
 pair), entirely event-bus-driven (Task 18.5). Subscribes to
@@ -27,19 +27,45 @@ CONVENTIONS compliance:
         no new inline side effects are added to that function
         (§15.4). The existing side effects remain untouched.
 
-PRE-FIGHT vs POST-FIGHT TIMING:
-  The brief says: "subscribe to FIGHT_RESOLVED and generate the
-  analysis retroactively (the analysis describes the pre-fight
-  matchup, written after the fight for the news feed)." The
-  FIGHT_RESOLVED event fires AFTER resolve_next_fight has updated
-  fighter_career (record_wins/losses, streaks, career_health), so
-  the analysis reflects the slightly-post-fight career state. This
-  is acceptable per the brief — the analysis reads as "here's what
-  the pundits thought going in" and the minor state drift (one extra
-  win/loss on the streak) doesn't materially change the pundit's
-  take. The fighter_attributes table is NOT updated by
-  resolve_next_fight, so the attribute descriptors reflect the
-  true pre-fight state.
+PRE-FIGHT vs POST-FIGHT TIMING (A9):
+  The brief considered generating the analysis BEFORE the fight
+  resolves (publishing a new FIGHT_ABOUT_TO_START event from
+  resolve_next_fight's start). The pragmatic approach (chosen for
+  A9) keeps the FIGHT_RESOLVED subscriber — the analysis is still
+  generated using pre-fight data, because:
+
+    1. fighter_attributes is NOT updated by resolve_next_fight — the
+       beat engine reads attributes, it doesn't write them. So the
+       attribute descriptors in the analysis reflect the true pre-
+       fight state. The predicted_winner + style_edge + excitement
+       score + upset risk are all computed from fighter_attributes,
+       so they reflect the pre-fight matchup.
+    2. fighter_career IS updated by resolve_next_fight (record_wins/
+       losses, streaks, career_health) — the career stage descriptor
+       reflects slightly-post-fight state. This is the minor drift
+       the existing comment notes. A fighter whose win streak
+       crosses a band boundary (e.g., 4→5 wins) might see their
+       career stage shift from "contender" to "rising contender",
+       but the pundit's take doesn't materially change.
+    3. fighter_personality is updated by the morale system (Phase
+       A1) — but only the `morale` column. The pundit doesn't use
+       morale (it uses aggression, composure, killer_instinct —
+       none of which are updated post-fight by the morale system).
+       So the personality-driven analysis (excitement score from
+       aggression + killer_instinct, etc.) reflects pre-fight state.
+
+  Net effect: the analysis reads as "here's what the pundits thought
+  going in" — attribute-accurate, with a one-fight-of-drift on the
+  career stage. Acceptable per the brief. A future task could
+  publish FIGHT_ABOUT_TO_START and migrate the subscriber to it;
+  the current approach is a deliberate pragmatic choice.
+
+  The registration order in app.py's App.__init__ places the
+  punditry subscriber BEFORE the morale subscriber — so on
+  FIGHT_RESOLVED, the punditry subscriber runs first (reading the
+  pre-morale-change state). The morale subscriber then runs and
+  applies the win/loss morale swings. This minimizes the post-fight
+  drift the pundit sees.
 
 ANALYSIS LOGIC:
   Predicted winner — compare avg of 5 key attributes

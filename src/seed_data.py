@@ -679,7 +679,12 @@ def main():
         staff_id = one(conn, "INSERT INTO staff (first_name, last_name, age, nation_id, role_type, specialty, promotion_id) VALUES (?, ?, ?, ?, ?, ?, ?)", ("Nina", "Cross", 41, nation_id, "commentator", "analysis", promo_id))
         conn.execute("INSERT INTO broadcast_staff (staff_id, on_air_role) VALUES (?, ?)", (staff_id, "play_by_play"))
         _seed_default_staff_contract(conn, staff_id, promo_id, role="commentator")  # Task ID 9
-        conn.execute("INSERT INTO news_sources (name, credibility, sensationalism, bias, regional_reach, reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)", ("System Feed", 70, 40, 50, 60, 80, 80))
+        # Phase A (A4): 'System Feed' is now seeded by build_db._build_fresh
+        # alongside the 4 new sources (The Cage Wire, MMA Analytica,
+        # Social Sphere, The Pundit's Desk). INSERT OR IGNORE here so the
+        # seed is idempotent against the fresh-build seed (a re-seed on
+        # an already-seeded DB doesn't crash on the UNIQUE constraint).
+        conn.execute("INSERT OR IGNORE INTO news_sources (name, credibility, sensationalism, bias, regional_reach, reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)", ("System Feed", 70, 40, 50, 60, 80, 80))
 
         # ----------------------------------------------------------------
         # Seed a vacant title for AC Lightweight (Task ID 11). The

@@ -453,6 +453,260 @@ def case_tick_retirement():
     conn.close()
 
 
+def case_a4_source_variety():
+    """A4 — 5 news sources seeded; news items use weighted-random source.
+
+    Verifies the seed (System Feed, CAGE Wire, The Cage Wire, MMA
+    Analytica, Social Sphere, The Pundit's Desk) and the source-tone
+    prefix (tabloid = scandalous, broadsheet = analytical, etc.).
+    """
+    print("\n--- Phase A4: news source variety ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+
+    # All 5 sources should be seeded (plus the existing 'System Feed').
+    sources = conn.execute(
+        "SELECT name FROM news_sources ORDER BY news_source_id"
+    ).fetchall()
+    names = {r[0] for r in sources}
+    expected = {
+        "System Feed", "CAGE Wire", "The Cage Wire", "MMA Analytica",
+        "Social Sphere", "The Pundit's Desk",
+    }
+    check("A4", "all 6 seed sources present (incl. System Feed)",
+          expected.issubset(names), f"missing={expected - names}")
+
+    # _ensure_seed_sources is idempotent — running it shouldn't
+    # duplicate any sources (the UNIQUE constraint on name + INSERT
+    # OR IGNORE handles this).
+    news._ensure_seed_sources(conn)
+    conn.commit()
+    n_after = conn.execute("SELECT COUNT(*) FROM news_sources").fetchone()[0]
+    check("A4", "_ensure_seed_sources is idempotent",
+          n_after == 6, f"got={n_after} (expected 6)")
+
+    # _get_random_news_source should never return the System Feed
+    # source (reserved for inline news).
+    system_feed_id = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()[0]
+    rng = random.Random(42)
+    non_system_count = 0
+    for _ in range(20):
+        src_id = news._get_random_news_source(conn, rng=rng)
+        if src_id != system_feed_id:
+            non_system_count += 1
+    check("A4", "_get_random_news_source never returns System Feed",
+          non_system_count == 20, f"got={non_system_count}/20")
+
+    # Generate 10 news items; verify they use varied sources.
+    reset_bus()
+    news.register_subscribers()
+    mock_event = {
+        "type": Events.FIGHT_RESOLVED,
+        "fight_id": 1, "event_id": 1, "promotion_id": 1,
+        "weight_class_id": 1, "winner_id": 1, "loser_id": 2,
+        "fighter_a_id": 1, "fighter_b_id": 2,
+        "result_type": "ko_tko", "finish_round": 1, "finish_time": "1:23",
+        "is_title_fight": 1, "title_changed": True,
+        "event_date": "2026-08-15", "importance": 75,
+    }
+    for _ in range(10):
+        news.generate_fight_news(conn, mock_event)
+    conn.commit()
+    used_sources = conn.execute(
+        "SELECT DISTINCT ns.name FROM news_items ni "
+        "JOIN news_sources ns ON ns.news_source_id = ni.news_source_id "
+        "WHERE ni.topic='news_engine'"
+    ).fetchall()
+    used_names = {r[0] for r in used_sources}
+    check("A4", "≥2 distinct sources used over 10 news items",
+          len(used_names) >= 2, f"got={len(used_names)} ({used_names})")
+
+    # Source-tone prefix — tabloids should have ALL CAPS prefixes,
+    # broadsheets should have title-case prefixes.
+    # Look for any tabloid-prefixed headline (SHOCK/SCANDAL/etc.).
+    tabloid_headlines = conn.execute(
+        "SELECT headline FROM news_items ni "
+        "JOIN news_sources ns ON ns.news_source_id = ni.news_source_id "
+        "WHERE ni.topic='news_engine' AND ns.name='The Cage Wire' "
+        "LIMIT 5"
+    ).fetchall()
+    if tabloid_headlines:
+        # All tabloid headlines should start with an uppercase prefix.
+        prefixes = ("SHOCK:", "SCANDAL:", "BOMBSHELL:", "EXCLUSIVE:",
+                    "CONTROVERSY:")
+        any_tabloid_prefix = any(
+            h[0].startswith(prefixes) for h in tabloid_headlines
+        )
+        check("A4", "tabloid source applies uppercase prefix",
+              any_tabloid_prefix,
+              f"sample={tabloid_headlines[0][0][:60]!r}")
+
+    conn.close()
+
+
+def case_a5_new_subscribers():
+    """A5 — news engine subscribes to 12 previously-unsubscribed events."""
+    print("\n--- Phase A5: new event subscribers ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    reset_bus()
+    news.register_subscribers()
+
+    bus = get_bus()
+    # Each of the 12 new event types should have a news subscriber.
+    new_events = [
+        Events.CAMP_COMPLETED, Events.CAMP_INJURY, Events.FIGHT_CANCELLED,
+        Events.INJURY_CREATED, Events.INJURY_RECOVERED,
+        Events.FIGHTER_RETIRED, Events.FIGHTER_SIGNED,
+        Events.FIGHTER_GENERATED, Events.CONTRACT_EXPIRED,
+        Events.SCOUT_REPORT_GENERATED, Events.WEIGHT_CUT_COMPLETED,
+        Events.EVENT_COMPLETED,
+    ]
+    for evt in new_events:
+        n = bus.subscriber_count(evt)
+        check("A5", f"news subscribes to {evt}",
+              n >= 1, f"got={n}")
+
+    # Fire a CAMP_COMPLETED event and verify a news_engine item is written.
+    n_before = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='news_engine'"
+    ).fetchone()[0]
+    bus.publish(conn, {
+        'type': Events.CAMP_COMPLETED,
+        'fighter_id': 1,
+        'current_date': '2026-08-15',
+    })
+    conn.commit()
+    n_after = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='news_engine'"
+    ).fetchone()[0]
+    check("A5", "CAMP_COMPLETED generates news_engine item",
+          n_after > n_before, f"got delta={n_after - n_before}")
+
+    # Fire a FIGHTER_SIGNED event and verify news.
+    n_before = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='news_engine'"
+    ).fetchone()[0]
+    bus.publish(conn, {
+        'type': Events.FIGHTER_SIGNED,
+        'fighter_id': 1, 'promotion_id': 1,
+        'current_date': '2026-08-15',
+    })
+    conn.commit()
+    n_after = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='news_engine'"
+    ).fetchone()[0]
+    check("A5", "FIGHTER_SIGNED generates news_engine item",
+          n_after > n_before, f"got delta={n_after - n_before}")
+
+    conn.close()
+
+
+def case_a6_news_pruning():
+    """A6 — weekly TICK_ADVANCED prunes news_items >365 days, except
+    topic IN ('title', 'retirement', 'hall_of_fame') which are kept.
+    """
+    print("\n--- Phase A6: news pruning ---")
+    build_fresh_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    reset_bus()
+    news.register_subscribers()
+
+    # Insert 4 old news items (>365 days), one each of: fight, title,
+    # retirement, hall_of_fame.
+    src_id = news._get_news_source(conn)
+    old_date = "2025-01-01"  # >365 days before the seeded 2026-07-20
+    for topic in ("fight", "title", "retirement", "hall_of_fame"):
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (src_id, f"Old {topic} news", f"body", "neutral", topic, old_date),
+        )
+    conn.commit()
+    # Also insert a recent news item (should NOT be pruned).
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (src_id, "Recent fight news", "body", "neutral", "fight", "2026-08-01"),
+    )
+    conn.commit()
+
+    # Set the sim clock to day 7 (weekly tick).
+    conn.execute(
+        "UPDATE simulation_clock SET current_day=7, current_date='2026-08-27' "
+        "WHERE clock_id=1"
+    )
+    conn.commit()
+
+    # Publish TICK_ADVANCED — should prune old 'fight' news but keep
+    # old 'title', 'retirement', 'hall_of_fame' news.
+    bus = get_bus()
+    bus.publish(conn, {
+        "type": Events.TICK_ADVANCED,
+        "current_date": "2026-08-27",
+        "tick_type": "day",
+    })
+    conn.commit()
+
+    # Verify: old 'fight' news is GONE.
+    old_fight = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='fight' "
+        "AND published_at='2025-01-01'"
+    ).fetchone()[0]
+    check("A6", "old 'fight' news (>365d) is pruned",
+          old_fight == 0, f"got={old_fight}")
+
+    # Verify: old 'title', 'retirement', 'hall_of_fame' news is KEPT.
+    for keep_topic in ("title", "retirement", "hall_of_fame"):
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM news_items WHERE topic='{keep_topic}' "
+            f"AND published_at='2025-01-01'"
+        ).fetchone()[0]
+        check("A6", f"old '{keep_topic}' news (>365d) is kept",
+              n == 1, f"got={n}")
+
+    # Verify: recent 'fight' news is KEPT (within 365 days).
+    recent_fight = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='fight' "
+        "AND published_at='2026-08-01'"
+    ).fetchone()[0]
+    check("A6", "recent 'fight' news (within 365d) is kept",
+          recent_fight == 1, f"got={recent_fight}")
+
+    # Verify: a non-weekly tick does NOT prune.
+    conn.execute(
+        "UPDATE simulation_clock SET current_day=8 WHERE clock_id=1"
+    )
+    conn.commit()
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (src_id, "Another old news", "body", "neutral", "training", old_date),
+    )
+    conn.commit()
+    bus.publish(conn, {
+        "type": Events.TICK_ADVANCED,
+        "current_date": "2026-08-28",
+        "tick_type": "day",
+    })
+    conn.commit()
+    # The 'training' news (old, non-keep-topic) should still be there
+    # because we're not on a weekly tick.
+    old_training = conn.execute(
+        "SELECT COUNT(*) FROM news_items WHERE topic='training' "
+        "AND published_at='2025-01-01'"
+    ).fetchone()[0]
+    check("A6", "non-weekly tick does NOT prune (training news kept)",
+          old_training == 1, f"got={old_training}")
+
+    conn.close()
+
+
 def main():
     print("=" * 80)
     print(f"Task 23 — News Engine acceptance test "
@@ -466,6 +720,10 @@ def main():
     case_f_voice_descriptors()
     case_g_design_law()
     case_tick_retirement()
+    # Phase A additions
+    case_a4_source_variety()
+    case_a5_new_subscribers()
+    case_a6_news_pruning()
     print("\n" + "=" * 80)
     n_pass = sum(1 for r in results if r[2])
     n_fail = sum(1 for r in results if not r[2])
