@@ -164,6 +164,11 @@ def _check_injury_recovery(conn, current_date):
 
         recovered.append((injury_id, fighter_id))
 
+        # v2.8.0 (Task 19): update descriptor snapshot — career_health
+        # changed (restored by severity*2). Lazy-import to avoid circular dep.
+        from app import update_fighter_descriptor_snapshot
+        update_fighter_descriptor_snapshot(conn, fighter_id)
+
     return recovered
 
 
@@ -476,6 +481,10 @@ def _progress_training_camp(conn, camp_id, fighter_id, fatigue, morale,
              f"(severity {severity}/10)",
              camp_id),
         )
+        # v2.8.0 (Task 19): update descriptor snapshot — career_health
+        # reduced by the training injury. Lazy-import to avoid circular dep.
+        from app import update_fighter_descriptor_snapshot
+        update_fighter_descriptor_snapshot(conn, fighter_id)
         return "injured"
 
     # Normal progression — update the camp's tracking columns and
@@ -606,6 +615,12 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
          f"training camp. {summary}.",
          "positive", "training", fighter_id, current_date),
     )
+
+    # v2.8.0 (Task 19): update descriptor snapshot — attributes changed.
+    # Lazy-import app to avoid circular dependency (app imports nothing
+    # from tick_processor, but tick_processor already imports from app).
+    from app import update_fighter_descriptor_snapshot
+    update_fighter_descriptor_snapshot(conn, fighter_id)
 
     return "completed"
 

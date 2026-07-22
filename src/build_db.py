@@ -202,6 +202,26 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 #
 # Migration name: v2_7_0_add_weight_cut_log.
 #
+# v2.8.0 (Task 19 — Voice / Interpretation Layer) — MINOR bump. Adds
+# the new `fighter_descriptors` snapshot table. This is the caching
+# layer for the interpretation layer (src/voice.py). Per CONVENTIONS
+# §14, no raw numbers appear in the player-facing UI — everything
+# passes through voice.py which translates 0-100 values into
+# descriptor strings. The fighter_descriptors table caches the
+# computed descriptors per fighter as JSON, updated on trigger
+# events (camp completion, fight resolution, injury, title change)
+# — NOT on every UI view.
+#
+# Schema changes:
+#   1. New `fighter_descriptors` table — 8 columns. PK = fighter_id
+#      (one snapshot per fighter). attribute_descriptors JSON (25
+#      key-value pairs). personality_descriptors JSON (20 pairs).
+#      career_stage TEXT. career_health_desc TEXT. overall_desc TEXT.
+#      snapshot_version INTEGER (incremented on each update).
+#      updated_at TEXT.
+#
+# Migration name: v2_8_0_add_fighter_descriptors.
+#
 # v2.4.0 (Task 15 — Injuries + medical recovery) — MINOR bump. Adds
 # the new `injuries` table (one row per injury a fighter suffers).
 # Per CONVENTIONS §1.1, adding a new table is a MINOR bump. Per
@@ -485,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "2.7.0"
+CODE_SCHEMA_VERSION = "2.8.0"
 
 
 def _parse_version(v):
@@ -1632,6 +1652,39 @@ CREATE TABLE IF NOT EXISTS weight_cut_log (
     is_title_fight         INTEGER NOT NULL DEFAULT 0 CHECK (is_title_fight IN (0, 1)),
     created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- fighter_descriptors (added v2.8.0, Task 19 — Voice/Interpretation
+-- Layer snapshot cache).
+--
+-- One row per fighter (PK = fighter_id). Stores the computed
+-- descriptor strings as JSON, updated on trigger events (camp
+-- completion, fight resolution, injury, title change) — NOT on
+-- every UI view. The UI reads from this table for fast display;
+-- the src/voice.py module computes the descriptors when a trigger
+-- fires.
+--
+-- Columns:
+--   attribute_descriptors: JSON dict {attr_name: descriptor_str}
+--   personality_descriptors: JSON dict {trait_name: descriptor_str}
+--   career_stage: short phrase ("reigning champion", "top prospect")
+--   career_health_desc: short phrase ("in peak condition", "battered")
+--   overall_desc: one-sentence summary
+--   potential_desc: NULL (hidden — set by scouting system Task 18)
+--   snapshot_version: incremented on each update (for cache busting)
+--   updated_at: timestamp of last update
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fighter_descriptors (
+    fighter_id              INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    attribute_descriptors   TEXT NOT NULL DEFAULT '{}',
+    personality_descriptors TEXT NOT NULL DEFAULT '{}',
+    career_stage            TEXT,
+    career_health_desc      TEXT,
+    overall_desc            TEXT,
+    potential_desc          TEXT,
+    snapshot_version        INTEGER NOT NULL DEFAULT 1,
+    updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2059,6 +2112,29 @@ def _migrate_v2_7_0_add_weight_cut_log(conn):
 # them in order, skipping any already recorded in schema_migrations.
 # To add a new migration: define _migrate_v2_X_0_your_name(conn),
 # append it to this list, and bump CODE_SCHEMA_VERSION.
+def _migrate_v2_8_0_add_fighter_descriptors(conn):
+    """Task 19 — Voice/Interpretation Layer snapshot cache."""
+    if not _has_table(conn, "fighter_descriptors"):
+        conn.execute(
+            "CREATE TABLE fighter_descriptors (\n"
+            "    fighter_id              INTEGER PRIMARY KEY REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    attribute_descriptors   TEXT NOT NULL DEFAULT '{}',\n"
+            "    personality_descriptors TEXT NOT NULL DEFAULT '{}',\n"
+            "    career_stage            TEXT,\n"
+            "    career_health_desc      TEXT,\n"
+            "    overall_desc            TEXT,\n"
+            "    potential_desc          TEXT,\n"
+            "    snapshot_version        INTEGER NOT NULL DEFAULT 1,\n"
+            "    updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
+# The ordered registry of migrations. Each entry is
+# (migration_name, version_introduced, function). The runner applies
+# them in order, skipping any already recorded in schema_migrations.
+# To add a new migration: define _migrate_v2_X_0_your_name(conn),
+# append it to this list, and bump CODE_SCHEMA_VERSION.
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2066,6 +2142,7 @@ MIGRATIONS = [
     ("v2_5_0_add_training_camps",  "2.5.0", _migrate_v2_5_0_add_training_camps),
     ("v2_6_0_world_seed_prep",     "2.6.0", _migrate_v2_6_0_world_seed_prep),
     ("v2_7_0_add_weight_cut_log",  "2.7.0", _migrate_v2_7_0_add_weight_cut_log),
+    ("v2_8_0_add_fighter_descriptors","2.8.0", _migrate_v2_8_0_add_fighter_descriptors),
 ]
 
 

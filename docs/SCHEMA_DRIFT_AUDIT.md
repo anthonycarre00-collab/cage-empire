@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-23 — Task 17 (weight cuts).
-> **Current schema version:** 2.7.0 (43 tables, +1 new table this task).
+> **Last revised:** 2026-07-23 — Task 19 (voice/interpretation layer).
+> **Current schema version:** 2.8.0 (44 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -151,6 +151,7 @@ historical fights have no round data.
 | `injuries` | yes (fighter_id, event_id, injury_type, severity, body_area, start_date, projected_return_date, actual_return_date, long_term_damage, career_risk) | no | yes (v2.4.0) | `OK` — Task 15 |
 | `training_camps` | yes (fighter_id, gym_id, event_id, dates, camp_focus, camp_morale, camp_fatigue, camp_injury_risk, camp_weight_cut_pressure, camp_result_summary) | no | yes (v2.5.0) | `OK` — Task 16 |
 | `weight_cut_log` | yes (fighter_id, fight_id, event_id, weight_class_id, cut_date, target_weight_kg, actual_weight_kg, weight_missed_kg, cut_outcome, cardio_penalty, purse_penalty_pct, is_title_fight) | no | yes (v2.7.0) | `OK` — Task 17 |
+| `fighter_descriptors` | yes (fighter_id, attribute_descriptors, personality_descriptors, career_stage, career_health_desc, overall_desc, potential_desc, snapshot_version) | no | yes (v2.8.0) | `OK` — Task 19 |
 
 ---
 

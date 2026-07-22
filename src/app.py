@@ -3315,6 +3315,145 @@ def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
     }
 
 
+# ----------------------------------------------------------------
+# Fighter descriptor snapshot (Task 19 — Voice/Interpretation Layer).
+#
+# update_fighter_descriptor_snapshot() reads a fighter's current
+# attrs/pers/career from the DB, calls voice.build_descriptor_
+# snapshot() to compute the descriptor strings, and writes the
+# result to the fighter_descriptors table. This is the TRIGGER-
+# BASED cache update — called on camp completion, fight resolution,
+# injury creation/recovery, and title changes. The UI reads from
+# fighter_descriptors directly (no recomputation on every view).
+# ----------------------------------------------------------------
+
+
+def update_fighter_descriptor_snapshot(conn, fighter_id):
+    """Recompute + cache a fighter's descriptor snapshot.
+
+    Reads the fighter's current attributes, personality, career
+    state, and style archetype from the DB, calls voice.build_
+    descriptor_snapshot() to compute descriptor strings, and writes
+    the result to the fighter_descriptors table (INSERT OR REPLACE).
+
+    Called on trigger events:
+      - Training camp completion (tick_processor._complete_training_camp)
+      - Fight resolution (app.resolve_next_fight, for both fighters)
+      - Injury creation (app._maybe_create_injury)
+      - Injury recovery (tick_processor._check_injury_recovery)
+      - Title changes (app.resolve_next_fight title section)
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the fighter whose snapshot to update.
+    """
+    import json
+    import voice
+    import random as _rng
+
+    # Load fighter data
+    f_row = conn.execute(
+        "SELECT f.first_name, f.last_name, f.nickname, f.date_of_birth, "
+        "f.fight_style_archetype_id, f.current_promotion_id, "
+        "sa.name AS style_archetype_name "
+        "FROM fighters f "
+        "LEFT JOIN style_archetypes sa ON sa.style_archetype_id=f.fight_style_archetype_id "
+        "WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if f_row is None:
+        return  # fighter doesn't exist (deleted?)
+    first, last, nick, dob, sa_id, promo_id, sa_name = f_row
+
+    # Load attributes
+    attr_row = conn.execute(
+        "SELECT * FROM fighter_attributes WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if attr_row is None:
+        return  # no attributes (shouldn't happen for active fighters)
+    attr_cols = [d[0] for d in conn.execute("SELECT * FROM fighter_attributes WHERE fighter_id=?", (fighter_id,)).description]
+    attrs = {col: val for col, val in zip(attr_cols, attr_row)
+             if col not in ("fighter_attribute_id", "fighter_id", "created_at", "updated_at")
+             and val is not None}
+
+    # Load personality
+    pers_row = conn.execute(
+        "SELECT * FROM fighter_personality WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if pers_row is None:
+        return
+    pers_cols = [d[0] for d in conn.execute("SELECT * FROM fighter_personality WHERE fighter_id=?", (fighter_id,)).description]
+    pers = {col: val for col, val in zip(pers_cols, pers_row)
+            if col not in ("fighter_personality_id", "fighter_id", "created_at", "updated_at")
+            and val is not None}
+
+    # Load career
+    fc_row = conn.execute(
+        "SELECT record_wins, record_losses, record_draws, win_streak, "
+        "loss_streak, career_health, potential, title_reigns "
+        "FROM fighter_career WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if fc_row is None:
+        return
+    wins, losses, draws, ws, ls, health, potential, reigns = fc_row
+
+    # Check if champion
+    is_champion = conn.execute(
+        "SELECT 1 FROM titles WHERE current_champion_fighter_id=?",
+        (fighter_id,),
+    ).fetchone() is not None
+
+    # Compute age
+    age = 30
+    if dob:
+        try:
+            age = 2026 - int(dob[:4])
+        except (ValueError, TypeError):
+            pass
+
+    # Build fighter_data dict for voice layer
+    fighter_data = {
+        "first_name": first,
+        "last_name": last,
+        "nickname": nick,
+        "age": age,
+        "record_wins": wins,
+        "record_losses": losses,
+        "record_draws": draws,
+        "win_streak": ws or 0,
+        "loss_streak": ls or 0,
+        "is_champion": is_champion,
+        "title_reigns": reigns or 0,
+        "career_health": health or 100,
+        "style_archetype_name": sa_name or "Balanced",
+    }
+
+    # Compute snapshot
+    rng = _rng.Random(fighter_id)  # deterministic per fighter (stable descriptors)
+    snapshot = voice.build_descriptor_snapshot(attrs, pers, fighter_data, rng)
+
+    # Write to fighter_descriptors table
+    conn.execute(
+        "INSERT OR REPLACE INTO fighter_descriptors "
+        "(fighter_id, attribute_descriptors, personality_descriptors, "
+        "career_stage, career_health_desc, overall_desc, potential_desc, "
+        "snapshot_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, "
+        "COALESCE((SELECT snapshot_version + 1 FROM fighter_descriptors WHERE fighter_id=?), 1), "
+        "CURRENT_TIMESTAMP)",
+        (fighter_id,
+         json.dumps(snapshot["attribute_descriptors"]),
+         json.dumps(snapshot["personality_descriptors"]),
+         snapshot["career_stage"],
+         snapshot["career_health"],
+         snapshot["overall"],
+         snapshot["potential_descriptor"],
+         fighter_id),
+    )
+
+
 def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """Auto-schedule the next event for a promotion, ~weeks_out weeks
     after a reference date.
@@ -4640,6 +4779,14 @@ def resolve_next_fight(conn):
         stats_b=stats_b,
         finishing_beat_id=finishing_beat_id,
     )
+
+    # v2.8.0 (Task 19): update descriptor snapshots for both fighters.
+    # This is the TRIGGER-BASED cache update — after a fight, the
+    # fighter's record, ELO, streaks, career_health, and possibly
+    # title status have changed. The snapshot is recomputed + cached
+    # so the UI can read it without recomputing on every view.
+    update_fighter_descriptor_snapshot(conn, a_id)
+    update_fighter_descriptor_snapshot(conn, b_id)
 
     return fight_id
 

@@ -9,6 +9,68 @@ and this project adheres to the schema versioning rules in
 ## [Unreleased]
 
 
+## [2.8.0] - 2026-07-23
+
+### Added (Task 19 — Voice / Interpretation Layer, schema 2.8.0 MINOR)
+- New `src/voice.py` — pure module (no DB, no I/O) that translates
+  raw 0-100 values into player-facing descriptor strings. Per
+  CONVENTIONS §14, no raw numbers appear in the player-facing UI.
+  Contains:
+  * `ATTRIBUTE_DESCRIPTORS` — 25 attributes × 7 tiers × 2-3 variants
+    (~500 strings: "one-punch knockout threat", "iron chin", "fades
+    in deep waters")
+  * `PERSONALITY_DESCRIPTORS` — 20 traits × 7 tiers × 2-3 variants
+    (~400 strings: "comes forward like a freight train", "ice in his
+    veins")
+  * `POTENTIAL_DESCRIPTORS` — 7 tiers (hidden until scouted)
+  * `describe_attribute()`, `describe_personality()`,
+    `describe_potential()`, `describe_career_stage()`,
+    `describe_career_health()`, `describe_overall()`,
+    `build_descriptor_snapshot()`
+- New `fighter_descriptors` table — 9 columns. Snapshot cache storing
+  computed descriptors as JSON per fighter. PK = fighter_id. Updated
+  on trigger events (NOT every UI view). snapshot_version increments
+  on each update.
+- New `update_fighter_descriptor_snapshot()` in app.py — reads
+  attrs/pers/career from DB, calls voice.build_descriptor_snapshot(),
+  writes to fighter_descriptors table. Uses per-fighter deterministic
+  RNG (seed=fighter_id) for stable descriptors (no flickering).
+- Trigger wiring:
+  * `resolve_next_fight` — updates both fighters after all side effects
+  * `_complete_training_camp` in tick_processor.py — updates after
+    attribute gains applied
+  * `_check_injury_recovery` — updates after career_health restored
+  * `_progress_training_camp` training-injury path — updates after
+    career_health reduced
+
+### Tests (Task 19)
+- New acceptance test `scripts/test_voice.py` — 92 sub-checks across
+  8 cases (A voice functions, B tier banding, C snapshot table, D
+  update snapshot, E trigger integration, F no raw numbers, G variety,
+  H Design Law). All PASS.
+- All 21 acceptance tests pass (20 existing + 1 new). 1328+ sub-checks.
+
+### Performance architecture
+- voice.py is pure — no DB, no I/O. Fast (dict lookup + random.choice).
+- fighter_descriptors table caches the computed descriptors as JSON.
+  The UI reads one row per fighter. No recomputation on every view.
+- Snapshots are updated on trigger events only (camp, fight, injury).
+  A fighter profile view never triggers recomputation.
+
+### Design Law check (CONVENTIONS §13)
+- **Discovery**: descriptors reveal fighter identity without raw numbers
+- **Investment**: camp completion updates descriptors (growth visible)
+- **Growth**: tier changes when attributes cross band boundaries
+- **Conflict**: injury changes career_health_desc ("battered", "should retire")
+- **Legacy**: snapshots preserve the fighter's story over time
+- **Stories**: "one-punch knockout threat", "iron chin", "fades in deep waters"
+
+### No raw numbers in UI (CONVENTIONS §14)
+- Verified: 92 test sub-checks confirm no attribute descriptor contains
+  digit characters. Potential is None when not scouted (hidden until
+  Task 18).
+
+
 ## [2.7.0] - 2026-07-23
 
 ### Added (Task 17 — Weight cuts, schema 2.7.0 MINOR)

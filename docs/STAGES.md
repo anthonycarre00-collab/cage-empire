@@ -738,26 +738,88 @@ Task 14.6 (needs `marketability` column).
   that becomes stale as the fighter develops.)
 - UI: how does the player assign scouts and view reports?
 
-### Task ID 19 — Voice / interpretation layer
+### Task ID 19 — Voice / interpretation layer — **DONE** (commit `pending`)
 
-**Brief (needs expansion).** New module `src/voice.py`. Function
-`describe_attribute(name, value, context)` returns a string like
-`"elite gas tank"` for cardio=91. Used everywhere stats appear:
-fighter profile blurbs, scout reports, news, commentary, punditry.
-Deterministic — same input always produces same output.
+**Status:** Schema v2.7.0 → v2.8.0 (MINOR). 1 new table
+(`fighter_descriptors`, 9 columns). Migration
+`v2_8_0_add_fighter_descriptors`. 92 sub-checks across 8 cases in
+`scripts/test_voice.py`.
 
-**Dependencies:** Task 14.5 (needs full 24-attribute set to describe).
+**Implementation:**
+- `src/voice.py` — pure module (no DB, no I/O, no side effects) with:
+  * `ATTRIBUTE_DESCRIPTORS` — 25 attributes × 7 tiers × 2-3 variants
+    = ~500 descriptor strings ("one-punch knockout threat", "iron
+    chin", "fades in deep waters")
+  * `PERSONALITY_DESCRIPTORS` — 20 traits × 7 tiers × 2-3 variants
+    = ~400 descriptor strings ("comes forward like a freight train",
+    "ice in his veins", "no killer instinct")
+  * `POTENTIAL_DESCRIPTORS` — 7 tiers ("generational talent ceiling",
+    "high ceiling", "limited potential")
+  * `describe_attribute(attr_name, value, rng)` → str
+  * `describe_personality(trait_name, value, rng)` → str
+  * `describe_potential(potential, scouted, rng)` → str or None
+  * `describe_career_stage(age, record, is_champion, streaks, rng)` → str
+  * `describe_career_health(health, rng)` → str
+  * `describe_overall(fighter_data, rng)` → one-sentence summary
+  * `build_descriptor_snapshot(attrs, pers, fighter_data, rng)` → dict
+- `fighter_descriptors` snapshot table — caches computed descriptors
+  as JSON per fighter. Updated on trigger events (NOT every UI view):
+  * Training camp completion (attributes change)
+  * Fight resolution (record, ELO, streaks, title status change)
+  * Injury creation (career_health drops)
+  * Injury recovery (career_health restores)
+- `update_fighter_descriptor_snapshot(conn, fighter_id)` in app.py —
+  reads attrs/pers/career from DB, calls voice.build_descriptor_
+  snapshot(), writes to fighter_descriptors table. Uses a per-fighter
+  deterministic RNG (seed=fighter_id) so descriptors are stable
+  across calls (no flickering).
+- Trigger wiring:
+  * `resolve_next_fight` — calls update for both fighters after all
+    side effects complete
+  * `_complete_training_camp` in tick_processor.py — calls update
+    after attribute gains applied
+  * `_check_injury_recovery` in tick_processor.py — calls update
+    after career_health restored
+  * `_progress_training_camp` training-injury path — calls update
+    after career_health reduced
 
-**Questions to resolve:**
-- What are the descriptor bands? (90-100 = "elite", 75-89 = "above
-  average", 60-74 = "solid", 40-59 = "average", 25-39 = "below
-  average", 10-24 = "poor", 0-9 = "abysmal"?)
-- How do multi-attribute descriptors work? (e.g., "reckless but
-  dangerous" for high aggression + low discipline + high punch_power)
-- Should the voice layer support context-dependent descriptors?
-  (e.g., "elite gas tank" in a scout report vs "cardio for days" in
-  commentary)
-- How does the voice layer feed into the news engine (Task 23)?
+**Answers to the brief's open questions:**
+- Descriptor bands: 7 tiers per CONVENTIONS §14.3 — 90-100 elite,
+  75-89 strong, 60-74 capable, 40-59 average, 25-39 limited, 10-24
+  poor, 0-9 abysmal.
+- Multi-attribute descriptors: `describe_overall()` combines career
+  stage + top 2-3 attributes into one sentence. Future tasks (news
+  engine, punditry) can build more complex multi-attribute phrases
+  on top of the single-attribute descriptors.
+- Context-dependent descriptors: not yet. The current descriptors
+  are context-neutral. Future tasks can add context variants (scout
+  report vs commentary vs punditry) by extending the descriptor dicts.
+- News engine integration: Task 23 will import voice.py and use
+  describe_attribute/describe_career_stage to narrate events instead
+  of raw numbers.
+
+**Performance architecture:**
+- voice.py is pure — no DB, no I/O. Fast (dict lookup + random.choice).
+- fighter_descriptors table caches the computed descriptors as JSON.
+  The UI reads one row per fighter (SELECT * FROM fighter_descriptors
+  WHERE fighter_id=?). No recomputation on every view.
+- Snapshots are updated on trigger events only (camp, fight, injury).
+  A fighter profile view never triggers recomputation.
+- snapshot_version increments on each update — useful for cache
+  busting + tracking how many times the fighter's story changed.
+
+**Design Law (§13):** Discovery (descriptors reveal identity without
+raw numbers), Investment (camp completion updates descriptors —
+growth visible), Growth (tier changes when attributes cross band
+boundaries), Conflict (injury changes career_health_desc), Legacy
+(snapshots preserve the fighter's story over time), Stories
+("one-punch knockout threat", "iron chin", "fades in deep waters").
+
+**No raw numbers in UI (§14):** verified — 92 test sub-checks confirm
+no attribute descriptor contains digit characters. Potential is None
+when not scouted (hidden until Task 18).
+
+
 
 ---
 
