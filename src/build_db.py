@@ -505,7 +505,56 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.4.0"
+CODE_SCHEMA_VERSION = "3.5.0"
+
+
+# v3.5.0 (Phase C — Agent offers) — MINOR bump. Adds the new
+# `agent_offers` table. Per CONVENTIONS §1.1, adding a new table is
+# a MINOR bump. Per §5 (one table-group per task), this task adds
+# ONLY the `agent_offers` table — it is a single logical group
+# (Discovery pillar of the Design Law §13) that captures the agent's
+# "mystery box" offer to the player: a vague description of an
+# unknown talent (or washout veteran / style specialist / released
+# contender / gamble prospect) with an asking price. The player sees
+# only voice descriptors (career stage + style adjectives from
+# voice.py) — NEVER raw attributes, potential, or career state per
+# CONVENTIONS §14. The offer expires after 14 days; the player can
+# sign (resolve_offer with accept=True) or reject.
+#
+# The src/agent_offers.py module writes offers (event-bus subscriber
+# on TICK_ADVANCED — 10% chance per week, generates an offer for the
+# player's promotion) and the resolve_offer helper signs the fighter
+# (sets current_promotion_id + deducts asking_price from the
+# promotion's current_cash). The news engine is NOT invoked on offer
+# creation (the player sees the offer in the UI directly — no
+# narrative needed for a "your agent calls you" moment). The expiry
+# is silent too (the offer just disappears from the player's UI).
+#
+# Schema changes in this task:
+#   1. New `agent_offers` table — 12 columns. One row per offer.
+#      promotion_id + fighter_id are NOT NULL (every offer is for one
+#      fighter to one promotion). offer_type is CHECK-constrained to
+#      5 enumerated values ('unknown_talent', 'washout_veteran',
+#      'style_specialist', 'contender_release', 'prospect_gamble').
+#      is_resolved is 0/1 with resolution CHECK-constrained to
+#      'signed' / 'rejected' / 'expired' (NULL only while unresolved).
+#      asking_price is REAL (currency) — the price the player pays to
+#      sign. expires_date is the offer's expiry date (offer_date +
+#      14 days). fighter_description is the voice-layer-driven
+#      "mystery box" text (NO raw numbers per §14).
+#
+# Code changes:
+#   - New `src/agent_offers.py` — entirely event-bus-driven
+#     (CONVENTIONS §15.4). Subscribes to TICK_ADVANCED (weekly —
+#     _maybe_generate_offer with 10% chance per week +
+#     _check_expired_offers that expires offers past expires_date).
+#     resolve_offer is called directly by the UI (not a subscriber).
+#   - Reader function: get_active_offers(conn, promotion_id) returns
+#     the player's pending offers (UI tab will display them).
+#
+# Migration name: v3_5_0_add_agent_offers.
+#
+# v3.4.0 (Phase B — Suspensions + Seed-Time Rivalries/Social) — MINOR bump.
 
 
 # v3.3.0 (Task 24 — Punditry / matchup analysis) — MINOR bump. Adds the
@@ -2119,6 +2168,81 @@ CREATE TABLE IF NOT EXISTS suspensions (
     is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- agent_offers (added v3.5.0, Phase C — Agent offers / unknown
+-- talent gamble system).
+--
+-- One row per agent offer — the agent calls the player with a
+-- "mystery box" fighter: a vague description (voice descriptors
+-- only, NO raw attributes per §14) with an asking price. The player
+-- can sign (resolve_offer with accept=True → current_promotion_id
+-- set + asking_price deducted from current_cash) or reject. Offers
+-- expire after 14 days if unresolved (is_resolved=0, resolution=
+-- 'expired').
+--
+-- The agent_offers table is the single table-group this task adds
+-- (CONVENTIONS §5 — one table-group per task). Per the brief, this
+-- is the "Talent Hunter" fantasy (CAGE_EMPIRE_SOUL.md Fantasy 1)
+-- — finding greatness before anyone else. The description is
+-- deliberately vague enough that the player doesn't know if they're
+-- getting a future champion or a bust. This is a gamble, not a
+-- guaranteed signing.
+--
+-- 5 offer_type values (CHECK constraint):
+--   unknown_talent       — a brand-new fighter generated for the
+--                          offer (the agent found someone off the
+--                          radar). Description emphasizes "unknown"
+--                          + nation + style archetype only.
+--   washout_veteran      — an existing free agent who's a veteran
+--                          past their prime. Description uses
+--                          voice.describe_career_stage to hint at
+--                          the stage without revealing age precisely.
+--   style_specialist     — an existing free agent whose style
+--                          archetype fills a gap in the roster.
+--                          Description uses style adjective + voice
+--                          descriptors for top attributes.
+--   contender_release   — an existing free agent recently released
+--                          by another promotion (was a contender).
+--                          Description uses career_stage to hint
+--                          at "former contender" without revealing
+--                          the precise record.
+--   prospect_gamble      — a brand-new fighter generated for the
+--                          offer, but framed as a "high-risk,
+--                          high-reward" prospect gamble. The
+--                          potential is HIDDEN per §14 — the
+--                          description is deliberately ambiguous
+--                          ("might have something" / "raw talent").
+--
+-- asking_price is REAL (currency) — the price the player pays to
+-- sign. The promotion's current_cash is deducted on resolve_offer
+-- (the schema doesn't enforce this — the application code does).
+-- fighter_description is the voice-layer-driven text the player
+-- sees in the UI. NEVER contains raw numbers (potential, attributes,
+-- age as int, record wins/losses) per CONVENTIONS §14.
+--
+-- is_resolved is 0/1 (CHECK). resolution is 'signed' / 'rejected' /
+-- 'expired' (CHECK, NULL only while unresolved). resolution_date is
+-- the date the player (or expiry) resolved the offer. expires_date
+-- is offer_date + 14 days — past this date, the offer auto-expires.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_offers (
+    offer_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id       INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    fighter_id         INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    offer_date         TEXT NOT NULL,
+    offer_type         TEXT NOT NULL CHECK (offer_type IN (
+        'unknown_talent', 'washout_veteran', 'style_specialist',
+        'contender_release', 'prospect_gamble'
+    )),
+    asking_price       REAL NOT NULL,
+    fighter_description TEXT NOT NULL,
+    is_resolved        INTEGER NOT NULL DEFAULT 0 CHECK (is_resolved IN (0, 1)),
+    resolution         TEXT CHECK (resolution IN ('signed', 'rejected', 'expired')),
+    resolution_date    TEXT,
+    expires_date       TEXT NOT NULL,
+    created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2733,6 +2857,44 @@ def _migrate_v3_4_0_add_suspensions(conn):
         )
 
 
+def _migrate_v3_5_0_add_agent_offers(conn):
+    """Phase C — Agent offers / unknown talent gamble system.
+
+    Adds the agent_offers table. Per docs/FULL_BUILD_AUDIT.md §9b +
+    CONVENTIONS §5 (one table-group per task — `agent_offers` is the
+    single group this task adds). The src/agent_offers.py module writes
+    (event-bus subscribers on TICK_ADVANCED: _maybe_generate_offer
+    weekly 10% chance + _check_expired_offers expiry scan) + the
+    resolve_offer helper signs the fighter (sets current_promotion_id
+    + deducts asking_price from current_cash) + the reader
+    get_active_offers for the UI — every new table ships with both a
+    writer and a reader per §5.3.
+
+    Migration name: v3_5_0_add_agent_offers. Idempotent — checks for
+    the table's existence before creating.
+    """
+    if not _has_table(conn, "agent_offers"):
+        conn.execute(
+            "CREATE TABLE agent_offers (\n"
+            "    offer_id           INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    promotion_id       INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    fighter_id         INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    offer_date         TEXT NOT NULL,\n"
+            "    offer_type         TEXT NOT NULL CHECK (offer_type IN (\n"
+            "        'unknown_talent', 'washout_veteran', 'style_specialist',\n"
+            "        'contender_release', 'prospect_gamble'\n"
+            "    )),\n"
+            "    asking_price       REAL NOT NULL,\n"
+            "    fighter_description TEXT NOT NULL,\n"
+            "    is_resolved        INTEGER NOT NULL DEFAULT 0 CHECK (is_resolved IN (0, 1)),\n"
+            "    resolution         TEXT CHECK (resolution IN ('signed', 'rejected', 'expired')),\n"
+            "    resolution_date    TEXT,\n"
+            "    expires_date       TEXT NOT NULL,\n"
+            "    created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2747,6 +2909,7 @@ MIGRATIONS = [
     ("v3_2_0_add_rivalries",       "3.2.0", _migrate_v3_2_0_add_rivalries),
     ("v3_3_0_add_matchup_analyses","3.3.0", _migrate_v3_3_0_add_matchup_analyses),
     ("v3_4_0_add_suspensions",     "3.4.0", _migrate_v3_4_0_add_suspensions),
+    ("v3_5_0_add_agent_offers",    "3.5.0", _migrate_v3_5_0_add_agent_offers),
 ]
 
 

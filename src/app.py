@@ -6267,6 +6267,29 @@ class App(tk.Tk):
             _register_suspensions()
         except ImportError:
             pass  # suspensions.py not available — legacy behavior
+        # v3.5.0 (Phase C): register the agent offers subscribers on
+        # the global event bus. The agent offers system writes
+        # `agent_offers` rows in response to TICK_ADVANCED (weekly
+        # 10% chance of generating a new offer for the player's
+        # promotion — the "Talent Hunter" gamble per CAGE_EMPIRE_SOUL
+        # Fantasy 1) and clears expired offers on every tick (offers
+        # past their 14-day expiry are marked resolution='expired').
+        # The resolve_offer helper is called directly by the UI when
+        # the player clicks Accept/Reject — NOT a subscriber. The
+        # news engine is NOT invoked on offer creation (the player
+        # sees the offer in the UI directly — no narrative needed
+        # for a "your agent calls you" moment). CONVENTIONS §15.4 —
+        # additive, no inline side effects added to run_tick. Lazy
+        # import for the same reasons as news.py / social.py /
+        # rivalries.py / punditry.py / morale.py / suspensions.py
+        # above. The fighter_description is built from voice-layer
+        # descriptors (CONVENTIONS §14 — no raw attributes, potential,
+        # or career state in any player-facing text).
+        try:
+            from agent_offers import register_subscribers as _register_agent_offers
+            _register_agent_offers()
+        except ImportError:
+            pass  # agent_offers.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

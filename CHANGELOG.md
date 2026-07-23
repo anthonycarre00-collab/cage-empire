@@ -8,6 +8,121 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Phase C — Agent offers + event hype + cross-promo + betting odds, schema 3.4.0 → 3.5.0 MINOR)
+- New `agent_offers` table — one row per agent offer to the player
+  (the "Talent Hunter" gamble per CAGE_EMPIRE_SOUL Fantasy 1). 12
+  columns: offer_id PK, promotion_id FK (NOT NULL ON DELETE CASCADE),
+  fighter_id FK (NOT NULL ON DELETE CASCADE), offer_date (TEXT NOT
+  NULL), offer_type (TEXT NOT NULL CHECK IN 5 values: unknown_talent,
+  washout_veteran, style_specialist, contender_release, prospect_
+  gamble), asking_price (REAL NOT NULL — currency, NOT a fighter
+  attribute so §14 allows it), fighter_description (TEXT NOT NULL —
+  voice-layer-driven, NO raw numbers per §14), is_resolved (INTEGER
+  NOT NULL DEFAULT 0 CHECK IN 0,1), resolution (TEXT CHECK IN
+  'signed'/'rejected'/'expired', NULL only while unresolved),
+  resolution_date (TEXT), expires_date (TEXT NOT NULL — offer_date
+  + 14 days), created_at. Migration `v3_5_0_add_agent_offers`. Per
+  CONVENTIONS §5 (one table-group per task), this task adds ONLY
+  the `agent_offers` table. Per docs/FULL_BUILD_AUDIT.md §9b.
+- New `src/agent_offers.py` — entirely event-bus-driven (subscribes
+  to TICK_ADVANCED per CONVENTIONS §15.4):
+  * `_maybe_generate_offer(conn, event)` — TICK_ADVANCED subscriber
+    (weekly only — current_day % 7 == 0). 10% chance per week of
+    generating a new agent offer for the player's promotion
+    (promotion_id=1). The offer is a "mystery box": the player sees
+    a vague description (voice descriptors only — career stage +
+    style archetype adjective + top attribute phrase, NO raw
+    attributes/potential/career state per §14) with an asking price.
+    Offer expires after 14 days. The fighter can be EITHER a brand-
+    new fighter generated via `app.generate_fighter` (the agent
+    found someone off the radar) OR an existing free agent (the
+    agent is shopping a washout veteran / style specialist / released
+    contender). Max 1 pending offer at a time (prevents spam).
+  * `_check_expired_offers(conn, event)` — TICK_ADVANCED subscriber
+    (every tick). Expires unresolved offers past their expires_date
+    (sets is_resolved=1, resolution='expired'). The fighter remains
+    a free agent — they just disappear from the player's offer inbox.
+  * `resolve_offer(conn, offer_id, accept=True, current_date=None)`
+    — called directly by the UI (NOT a subscriber). On accept:
+    verifies the fighter is still a free agent + the promotion can
+    afford the asking price, then sets the fighter's current_
+    promotion_id + deducts asking_price from the promotion's
+    current_cash + marks the offer resolution='signed'. On reject:
+    marks the offer resolution='rejected'. Returns True on success,
+    False on failure (offer not found, already resolved, unaffordable,
+    etc.). Defensive — refuses to sign a fighter who is no longer a
+    free agent (could have been signed by another path between offer
+    + resolution).
+  * `get_active_offers(conn, promotion_id=None)` — reader. Returns
+    all pending (unresolved) agent offers for the player's promotion
+    (default = promotion_id=1). Ordered by offer_date DESC (newest
+    first). Empty list if no pending offers.
+  * `register_subscribers()` — registers both TICK_ADVANCED
+    subscribers on the global event bus. Wired into `App.__init__`
+    (lazy import, defensive `except ImportError`).
+- `src/news.py` extended — new `generate_event_hype_news` TICK_
+  ADVANCED subscriber (weekly). For each scheduled event in the
+  next 7 days, generates up to 2 hype news items (dedup via hidden
+  `[event_hype:event_id=N:type=T:n=N]` marker in the body). 3 hype
+  types (card_announce / weigh_in / training); RNG picks 2 of 3
+  per event. 3-4 template variants per hype type for variety. Voice-
+  layer-driven per §14 — uses career-stage + top-2 attribute
+  descriptors. New `EVENT_HYPE_TOPIC` = 'event_hype'. Per
+  docs/FULL_BUILD_AUDIT.md §9d.
+- `src/news.py` extended — new `generate_cross_promo_title_news`
+  TITLE_CHANGED subscriber + `generate_cross_promo_fight_news`
+  FIGHT_RESOLVED subscriber. Per docs/FULL_BUILD_AUDIT.md §9e.
+  * `generate_cross_promo_title_news` — fires when a title changes
+    hands in a NON-player promotion (promotion_id != 1). Always
+    generates cross-promo news — a title change in a rival promotion
+    is notable by definition. The player hears about it via the
+    `cross_promo` topic in the news feed. Uses voice descriptors
+    (career_stage + top attributes) — NO raw numbers per §14.
+  * `generate_cross_promo_fight_news` — fires for fights in non-
+    player promotions. Only generates cross-promo news for BIG
+    UPSETS: underdog with 3+ losing streak OR 5+ fewer career wins
+    than the loser OR the loser was on a 4+ win streak, AND the
+    result is a finish (KO/TKO/submission). Title fights are
+    EXCLUDED (covered by the TITLE_CHANGED subscriber — avoids
+    duplicate coverage). Cross-promo news is RARE and NOTABLE per
+    the brief — most rival promotion fights generate no cross-promo
+    news. New `CROSS_PROMO_TOPIC` = 'cross_promo'.
+- `src/punditry.py` extended — new betting-odds helpers added to
+  the matchup analysis. Per docs/FULL_BUILD_AUDIT.md §5c.
+  * `_betting_odds_phrase(confidence_pct, upset_risk_level, rng)`
+    — converts confidence_pct + upset_risk_level to a voice-driven
+    odds phrase. 90%+ → "heavy favorite" / "overwhelming favorite";
+    75-89% → "clear favorite" / "solid favorite"; 60-74% → "slight
+    favorite" / "narrow favorite"; 50-59% → "coin flip" / "pick'em"
+    / "toss-up"; upset_risk 'high' → "live underdog" / "real threat
+    to spring the upset". NO raw odds numbers per §14.
+  * `_betting_odds_sentence(favorite_last, underdog_last, odds_
+    phrase, rng)` — builds a full betting-odds sentence for the
+    analysis_text (e.g., "Vale is the heavy favorite on the betting
+    line." / "This one's a coin flip — too close to call on paper."
+    / "But Reed is a live underdog — don't sleep on the upset.").
+  * `_build_analysis_text` modified — appends the betting-odds
+    sentence to the analysis_text so the betting line is clearly
+    visible in the news feed. The voice layer is used — the player
+    never sees raw odds numbers like "1/5" or "3/1" or "50/50".
+- `src/app.py` `App.__init__` modified — lazy-imports + registers
+  the agent_offers subscribers (parallel to the existing news /
+  social / rivalries / punditry / morale / suspensions subscriber
+  registrations). Defensive `except ImportError` for legacy
+  compatibility.
+- New `scripts/test_agent_offers.py` — acceptance test for Phase C.
+  9 test cases (A-I), 70 sub-checks. Uses dynamic version pattern
+  (CONVENTIONS §10) — no hardcoded version strings. Tests:
+  A. Schema (agent_offers table + CHECKs + migration)
+  B. _maybe_generate_offer (forced 100% chance, weekly tick)
+  C. resolve_offer (accept signs + deducts cash; reject; unaffordable)
+  D. _check_expired_offers (expires past expires_date)
+  E. Offer description uses voice descriptors, no raw numbers (§14)
+  F. Upcoming event hype (max 2 per event, dedup marker, no digits)
+  G. Cross-promo news (upset + title change in non-player promotion)
+  H. Betting odds (voice phrases, no raw odds patterns, no digits)
+  I. Design Law (§13): Discovery (mystery box) + Anticipation (hype)
+
 ### Added (Phase B — B1+B2: Fighter suspensions + seed-time rivalries/social, schema 3.3.0 → 3.4.0 MINOR)
 - New `suspensions` table — one row per fighter suspension (drug
   test failure, behavior, missed_weight_repeat, post_fight_brawl,

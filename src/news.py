@@ -2320,6 +2320,639 @@ def prune_old_news(conn, event):
 
 
 # ----------------------------------------------------------------
+# Phase C — Upcoming Event Hype news.
+#
+# Per docs/FULL_BUILD_AUDIT.md §9d: no pre-event hype generation.
+# This subscriber fires on weekly TICK_ADVANCED and writes hype news
+# for any scheduled event in the next 7 days. Each event gets at
+# most 2 hype news items (dedup via hidden [event_hype:event_id:N]
+# marker in the body). 3-4 template variants per hype type for
+# variety. Voice-layer-driven per §14 — uses career-stage
+# descriptors + voice attribute descriptors, no raw numbers.
+#
+# 3 hype types per event:
+#   1. CARD_ANNOUNCE — "{promotion} announces {date} card — {a} vs {b}"
+#   2. WEIGH_IN_APPROACHES — "Weigh-in day approaches for {promotion}'s event"
+#   3. TRAINING_FOCUS — "{fighter} trains hard for upcoming {opponent} clash"
+#
+# The subscriber writes at most 2 hype items per event (the brief
+# says "max 2 hype news items per event (don't spam)"). The 2 are
+# picked from the 3 hype types — the RNG picks 2 of the 3 (without
+# replacement) so each event gets a different mix of hype items.
+# ----------------------------------------------------------------
+
+# Topics for the hype subscribers. Each is kept by the A6 pruner
+# (legacy: hype news is short-lived — actually we WANT hype news
+# pruned normally, so we do NOT add these to _NEWS_PRUNE_KEEP_TOPICS).
+EVENT_HYPE_TOPIC = "event_hype"
+CROSS_PROMO_TOPIC = "cross_promo"
+
+# Hype headline templates per hype type (3-4 variants each).
+_HYPE_HEADLINES_CARD_ANNOUNCE = [
+    "{promotion} announces upcoming card — {a} vs {b} in the main event",
+    "{promotion} sets {a} vs {b} as the headline of the next card",
+    "Next {promotion} card locked in — {a} meets {b} in the main event",
+    "{a} vs {b} headlines {promotion}'s upcoming event",
+]
+
+_HYPE_HEADLINES_WEIGH_IN = [
+    "Weigh-in day approaches for {promotion}'s upcoming event",
+    "{promotion} fighters cut down to weight ahead of fight week",
+    "The scale looms — {promotion} weigh-ins on the horizon",
+    "Fight week begins — {promotion} athletes face the cut",
+]
+
+_HYPE_HEADLINES_TRAINING = [
+    "{fighter} trains hard for upcoming {opponent} clash",
+    "{fighter} puts in the rounds ahead of {opponent} showdown",
+    "Camp grinds on — {fighter} preps for {opponent}",
+    "{fighter} sharpens the tools for the {opponent} fight",
+]
+
+_HYPE_BODY_CARD_ANNOUNCE = [
+    "{promotion_name} has locked in its next card. The main event "
+    "pits {a_full} — {a_art} {a_stage} {a_attr} — against {b_full}, "
+    "{b_art} {b_stage} {b_attr}. The date is set; the buildup begins.",
+
+    "The next {promotion_name} card has its headline bout. {a_full} "
+    "({a_art} {a_stage} {a_attr}) answers the call against {b_full} "
+    "({b_art} {b_stage} {b_attr}). Two fighters, one date, one "
+    "question — who takes the next step?",
+
+    "{promotion_name} matchmakers have done their work. {a_full} — "
+    "{a_art} {a_stage} {a_attr} — headlines the upcoming card "
+    "opposite {b_full}, {b_art} {b_stage} {b_attr}. The matchup "
+    "writes itself; now the fighters have to write the ending.",
+
+    "Mark the date — {promotion_name} returns with a main event "
+    "worth circling. {a_full} ({a_art} {a_stage} {a_attr}) takes on "
+    "{b_full} ({b_art} {b_stage} {b_attr}) in a fight that could "
+    "reshape the division.",
+]
+
+_HYPE_BODY_WEIGH_IN = [
+    "Fight week has arrived for {promotion_name}. The athletes face "
+    "the scale before they face each other — and the cut is its own "
+    "kind of war. {a_full} and {b_full} both have to make weight "
+    "before the main event can happen.",
+
+    "The {promotion_name} card is days away, which means the weight "
+    "cut begins in earnest. {a_full} ({a_art} {a_stage}) and "
+    "{b_full} ({b_art} {b_stage}) both have to step on the scale — "
+    "and a bad cut can derail a fight as fast as a bad opponent.",
+
+    "Weigh-in day looms for the {promotion_name} card. {a_full} and "
+    "{b_full} both have to hit the mark — and the scale has ended "
+    "more fights than the cage ever did. The cut is part of the "
+    "sport; sometimes it's the hardest part.",
+
+    "{promotion_name} fight week is here. The main event between "
+    "{a_full} and {b_full} can't happen until both make weight. "
+    "The cut is a chess match of its own — rehydrate, refuel, "
+    "and try to walk into the cage as close to full strength as "
+    "the scale allows.",
+]
+
+_HYPE_BODY_TRAINING = [
+    "{a_full}, {a_art} {a_stage} {a_attr}, is deep in camp ahead of "
+    "the {b_last} fight. The work is unglamorous — rounds on rounds, "
+    "film study, weight management, recovery. But the work is what "
+    "shows up on fight night, and {a_last} knows it.",
+
+    "Camp for {a_full} ({a_art} {a_stage} {a_attr}) is grinding "
+    "toward the {b_last} showdown. The {promotion_name} {a_stage} "
+    "is putting in the rounds — sparring partners, drilling, "
+    "conditioning — building the form that will travel into the "
+    "cage on fight night.",
+
+    "{a_full} ({a_art} {a_stage}) {a_attr} is sharpening every tool "
+    "ahead of the {b_last} clash. The {promotion_name} card is "
+    "approaching and {a_last} knows the work put in now is the work "
+    "that shows up under the lights.",
+
+    "The buildup for {a_full} vs {b_full} is well underway. {a_full} "
+    "— {a_art} {a_stage} {a_attr} — is in the gym, in the film "
+    "room, in the weight cut. The {promotion_name} main event is "
+    "weeks away; the work is now.",
+]
+
+
+def _event_hype_dedup_marker(event_id, hype_type, n=1):
+    """Build the hidden dedup marker for an event hype news item body.
+
+    The marker is appended to the body text (not displayed in the
+    UI — it's a hidden audit trail for the dedup query). Format:
+    "[event_hype:event_id=42:type=card_announce:n=1]".
+
+    The `n` suffix distinguishes the 1st hype item from the 2nd so
+    each (event_id, hype_type, n) triple gets at most one news item.
+    """
+    return f"[event_hype:event_id={event_id}:type={hype_type}:n={n}]"
+
+
+def _has_event_hype_news(conn, event_id, hype_type, n=1):
+    """Return True if an event hype news item already exists for this
+    (event_id, hype_type, n) triple.
+    """
+    marker = _event_hype_dedup_marker(event_id, hype_type, n)
+    row = conn.execute(
+        "SELECT 1 FROM news_items WHERE topic=? AND body LIKE ?",
+        (EVENT_HYPE_TOPIC, f"%{marker}%"),
+    ).fetchone()
+    return row is not None
+
+
+def _get_main_event_for_event(conn, event_id):
+    """Return (fighter_a_id, fighter_b_id) for the main event of an
+    event, or (None, None) if no main event exists.
+
+    The main event is the fight with the highest card_slot ('main_
+    event' tier) — picked via ORDER BY card_slot DESC LIMIT 1 to
+    handle legacy rows that may not have is_main_event=1 set.
+    """
+    row = conn.execute(
+        "SELECT fp_a.fighter_id, fp_b.fighter_id "
+        "FROM fights f "
+        "JOIN event_cards ec ON ec.fight_id = f.fight_id "
+        "JOIN fight_participants fp_a ON fp_a.fight_id = f.fight_id "
+        "  AND fp_a.corner = 'red' "
+        "JOIN fight_participants fp_b ON fp_b.fight_id = f.fight_id "
+        "  AND fp_b.corner = 'blue' "
+        "WHERE f.event_id = ? "
+        "ORDER BY ec.card_position ASC, f.card_slot DESC LIMIT 1",
+        (event_id,),
+    ).fetchone()
+    if not row:
+        # Fallback — pick any fight on the event with 2 participants.
+        row = conn.execute(
+            "SELECT fp_a.fighter_id, fp_b.fighter_id "
+            "FROM fights f "
+            "JOIN fight_participants fp_a ON fp_a.fight_id = f.fight_id "
+            "  AND fp_a.corner = 'red' "
+            "JOIN fight_participants fp_b ON fp_b.fight_id = f.fight_id "
+            "  AND fp_b.corner = 'blue' "
+            "WHERE f.event_id = ? "
+            "ORDER BY f.card_slot DESC LIMIT 1",
+            (event_id,),
+        ).fetchone()
+    if not row:
+        return (None, None)
+    return (row[0], row[1])
+
+
+def generate_event_hype_news(conn, event):
+    """Phase C — TICK_ADVANCED subscriber for upcoming event hype news.
+
+    Fires on weekly ticks. For each scheduled event in the next 7
+    days (event_date BETWEEN current_date AND current_date + 7 days,
+    status='scheduled'), generates up to 2 hype news items. Each
+    event gets at most 2 hype items (dedup via hidden marker).
+
+    Hype types (3 — RNG picks 2 of 3 per event):
+      1. card_announce — "{promotion} announces {date} card — {a} vs {b}"
+      2. weigh_in — "Weigh-in day approaches for {promotion}'s event"
+      3. training — "{fighter} trains hard for upcoming {opponent} clash"
+
+    Uses voice-layer descriptors (career_stage + top-2 attributes)
+    per CONVENTIONS §14. NO raw numbers in any hype text.
+    """
+    if not _is_weekly_tick(conn):
+        return
+    current_date = event.get("current_date")
+    if not current_date:
+        return
+
+    rng = random.Random()
+
+    # Find scheduled events in the next 7 days.
+    upcoming = conn.execute(
+        "SELECT event_id, promotion_id, event_name, event_date "
+        "FROM events "
+        "WHERE status = 'scheduled' "
+        "AND event_date >= ? AND event_date <= date(?, '+7 days') "
+        "ORDER BY event_date ASC",
+        (current_date, current_date),
+    ).fetchall()
+
+    for (event_id, promo_id, event_name, event_date) in upcoming:
+        a_id, b_id = _get_main_event_for_event(conn, event_id)
+        if a_id is None or b_id is None:
+            continue  # no main event — skip
+
+        # Pick 2 of the 3 hype types (without replacement).
+        hype_types = ['card_announce', 'weigh_in', 'training']
+        rng.shuffle(hype_types)
+        chosen = hype_types[:2]
+
+        for n, hype_type in enumerate(chosen, start=1):
+            # Dedup — at most 1 news item per (event_id, hype_type, n).
+            if _has_event_hype_news(conn, event_id, hype_type, n):
+                continue
+
+            a_full = _fighter_full_name(conn, a_id)
+            b_full = _fighter_full_name(conn, b_id)
+            a_last = _fighter_last_name(conn, a_id)
+            b_last = _fighter_last_name(conn, b_id)
+            a_stage = _fighter_career_stage(
+                conn, a_id, rng=rng, current_date=current_date,
+            )
+            b_stage = _fighter_career_stage(
+                conn, b_id, rng=rng, current_date=current_date,
+            )
+            a_attr = _fighter_descriptor_summary(conn, a_id, rng=rng)
+            b_attr = _fighter_descriptor_summary(conn, b_id, rng=rng)
+            promotion_name = _promotion_name(conn, promo_id)
+
+            if hype_type == 'card_announce':
+                headline = rng.choice(_HYPE_HEADLINES_CARD_ANNOUNCE).format(
+                    promotion=promotion_name, a=a_last, b=b_last,
+                )
+                body = rng.choice(_HYPE_BODY_CARD_ANNOUNCE).format(
+                    promotion_name=promotion_name,
+                    a_full=a_full, b_full=b_full,
+                    a_art=_article_for(a_stage), b_art=_article_for(b_stage),
+                    a_stage=a_stage, b_stage=b_stage,
+                    a_attr=a_attr, b_attr=b_attr,
+                )
+            elif hype_type == 'weigh_in':
+                headline = rng.choice(_HYPE_HEADLINES_WEIGH_IN).format(
+                    promotion=promotion_name,
+                )
+                body = rng.choice(_HYPE_BODY_WEIGH_IN).format(
+                    promotion_name=promotion_name,
+                    a_full=a_full, b_full=b_full,
+                    a_art=_article_for(a_stage), b_art=_article_for(b_stage),
+                    a_stage=a_stage, b_stage=b_stage,
+                )
+            else:  # training
+                # Pick which fighter to spotlight (50/50).
+                spot_id, opp_id, spot_full, opp_last, spot_stage, spot_attr, spot_art = (
+                    rng.choice([
+                        (a_id, b_id, a_full, b_last, a_stage, a_attr,
+                         _article_for(a_stage)),
+                        (b_id, a_id, b_full, a_last, b_stage, b_attr,
+                         _article_for(b_stage)),
+                    ])
+                )
+                opp_full = _fighter_full_name(conn, opp_id)
+                headline = rng.choice(_HYPE_HEADLINES_TRAINING).format(
+                    fighter=spot_full, opponent=opp_last,
+                )
+                body = rng.choice(_HYPE_BODY_TRAINING).format(
+                    promotion_name=promotion_name,
+                    a_full=spot_full, a_last=_fighter_last_name(conn, spot_id),
+                    a_art=spot_art, a_stage=spot_stage, a_attr=spot_attr,
+                    b_last=opp_last, b_full=opp_full,
+                )
+
+            # Append the hidden dedup marker.
+            body = body + " " + _event_hype_dedup_marker(
+                event_id, hype_type, n,
+            )
+
+            _write_news_item(
+                conn, headline, body, sentiment="positive",
+                event_id=event_id, promotion_id=promo_id,
+                fighter_id=a_id, rng=rng, published_at=current_date,
+                topic=EVENT_HYPE_TOPIC,
+            )
+
+
+# ----------------------------------------------------------------
+# Phase C — Cross-Promotion News.
+#
+# Per docs/FULL_BUILD_AUDIT.md §9e: the player should hear about
+# big events in rival promotions. Two subscribers:
+#
+# 1. generate_cross_promo_title_news — TITLE_CHANGED subscriber.
+#    Fires when a title changes hands in a NON-player promotion
+#    (promotion_id != 1). Always generates cross-promo news — a
+#    title change in a rival promotion is notable by definition.
+#
+# 2. generate_cross_promo_fight_news — FIGHT_RESOLVED subscriber.
+#    Fires for non-player promotion fights. Only generates cross-
+#    promo news for BIG UPSETS — underdog with a significantly
+#    worse record (or a 3+ losing streak) wins by KO/submission.
+#    Title fights are EXCLUDED here (they're covered by the
+#    TITLE_CHANGED subscriber above — avoid duplicate coverage).
+#
+# Cross-promo news is RARE and NOTABLE per the brief — most rival
+# promotion fights generate no cross-promo news. The filtering is
+# deliberate: only title changes + big upsets clear the bar.
+# ----------------------------------------------------------------
+
+# The player's promotion — cross-promo news is only generated for
+# NON-player promotions (the player already sees their own promotion's
+# news via the standard subscribers). The small seed assigns Alpha
+# Combat promotion_id=1; the world seed's first promotion is also
+# id=1 by AUTOINCREMENT.
+_PLAYER_PROMOTION_ID = 1
+
+# Big-upset thresholds (used by generate_cross_promo_fight_news to
+# decide whether a non-player promotion fight is "notable" enough
+# for cross-promo news).
+_BIG_UPSET_LOSS_STREAK_MIN = 3     # winner was on a 3+ losing streak
+_BIG_UPSET_RECORD_GAP_MIN = 5     # winner had 5+ fewer wins than loser
+_BIG_UPSET_WIN_STREAK_LOSER_MIN = 4  # loser was on a 4+ win streak
+
+_CROSS_PROMO_HEADLINES_TITLE_NEW_CHAMP = [
+    "Across the pond: {rival} champion {winner} claims the throne",
+    "Rival promotion {rival} crowns a new champion — {winner} takes gold",
+    "{rival} title changes hands — {winner} is the new king of the division",
+    "The {rival} belt finds a new home — {winner} ascends",
+]
+
+_CROSS_PROMO_HEADLINES_TITLE_DEFENSE = [
+    "Across the pond: {rival} champion {winner} defends title",
+    "{rival} champ {winner} turns back challenger — reign continues",
+    "{rival} titleholder {winner} retains the crown",
+    "{winner} defends {rival} gold — the reign rolls on",
+]
+
+_CROSS_PROMO_HEADLINES_UPSET = [
+    "Across the pond: {rival} sees a big upset — {winner} stuns {loser}",
+    "Rival promotion {rival} rocked — {winner} pulls off the upset over {loser}",
+    "Shock result in {rival} — {winner} shocks {loser}",
+    "{rival} upset alert — {winner} pulls off the unthinkable against {loser}",
+]
+
+_CROSS_PROMO_BODY_TITLE_NEW_CHAMP = [
+    "{winner_full}, {winner_art} {winner_stage} {winner_attr}, has "
+    "captured the {rival_promotion} title — dethroning the previous "
+    "champion in the process. The {rival_promotion} division has a "
+    "new face at the top, and the rest of the sport is paying "
+    "attention. Cross-promotion storylines write themselves when a "
+    "belt changes hands in a rival room.",
+
+    "Gold changes hands in {rival_promotion}. {winner_full} "
+    "({winner_art} {winner_stage}) {winner_attr} is the new champion, "
+    "and the {rival_promotion} hierarchy has been reshuffled. Whether "
+    "the new champ's reign sparks a cross-promotion superfight "
+    "conversation remains to be seen — but the MMA world is "
+    "watching.",
+
+    "A new champion in {rival_promotion}: {winner_full} — {winner_art} "
+    "{winner_stage} {winner_attr} — sits atop the division after "
+    "dethroning the previous titleholder. The {rival_promotion} "
+    "roster has a new face at the top, and the ripple effects will "
+    "be felt across the sport's landscape.",
+]
+
+_CROSS_PROMO_BODY_TITLE_DEFENSE = [
+    "{winner_full}, {winner_art} {winner_stage} {winner_attr}, "
+    "defends the {rival_promotion} title — turning back the "
+    "challenger and extending the reign. The {rival_promotion} "
+    "champion is still the champion, and the rest of the division "
+    "is still chasing.",
+
+    "Title defense in the books for {winner_full} ({winner_art} "
+    "{winner_stage}) {winner_attr} — the {rival_promotion} belt "
+    "stays put. Another challenger handled, another night at the "
+    "top. The {rival_promotion} champion is building a resume "
+    "worth noticing.",
+
+    "{winner_full} ({winner_art} {winner_stage}) {winner_attr} "
+    "retains the {rival_promotion} title. The challenger came up "
+    "short — the reign continues. The {rival_promotion} champion "
+    "is still the one to beat, and the rest of the sport is "
+    "taking notes.",
+]
+
+_CROSS_PROMO_BODY_UPSET = [
+    "{winner_full}, {winner_art} {winner_stage} {winner_attr}, "
+    "pulled off a stunning upset in {rival_promotion} — defeating "
+    "{loser_full} ({loser_art} {loser_stage}) {loser_attr} in a "
+    "result nobody saw coming. The {rival_promotion} division just "
+    "got a shake-up, and the rest of the sport is taking note.",
+
+    "Shock result in {rival_promotion}: {winner_full} "
+    "({winner_art} {winner_stage}) {winner_attr} stunned "
+    "{loser_full} ({loser_art} {loser_stage}) {loser_attr} in a "
+    "fight that flips the {rival_promotion} hierarchy on its head. "
+    "The upset will be talked about across the sport for weeks.",
+
+    "Big upset in {rival_promotion} — {winner_full} "
+    "({winner_art} {winner_stage}) {winner_attr} took out "
+    "{loser_full} ({loser_art} {loser_stage}) {loser_attr} in a "
+    "result that nobody — not the oddsmakers, not the pundits, "
+    "not the {rival_promotion} brass — saw coming. The "
+    "{rival_promotion} division has a new storyline.",
+]
+
+
+def generate_cross_promo_title_news(conn, event):
+    """Phase C — TITLE_CHANGED subscriber for cross-promotion title news.
+
+    Fires when a title changes hands in a NON-player promotion
+    (promotion_id != PLAYER_PROMOTION_ID). Always generates cross-
+    promo news — a title change in a rival promotion is notable by
+    definition. The player hears about it via the cross_promo
+    topic in the news feed.
+
+    Distinguishes 'new champion dethroning' from 'vacant title
+    claim' (mirrors generate_title_news's logic) — the headline
+    and body phrasing differs.
+    """
+    title_id = event.get("title_id")
+    fight_id = event.get("fight_id")
+    event_id = event.get("event_id")
+    promo_id = event.get("promotion_id")
+
+    if not title_id or not fight_id:
+        return
+    # Only generate cross-promo news for NON-player promotions.
+    if promo_id is None or promo_id == _PLAYER_PROMOTION_ID:
+        return
+
+    rng = random.Random()
+
+    title_row = conn.execute(
+        "SELECT current_champion_fighter_id, champion_since_date, "
+        "title_reigns_count, is_vacant FROM titles WHERE title_id=?",
+        (title_id,),
+    ).fetchone()
+    if not title_row:
+        return
+    champ_id, since_date, reigns_count, _is_vacant_now = title_row
+    if not champ_id:
+        return  # title is currently vacant — nothing to report
+
+    fight_row = conn.execute(
+        "SELECT winner_fighter_id, loser_fighter_id, result_type, "
+        "finish_round, finish_time, is_title_fight FROM fights "
+        "WHERE fight_id=?",
+        (fight_id,),
+    ).fetchone()
+    if not fight_row:
+        return
+    winner_id, loser_id, _rt, _fr, _ft, _is_title = fight_row
+    if winner_id != champ_id:
+        winner_id = champ_id  # defensive — title row is authoritative
+
+    # Vacant claim vs. dethroning.
+    is_vacant_claim = (reigns_count is None or reigns_count == 1)
+
+    winner_full = _fighter_full_name(conn, winner_id)
+    winner_last = _fighter_last_name(conn, winner_id)
+    career_stage = _fighter_career_stage(
+        conn, winner_id, rng=rng, current_date=since_date,
+    )
+    attr_summary = _fighter_descriptor_summary(conn, winner_id, rng=rng)
+    rival_promotion = _promotion_name(conn, promo_id)
+
+    if is_vacant_claim:
+        # Vacant title claimed — no "dethroning" angle. Use the
+        # title_new_champ templates (a "new champion crowned" angle).
+        headline = rng.choice(_CROSS_PROMO_HEADLINES_TITLE_NEW_CHAMP).format(
+            rival=rival_promotion, winner=winner_last,
+        )
+    else:
+        # Dethronement — the more dramatic angle for cross-promo news.
+        # Use the title_new_champ templates (the headline doesn't
+        # distinguish defense vs new champ; the body does).
+        headline = rng.choice(_CROSS_PROMO_HEADLINES_TITLE_NEW_CHAMP).format(
+            rival=rival_promotion, winner=winner_last,
+        )
+
+    body = rng.choice(_CROSS_PROMO_BODY_TITLE_NEW_CHAMP).format(
+        rival_promotion=rival_promotion,
+        winner_full=winner_full,
+        winner_art=_article_for(career_stage),
+        winner_stage=career_stage,
+        winner_attr=attr_summary,
+    )
+
+    _write_news_item(
+        conn, headline, body, sentiment="positive",
+        event_id=event_id, fight_id=fight_id, fighter_id=winner_id,
+        promotion_id=promo_id, published_at=since_date, rng=rng,
+        topic=CROSS_PROMO_TOPIC,
+    )
+
+
+def _is_big_upset(conn, winner_id, loser_id):
+    """Return True if the fight result qualifies as a 'big upset'.
+
+    A big upset is when the winner:
+      - Was on a 3+ losing streak (loser was favored by recent form), OR
+      - Had 5+ fewer career wins than the loser (loser was favored by
+        career record), OR
+      - The loser was on a 4+ win streak (loser was clearly favored).
+
+    AND the result is a finish (KO/TKO or submission — a decision
+    upset is less notable than a finish upset).
+    """
+    if winner_id is None or loser_id is None:
+        return False
+
+    w_row = conn.execute(
+        "SELECT record_wins, loss_streak FROM fighter_career "
+        "WHERE fighter_id=?",
+        (winner_id,),
+    ).fetchone()
+    l_row = conn.execute(
+        "SELECT record_wins, win_streak FROM fighter_career "
+        "WHERE fighter_id=?",
+        (loser_id,),
+    ).fetchone()
+    if not w_row or not l_row:
+        return False
+
+    w_wins, w_loss_streak = w_row
+    l_wins, l_win_streak = l_row
+    w_wins = w_wins or 0
+    w_loss_streak = w_loss_streak or 0
+    l_wins = l_wins or 0
+    l_win_streak = l_win_streak or 0
+
+    is_upset = (
+        w_loss_streak >= _BIG_UPSET_LOSS_STREAK_MIN
+        or (l_wins - w_wins) >= _BIG_UPSET_RECORD_GAP_MIN
+        or l_win_streak >= _BIG_UPSET_WIN_STREAK_LOSER_MIN
+    )
+    return is_upset
+
+
+def generate_cross_promo_fight_news(conn, event):
+    """Phase C — FIGHT_RESOLVED subscriber for cross-promotion upset news.
+
+    Fires for fights in NON-player promotions (promotion_id !=
+    PLAYER_PROMOTION_ID). Only generates cross-promo news for BIG
+    UPSETS — underdog with significantly worse record (or on a
+    losing streak) wins by KO/submission. Title fights are EXCLUDED
+    here (they're covered by the TITLE_CHANGED subscriber above —
+    avoids duplicate coverage).
+
+    The result_type must be a finish (KO/TKO or submission) — a
+    decision upset is less notable than a finish upset. This keeps
+    cross-promo news rare and notable per the brief.
+    """
+    fight_id = event.get("fight_id")
+    event_id = event.get("event_id")
+    promo_id = event.get("promotion_id")
+    event_date = event.get("event_date")
+    winner_id = event.get("winner_id")
+    loser_id = event.get("loser_id")
+    result_type = (event.get("result_type") or "").lower()
+    is_title_fight = bool(event.get("is_title_fight"))
+
+    # Only non-player promotions.
+    if promo_id is None or promo_id == _PLAYER_PROMOTION_ID:
+        return
+    # Exclude title fights (covered by the TITLE_CHANGED subscriber).
+    if is_title_fight:
+        return
+    # Only finishes (KO/TKO/submission) — decision upsets are less
+    # notable for cross-promo news.
+    if result_type not in ("ko_tko", "ko", "tko", "submission"):
+        return
+    if winner_id is None or loser_id is None:
+        return
+
+    # Check if the result is a "big upset".
+    if not _is_big_upset(conn, winner_id, loser_id):
+        return
+
+    rng = random.Random()
+
+    winner_full = _fighter_full_name(conn, winner_id)
+    winner_last = _fighter_last_name(conn, winner_id)
+    loser_full = _fighter_full_name(conn, loser_id)
+    loser_last = _fighter_last_name(conn, loser_id)
+    winner_stage = _fighter_career_stage(
+        conn, winner_id, rng=rng, current_date=event_date,
+    )
+    loser_stage = _fighter_career_stage(
+        conn, loser_id, rng=rng, current_date=event_date,
+    )
+    winner_attr = _fighter_descriptor_summary(conn, winner_id, rng=rng)
+    loser_attr = _fighter_descriptor_summary(conn, loser_id, rng=rng)
+    rival_promotion = _promotion_name(conn, promo_id)
+
+    headline = rng.choice(_CROSS_PROMO_HEADLINES_UPSET).format(
+        rival=rival_promotion, winner=winner_last, loser=loser_last,
+    )
+    body = rng.choice(_CROSS_PROMO_BODY_UPSET).format(
+        rival_promotion=rival_promotion,
+        winner_full=winner_full,
+        winner_art=_article_for(winner_stage),
+        winner_stage=winner_stage,
+        winner_attr=winner_attr,
+        loser_full=loser_full,
+        loser_art=_article_for(loser_stage),
+        loser_stage=loser_stage,
+        loser_attr=loser_attr,
+    )
+
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        event_id=event_id, fight_id=fight_id, fighter_id=winner_id,
+        promotion_id=promo_id, published_at=event_date, rng=rng,
+        topic=CROSS_PROMO_TOPIC,
+    )
+
+
+# ----------------------------------------------------------------
 # REGISTRATION
 # ----------------------------------------------------------------
 
@@ -2424,4 +3057,26 @@ def register_subscribers():
     bus.subscribe(
         Events.TICK_ADVANCED, prune_old_news,
         name="news.prune_old_news",
+    )
+    # Phase C — upcoming event hype news (weekly tick). Generates up
+    # to 2 hype news items per scheduled event in the next 7 days.
+    # 3 hype types (card_announce / weigh_in / training); RNG picks
+    # 2 of 3 per event. Voice-layer-driven per §14.
+    bus.subscribe(
+        Events.TICK_ADVANCED, generate_event_hype_news,
+        name="news.generate_event_hype_news",
+    )
+    # Phase C — cross-promotion news. Title changes in rival
+    # promotions always generate cross-promo news (the player should
+    # hear about a new champion in a rival room). Big upsets in rival
+    # promotions (underdog with worse record + KO/submission finish)
+    # also generate cross-promo news. Title fights are excluded from
+    # the FIGHT_RESOLVED subscriber (covered by TITLE_CHANGED).
+    bus.subscribe(
+        Events.TITLE_CHANGED, generate_cross_promo_title_news,
+        name="news.generate_cross_promo_title_news",
+    )
+    bus.subscribe(
+        Events.FIGHT_RESOLVED, generate_cross_promo_fight_news,
+        name="news.generate_cross_promo_fight_news",
     )

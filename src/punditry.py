@@ -238,6 +238,124 @@ def _excitement_phrase(score, rng=None):
     ])
 
 
+def _betting_odds_phrase(confidence_pct, upset_risk_level, rng=None):
+    """Phase C — convert confidence_pct + upset_risk_level to a
+    voice-driven betting-odds phrase.
+
+    Per the Phase C brief:
+      confidence 90%+ → "heavy favorite"
+      confidence 75-89% → "clear favorite"
+      confidence 60-74% → "slight favorite"
+      confidence 50-59% → "pick'em"
+      upset_risk 'high' → "upset alert"
+
+    The odds are expressed in CAGE EMPIRE voice, NOT as raw numbers:
+      "Vale is the heavy favorite"  not  "Vale 1/5"
+      "This one's a coin flip"      not  "50/50"
+      "Reed is a live underdog"     not  "Reed 3/1"
+
+    The function returns a SHORT phrase (no fighter name — the caller
+    will prepend the favorite's name in the analysis_text). The
+    upset_risk_level 'high' case overrides the confidence-based
+    phrase (an "upset alert" is the more important signal — the
+    player needs to know the underdog has a real chance).
+
+    Args:
+        confidence_pct: 0-100 INTEGER (the pundit's confidence in
+            the predicted winner). Used to pick the favorite tier.
+        upset_risk_level: 'high' / 'moderate' / 'low'. If 'high',
+            the function returns an "upset alert" phrase instead
+            of the confidence-based favorite phrase.
+        rng: optional random.Random for variant selection.
+
+    Returns:
+        A short phrase like "the heavy favorite" / "a clear favorite"
+        / "the slight favorite" / "a coin flip" / "a live underdog".
+        NO digit characters per §14.
+    """
+    if rng is None:
+        rng = random
+    # Upset alert overrides the confidence-based phrase. The underdog
+    # has a real chance — the player should hear "live underdog"
+    # rather than "slight favorite".
+    if upset_risk_level == "high":
+        return rng.choice([
+            "a live underdog", "a real threat to spring the upset",
+            "genuine upset material",
+        ])
+    if confidence_pct >= 90:
+        return rng.choice([
+            "the heavy favorite", "an overwhelming favorite",
+            "a massive favorite",
+        ])
+    if confidence_pct >= 75:
+        return rng.choice([
+            "the clear favorite", "a solid favorite",
+            "a comfortable favorite",
+        ])
+    if confidence_pct >= 60:
+        return rng.choice([
+            "the slight favorite", "a narrow favorite",
+            "a slight edge",
+        ])
+    # 50-59% — pick'em / coin flip.
+    return rng.choice([
+        "a coin flip", "pick'em", "a toss-up",
+        "even money", "too close to call",
+    ])
+
+
+def _betting_odds_sentence(favorite_last, underdog_last, odds_phrase,
+                            rng=None):
+    """Phase C — build a full betting-odds sentence for the analysis.
+
+    Combines the favorite's (or underdog's) last name with the odds
+    phrase to form a sentence like:
+      "Vale is the heavy favorite."
+      "This one's a coin flip."
+      "Reed is a live underdog."
+
+    The sentence is voice-layer-driven — NO raw odds numbers per §14.
+    Used as a separate sentence appended to the analysis_text (so
+    the betting odds are clearly visible in the news feed).
+
+    Args:
+        favorite_last: the favorite's last name (used when odds_phrase
+            is a favorite-tier phrase like "the heavy favorite").
+        underdog_last: the underdog's last name (used when odds_phrase
+            is an underdog phrase like "a live underdog").
+        odds_phrase: the phrase returned by _betting_odds_phrase.
+        rng: optional random.Random.
+    """
+    if rng is None:
+        rng = random
+    if odds_phrase in ("a coin flip", "pick'em", "a toss-up",
+                        "even money", "too close to call"):
+        # Pick'em phrasing — doesn't name a favorite.
+        return rng.choice([
+            f"This one's {odds_phrase} — too close to call on paper.",
+            f"On paper, it's {odds_phrase}. The oddsmakers are split.",
+            f"The betting line says {odds_phrase} — neither fighter "
+            f"is a clear pick.",
+        ])
+    if "underdog" in odds_phrase or "upset" in odds_phrase:
+        # Underdog phrasing — names the UNDERDOG (not the favorite).
+        return rng.choice([
+            f"But {underdog_last} is {odds_phrase} — don't sleep on the upset.",
+            f"Still, {underdog_last} is {odds_phrase} — the upset is live.",
+            f"That said, {underdog_last} is {odds_phrase} — the upset "
+            f"alert is real.",
+        ])
+    # Favorite phrasing — names the favorite.
+    return rng.choice([
+        f"{favorite_last} is {odds_phrase} on the betting line.",
+        f"The oddsmakers have {favorite_last} as {odds_phrase}.",
+        f"On paper, {favorite_last} is {odds_phrase}.",
+        f"The betting line favors {favorite_last} — {odds_phrase}, "
+        f"by the numbers.",
+    ])
+
+
 def _upset_phrase(risk_level, rng=None):
     """Convert a risk level ('high'/'moderate'/'low') to a word form.
 
@@ -942,7 +1060,7 @@ def _build_analysis_text(conn, fighter_a_id, fighter_b_id, favorite_id,
     art_b = _article_for(stage_b)
 
     template = rng.choice(_ANALYSIS_TEXT_TEMPLATES)
-    return template.format(
+    base_text = template.format(
         name_a=name_a, name_b=name_b,
         stage_a=stage_a, stage_b=stage_b,
         art_a=art_a, art_b=art_b,
@@ -960,6 +1078,21 @@ def _build_analysis_text(conn, fighter_a_id, fighter_b_id, favorite_id,
         confidence_word=confidence_word,
         upset_word=upset_word,
     )
+
+    # Phase C — append a betting-odds sentence to the analysis_text.
+    # The odds are derived from confidence_pct + upset_risk_level and
+    # expressed in CAGE EMPIRE voice (NO raw odds numbers per §14).
+    # The sentence is a separate addition so the betting line is
+    # clearly visible in the news feed — the player sees "Vale is the
+    # heavy favorite on the betting line" or "This one's a coin flip"
+    # without having to parse the confidence_pct integer.
+    odds_phrase = _betting_odds_phrase(
+        confidence_pct, upset_risk_level, rng=rng,
+    )
+    odds_sentence = _betting_odds_sentence(
+        favorite_last, underdog_last, odds_phrase, rng=rng,
+    )
+    return base_text + " " + odds_sentence
 
 
 # ----------------------------------------------------------------
