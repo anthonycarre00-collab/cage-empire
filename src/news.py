@@ -41,6 +41,11 @@ EVENTS SUBSCRIBED (Phase A5):
                    retired fighters identified by the existing
                    inline 'retirement' topic news written by
                    tick_processor._check_retirements) +
+                   generate_suspension_news (Phase B — polls the
+                   suspensions table for new active suspensions +
+                   newly-cleared suspensions; writes creation news
+                   for new suspensions and clearance news for
+                   cleared ones) +
                    prune_old_news (A6 weekly pruning)
   CAMP_COMPLETED → generate_camp_news
   CAMP_INJURY    → generate_camp_injury_news
@@ -1920,6 +1925,332 @@ def generate_event_recap_news(conn, event):
 
 
 # ----------------------------------------------------------------
+# SUSPENSION NEWS — Phase B polling subscriber for TICK_ADVANCED.
+#
+# Per the Phase B brief: the suspensions module (src/suspensions.py)
+# writes suspension ROWS directly (no event bus publish for the
+# creation — only FIGHT_RESOLVED triggers the roll, and TICK_ADVANCED
+# triggers the recovery). The news engine picks up new + cleared
+# suspensions via this TICK_ADVANCED polling subscriber (same pattern
+# as generate_retirement_news — polls for state changes, writes
+# voice-layer-driven news items).
+#
+# Two flavors of news:
+#   1. CREATION — active suspension (is_active=1) with no creation
+#      news item yet. Writes a scandal-style headline + body. The
+#      career-stage descriptor (voice.describe_career_stage) gives
+#      narrative weight: "the reigning champion fails a drug test"
+#      is a generational scandal; "an unproven prospect fails a drug
+#      test" is a cautionary tale. Tabloid sources (The Cage Wire)
+#      get "BREAKING:" / "SHOCK:" prefixes; broadsheet sources
+#      (MMA Analytica) get "Analysis:" prefixes (handled by
+#      _apply_source_tone in _write_news_item).
+#   2. CLEARANCE — cleared suspension (is_active=0) with no clearance
+#      news item yet. Writes a "cleared to return" / "suspension
+#      lifted" headline. The fighter's career-stage descriptor
+#      frames the comeback: "the former champion returns from the
+#      wilderness" vs "the prospect puts a mistake behind them".
+#
+# Dedup: each suspension_id gets at most ONE creation news item and
+# at most ONE clearance news item. The dedup checks for a body
+# containing the literal suspension_id marker (e.g.
+# "[suspension_id=42]") so we never write a duplicate. The marker
+# is appended to the body (not displayed in the UI — it's a hidden
+# audit trail for the dedup query).
+# ----------------------------------------------------------------
+
+SUSPENSION_TOPIC = "suspension"
+
+# Creation news headlines. The {fighter} slot is the fighter's last
+# name (short for headline impact). The {type_phrase} slot is one of
+# the _SUSPENSION_TYPE_PHRASES entries (e.g. "fails drug test",
+# "hit with behavior ban"). NO digit characters (CONVENTIONS §14).
+_SUSPENSION_CREATE_HEADLINES = [
+    "BREAKING: {fighter} {type_phrase}",
+    "{fighter} {type_phrase} — sidelined indefinitely",
+    "Scandal rocks the division — {fighter} {type_phrase}",
+    "{fighter} handed a suspension after latest incident",
+    "Commission comes down hard on {fighter}",
+    "{fighter} {type_phrase} in stunning development",
+]
+
+# Maps suspension_type → verb phrase for the headline {type_phrase}
+# slot. Each phrase has multiple variants; the rng picks one. Word-
+# form only — NO digit characters (CONVENTIONS §14).
+_SUSPENSION_TYPE_PHRASES = {
+    "drug_test_failure": [
+        "fails drug test", "flagged for a banned substance",
+        "caught by commission testing",
+    ],
+    "behavior": [
+        "hit with behavior ban", "suspended for conduct",
+        "draws a behavioral suspension",
+    ],
+    "missed_weight_repeat": [
+        "suspended for repeat weight misses",
+        "hit with a weight-cut ban",
+    ],
+    "post_fight_brawl": [
+        "suspended for post-fight brawl",
+        "banned for the post-fight melee",
+    ],
+    "social_media_violation": [
+        "suspended over a social media post",
+        "hit with a social media violation ban",
+    ],
+}
+
+# Duration phrases — word-form only (CONVENTIONS §14). Maps the
+# suspension_type to a list of phrases describing the typical
+# duration. The actual duration_days is INTERNAL — the player sees
+# "an extended ban" or "the rest of the year", never "180 days".
+_SUSPENSION_DURATION_PHRASES = {
+    "drug_test_failure": [
+        "an extended ban", "a lengthy suspension",
+        "a ban that will keep them out for some time",
+        "a suspension spanning the better part of a year",
+    ],
+    "behavior": [
+        "a multi-month suspension", "a several-month ban",
+        "a suspension measured in months rather than weeks",
+    ],
+    "missed_weight_repeat": [
+        "a short-term suspension", "a brief commission ban",
+    ],
+    "post_fight_brawl": [
+        "a stiff suspension", "a ban meant to send a message",
+    ],
+    "social_media_violation": [
+        "a short suspension", "a cooling-off period ban",
+    ],
+}
+
+_SUSPENSION_CREATE_BODY_TEMPLATES = [
+    "{fighter_full}, {art} {career_stage}, {attr_summary}, has been "
+    "suspended by the commission. The {type_phrase_noun} means "
+    "{fighter_last} sits on the shelf for {duration_phrase}. The "
+    "{promotion_name} roster reshuffles without them — the division "
+    "moves on, and the fighter is left to wait.",
+
+    "The commission has handed down {duration_phrase} to {fighter_full} "
+    "({art} {career_stage}) {attr_summary}. {fighter_last} will be "
+    "unavailable for booking until the suspension lifts — a serious "
+    "blow for a fighter who was building momentum. The {promotion_name} "
+    "brass now has to plan around the absence.",
+
+    "In a story that will define {fighter_last}'s career arc, "
+    "{fighter_full} ({art} {career_stage}) {attr_summary} faces "
+    "{duration_phrase}. The suspension is the kind of off-cage "
+    "headline no fighter wants — the {promotion_name} fighter now "
+    "faces a long road back to relevance.",
+]
+
+# Clearance news headlines + bodies. The "return from the wilderness"
+# narrative — the suspension lifts, the fighter comes back.
+_SUSPENSION_CLEAR_HEADLINES = [
+    "{fighter} cleared to return from suspension",
+    "Suspension lifted — {fighter} eligible to compete again",
+    "{fighter} back in the mix after serving ban",
+    "The wait is over — {fighter} returns from suspension",
+    "{fighter} reinstated by the commission",
+]
+
+_SUSPENSION_CLEAR_BODY_TEMPLATES = [
+    "{fighter_full}, {art} {career_stage}, has been cleared to return "
+    "after serving {duration_phrase}. {fighter_last} is eligible to "
+    "compete once more — the {promotion_name} roster adds a familiar "
+    "name back to the mix. The comeback starts now.",
+
+    "After {duration_phrase} on the shelf, {fighter_full} ({art} "
+    "{career_stage}) is back. {fighter_last} served the suspension "
+    "and is once again available for booking — the {promotion_name} "
+    "brass can finally write the next chapter.",
+
+    "The suspension is behind them. {fighter_full} ({art} "
+    "{career_stage}) {attr_summary} returns to action after "
+    "{duration_phrase}. {fighter_last} steps back into the "
+    "{promotion_name} picture — older, wiser, and eager to rewrite "
+    "the story.",
+]
+
+
+def _suspension_id_marker(suspension_id, flavor):
+    """Build the hidden dedup marker for a suspension news item body.
+
+    The marker is appended to the body text (not displayed in the
+    UI — it's a hidden audit trail for the dedup query). Format:
+    "[suspension_id=42:create]" or "[suspension_id=42:clear]".
+
+    The flavor suffix distinguishes creation news from clearance
+    news so each suspension_id can have at most ONE of each flavor
+    (the dedup query checks for the exact marker substring,
+    including the flavor suffix).
+    """
+    if flavor not in ("create", "clear"):
+        raise ValueError(f"unknown suspension news flavor {flavor!r}")
+    return f"[suspension_id={suspension_id}:{flavor}]"
+
+
+def _has_suspension_news(conn, suspension_id, flavor):
+    """Return True if a suspension news item already exists for this
+    suspension_id + flavor ('create' or 'clear').
+
+    Dedup is based on the hidden _suspension_id_marker (with flavor
+    suffix) in the body. Each suspension_id gets at most ONE creation
+    news item and at most ONE clearance news item.
+    """
+    marker = _suspension_id_marker(suspension_id, flavor)
+    row = conn.execute(
+        "SELECT 1 FROM news_items WHERE topic=? AND body LIKE ?",
+        (SUSPENSION_TOPIC, f"%{marker}%"),
+    ).fetchone()
+    return row is not None
+
+
+def generate_suspension_news(conn, event):
+    """Phase B — TICK_ADVANCED polling subscriber for suspension news.
+
+    Scans the `suspensions` table for:
+      1. Active suspensions (is_active=1) with no creation news item
+         yet → writes a scandal-style creation news item.
+      2. Cleared suspensions (is_active=0) with no clearance news
+         item yet → writes a clearance / "return" news item.
+
+    Uses voice-layer descriptors (career_stage + attr_summary) per
+    CONVENTIONS §14. Duration is described via word-form phrases
+    ("an extended ban", "a multi-month suspension") — never the
+    raw duration_days integer.
+
+    Dedup: each suspension_id gets at most one creation news item
+    and at most one clearance news item. The dedup uses a hidden
+    [suspension_id=N] marker appended to the body (queried via
+    LIKE — see _has_suspension_news).
+
+    This polling pattern mirrors generate_retirement_news (which
+    polls for 'retirement' topic news items written by the inline
+    tick_processor._check_retirements). The suspension creation
+    happens in the FIGHT_RESOLVED subscriber (suspensions.
+    _maybe_random_suspension); the clearance happens in the
+    TICK_ADVANCED subscriber (suspensions.check_suspension_recovery).
+    Both write only the suspensions row — this news subscriber
+    writes the narrative, picked up via the polling scan.
+    """
+    current_date = event.get("current_date")
+    if not current_date:
+        return
+
+    rng = random.Random()
+
+    # ----- 1. Creation news for active suspensions ----------------
+    active = conn.execute(
+        "SELECT suspension_id, fighter_id, suspension_type, "
+        "start_date, end_date, duration_days "
+        "FROM suspensions WHERE is_active=1"
+    ).fetchall()
+    for (susp_id, fighter_id, susp_type, start_date,
+         end_date, duration_days) in active:
+        if _has_suspension_news(conn, susp_id, "create"):
+            continue  # already wrote the creation news
+
+        fighter_full = _fighter_full_name(conn, fighter_id)
+        fighter_last = _fighter_last_name(conn, fighter_id)
+        career_stage = _fighter_career_stage(
+            conn, fighter_id, rng=rng, current_date=current_date,
+        )
+        attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+        type_phrase = rng.choice(
+            _SUSPENSION_TYPE_PHRASES.get(susp_type, ["suspended"])
+        )
+        duration_phrase = rng.choice(
+            _SUSPENSION_DURATION_PHRASES.get(susp_type, ["a suspension"])
+        )
+        # Type noun for the body template (e.g. "drug test failure"
+        # → "the failed drug test"). Uses the same phrases — the
+        # context makes the noun form natural.
+        type_phrase_noun = rng.choice(
+            _SUSPENSION_TYPE_PHRASES.get(susp_type, ["the suspension"])
+        )
+        # Look up the fighter's promotion for the body context.
+        promo_row = conn.execute(
+            "SELECT current_promotion_id FROM fighters WHERE fighter_id=?",
+            (fighter_id,),
+        ).fetchone()
+        promo_id = promo_row[0] if promo_row else None
+        promotion_name = _promotion_name(conn, promo_id)
+
+        headline = rng.choice(_SUSPENSION_CREATE_HEADLINES).format(
+            fighter=fighter_last, type_phrase=type_phrase,
+        )
+        body_template = rng.choice(_SUSPENSION_CREATE_BODY_TEMPLATES)
+        body = body_template.format(
+            fighter_full=fighter_full, fighter_last=fighter_last,
+            career_stage=career_stage, art=_article_for(career_stage),
+            attr_summary=attr_summary, type_phrase_noun=type_phrase_noun,
+            duration_phrase=duration_phrase,
+            promotion_name=promotion_name,
+        )
+        # Append the hidden dedup marker (not displayed — used by
+        # _has_suspension_news to prevent duplicate news items).
+        body = body + " " + _suspension_id_marker(susp_id, "create")
+        _write_news_item(
+            conn, headline, body, sentiment="negative",
+            fighter_id=fighter_id, promotion_id=promo_id, rng=rng,
+            published_at=current_date, topic=SUSPENSION_TOPIC,
+        )
+
+    # ----- 2. Clearance news for cleared suspensions --------------
+    cleared = conn.execute(
+        "SELECT suspension_id, fighter_id, suspension_type, "
+        "start_date, end_date, duration_days "
+        "FROM suspensions WHERE is_active=0"
+    ).fetchall()
+    for (susp_id, fighter_id, susp_type, start_date,
+         end_date, duration_days) in cleared:
+        if _has_suspension_news(conn, susp_id, "clear"):
+            continue  # already wrote the clearance news
+        # Only write clearance news if the creation news has been
+        # written (defensive — a suspension that was seeded directly
+        # into is_active=0 state shouldn't generate a clearance
+        # story with no preceding suspension story).
+        if not _has_suspension_news(conn, susp_id, "create"):
+            continue
+
+        fighter_full = _fighter_full_name(conn, fighter_id)
+        fighter_last = _fighter_last_name(conn, fighter_id)
+        career_stage = _fighter_career_stage(
+            conn, fighter_id, rng=rng, current_date=current_date,
+        )
+        attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+        duration_phrase = rng.choice(
+            _SUSPENSION_DURATION_PHRASES.get(susp_type, ["a suspension"])
+        )
+        promo_row = conn.execute(
+            "SELECT current_promotion_id FROM fighters WHERE fighter_id=?",
+            (fighter_id,),
+        ).fetchone()
+        promo_id = promo_row[0] if promo_row else None
+        promotion_name = _promotion_name(conn, promo_id)
+
+        headline = rng.choice(_SUSPENSION_CLEAR_HEADLINES).format(
+            fighter=fighter_last,
+        )
+        body_template = rng.choice(_SUSPENSION_CLEAR_BODY_TEMPLATES)
+        body = body_template.format(
+            fighter_full=fighter_full, fighter_last=fighter_last,
+            career_stage=career_stage, art=_article_for(career_stage),
+            attr_summary=attr_summary,
+            duration_phrase=duration_phrase,
+            promotion_name=promotion_name,
+        )
+        body = body + " " + _suspension_id_marker(susp_id, "clear")
+        _write_news_item(
+            conn, headline, body, sentiment="positive",
+            fighter_id=fighter_id, promotion_id=promo_id, rng=rng,
+            published_at=current_date, topic=SUSPENSION_TOPIC,
+        )
+
+
+# ----------------------------------------------------------------
 # A6 — news pruning. Weekly TICK_ADVANCED subscriber that deletes
 # news_items older than 365 days EXCEPT for items with topic IN
 # ('title', 'retirement', 'hall_of_fame') which are kept forever
@@ -1928,8 +2259,13 @@ def generate_event_recap_news(conn, event):
 # ----------------------------------------------------------------
 
 # Topics that are exempt from pruning (kept forever).
+# 'suspension' (Phase B) is kept — a drug-test scandal or behavioral
+# suspension is a legacy story the player wants to browse years later
+# (the "whatever happened to that guy?" thread). Same rationale as
+# 'title' / 'retirement' / 'hall_of_fame' / 'memory_resurfacing'.
 _NEWS_PRUNE_KEEP_TOPICS = frozenset({
     "title", "retirement", "hall_of_fame", "memory_resurfacing",
+    "suspension",
 })
 
 # Pruning threshold — news older than this many days is pruned.
@@ -2074,6 +2410,15 @@ def register_subscribers():
     bus.subscribe(
         Events.EVENT_COMPLETED, generate_event_recap_news,
         name="news.generate_event_recap_news",
+    )
+    # Phase B — suspension news (polling subscriber on TICK_ADVANCED).
+    # Scans the suspensions table for new active suspensions (writes
+    # creation news) and newly-cleared suspensions (writes clearance
+    # news). Dedup via hidden [suspension_id=N] marker in the body.
+    # Mirrors the generate_retirement_news polling pattern.
+    bus.subscribe(
+        Events.TICK_ADVANCED, generate_suspension_news,
+        name="news.generate_suspension_news",
     )
     # A6 — news pruning (weekly tick).
     bus.subscribe(

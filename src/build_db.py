@@ -505,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.3.0"
+CODE_SCHEMA_VERSION = "3.4.0"
 
 
 # v3.3.0 (Task 24 — Punditry / matchup analysis) — MINOR bump. Adds the
@@ -2050,6 +2050,75 @@ CREATE TABLE IF NOT EXISTS matchup_analyses (
     created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_a_id, fighter_b_id, fight_id)
 );
+
+-- ----------------------------------------------------------------
+-- suspensions (added v3.4.0, Phase B — Fighter suspensions).
+--
+-- One row per fighter suspension (drug test failure, behavioral
+-- incident, repeated missed weight, post-fight brawl, social media
+-- violation). Suspensions are RARE per the brief (1% drug test +
+-- 0.5% behavior chance per fight) but generate BIG stories when
+-- they happen — a champion failing a drug test is a generational
+-- event. Per docs/FULL_BUILD_AUDIT.md §9a.
+--
+-- Suspension lifecycle:
+--   1. _maybe_random_suspension (FIGHT_RESOLVED subscriber in
+--      src/suspensions.py) rolls the dice on each resolved fight.
+--      1% drug test failure, 0.5% behavior (higher for high-
+--      aggression + low-discipline fighters). On trigger:
+--      - drug_test_failure: 6-12 month suspension, morale -20,
+--        marketability -15.
+--      - behavior: 3-6 month suspension, morale -10.
+--      Inserts a suspensions row with is_active=1, start_date =
+--      event_date, end_date = start_date + duration_days.
+--   2. check_suspension_recovery (TICK_ADVANCED subscriber in
+--      src/suspensions.py) scans for active suspensions whose
+--      end_date has passed. Sets is_active=0 and writes a clearance
+--      news item (the fighter returns).
+--   3. app._pick_matchup excludes fighters with is_active=1 (the
+--      matchup SQL adds `AND fighter_id NOT IN (SELECT fighter_id
+--      FROM suspensions WHERE is_active = 1)` alongside the
+--      existing injury exclusion). A suspended fighter cannot be
+--      booked until cleared.
+--
+-- 5 suspension_type values (CHECK constraint):
+--   drug_test_failure       — failed a USADA / commission drug test
+--                             (PEDs, diuretics, banned substances)
+--   behavior                — behavioral incident (altercation with
+--                             officials, refused media, etc.)
+--   missed_weight_repeat   — repeat weight-cut miss (commission
+--                             intervention — future Phase C task
+--                             may wire this from weight cut log)
+--   post_fight_brawl       — brawl after a fight (the infamous
+--                             post-fight melee scenario)
+--   social_media_violation  — social media post crossed the line
+--                             (commission / promotion suspends)
+--
+-- duration_days is a stored INTEGER column (NOT shown to the player
+-- per §14 — the news text uses word-form phrases like "six months"
+-- or "the rest of the year", never the raw day count). It exists
+-- only so check_suspension_recovery can compute end_date arithmetic
+-- (end_date < current_date) without recomputing duration every tick.
+--
+-- description is a short admin note (NOT player-facing). Player-
+-- facing narrative comes from the news items written by the news
+-- engine subscriber (topic='suspension') with voice-layer-driven
+-- headlines + body text.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS suspensions (
+    suspension_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+    suspension_type   TEXT NOT NULL CHECK (suspension_type IN (
+        'drug_test_failure', 'behavior', 'missed_weight_repeat',
+        'post_fight_brawl', 'social_media_violation'
+    )),
+    start_date        TEXT NOT NULL,
+    end_date          TEXT NOT NULL,
+    duration_days     INTEGER NOT NULL CHECK (duration_days > 0),
+    description       TEXT,
+    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2634,6 +2703,36 @@ def _migrate_v3_3_0_add_matchup_analyses(conn):
         )
 
 
+def _migrate_v3_4_0_add_suspensions(conn):
+    """Phase B (Task B1+B2) — Fighter suspensions. Adds the suspensions table.
+
+    Migration name: v3_4_0_add_suspensions. Idempotent — checks for
+    the table's existence before creating. Per docs/FULL_BUILD_AUDIT.md
+    §9a + CONVENTIONS §5 (one table-group per task — `suspensions` is
+    the single group this task adds). The src/suspensions.py module
+    writes (event-bus subscribers) + app._pick_matchup reads (excludes
+    fighters with active suspensions) — every new table ships with
+    both a writer and a reader per §5.3.
+    """
+    if not _has_table(conn, "suspensions"):
+        conn.execute(
+            "CREATE TABLE suspensions (\n"
+            "    suspension_id     INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    suspension_type   TEXT NOT NULL CHECK (suspension_type IN (\n"
+            "        'drug_test_failure', 'behavior', 'missed_weight_repeat',\n"
+            "        'post_fight_brawl', 'social_media_violation'\n"
+            "    )),\n"
+            "    start_date        TEXT NOT NULL,\n"
+            "    end_date          TEXT NOT NULL,\n"
+            "    duration_days     INTEGER NOT NULL CHECK (duration_days > 0),\n"
+            "    description       TEXT,\n"
+            "    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),\n"
+            "    created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2647,6 +2746,7 @@ MIGRATIONS = [
     ("v3_1_0_add_social_posts",    "3.1.0", _migrate_v3_1_0_add_social_posts),
     ("v3_2_0_add_rivalries",       "3.2.0", _migrate_v3_2_0_add_rivalries),
     ("v3_3_0_add_matchup_analyses","3.3.0", _migrate_v3_3_0_add_matchup_analyses),
+    ("v3_4_0_add_suspensions",     "3.4.0", _migrate_v3_4_0_add_suspensions),
 ]
 
 

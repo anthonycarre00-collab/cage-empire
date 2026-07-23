@@ -516,6 +516,229 @@ def main():
     print(f"  Injuries: {n_injuries}")
 
     # ----------------------------------------------------------------
+    # Phase B (4e): Seed-time rivalries.
+    #
+    # The world seed has 0 rivalries before this block — the
+    # rivalries system (src/rivalries.py) only creates rivalries
+    # from in-game events (social callouts, close decisions, title
+    # changes). Per docs/FULL_BUILD_AUDIT.md §4e, the seeded world
+    # should have 50-100 pre-existing rivalries derived from the
+    # historical fight data so the world feels lived-in from day 1.
+    #
+    # Three seed-time rivalry flavors:
+    #   1. rematch_hungry (heat 60): fighter pairs who fought 2+
+    #      times in the historical data. The brief says "fighters
+    #      who fought each other multiple times" — the implicit
+    #      narrative is the trilogy / quadrilogy that demands one
+    #      more chapter.
+    #   2. bad_blood (heat 70): fighter pairs where one won by a
+    #      controversial decision (score_margin <= 2 in a split or
+    #      unanimous decision). The brief says "controversial
+    #      decisions" — the loser wants vindication.
+    #   3. title_rivalry (heat 80): same-promo + same-WC fighter
+    #      pairs where one is the current champion. The brief says
+    #      "champion vs contender" — the contender wants the belt.
+    #
+    # Uses src/rivalries._create_rivalry (the same writer the
+    # in-game system uses) so the seed-time rivalries have proper
+    # origin_description (voice-layer-driven per CONVENTIONS §14 —
+    # no raw numbers) and are deduped against any pre-existing
+    # rivalry rows (the UNIQUE constraint on fighter_a_id +
+    # fighter_b_id is enforced by _create_rivalry's existing-row
+    # check).
+    # ----------------------------------------------------------------
+    print("Seeding rivalries from historical fight data...")
+    # Lazy-import the rivalries writer (lives in src/, not scripts/).
+    import sys as _sys
+    _sys.path.insert(0, str(PROJECT_DIR / "src"))
+    import rivalries as _rivalries
+    from collections import defaultdict as _dd
+
+    rng_riv = random.Random(20260724 + 1)  # distinct from main fight RNG
+    n_rivalries = 0
+    n_rematch = 0
+    n_bad_blood = 0
+    n_title_rivalry = 0
+
+    # Skip if Phase 4 rivalries already seeded (idempotent — re-running
+    # phase4 should not stack duplicate rivalries on top of existing
+    # ones, since _create_rivalry dedupes by fighter pair but a second
+    # run would still iterate through every pair needlessly).
+    existing_riv_count = conn.execute(
+        "SELECT COUNT(*) FROM rivalries"
+    ).fetchone()[0]
+    if existing_riv_count > 0:
+        print(f"  Already {existing_riv_count} rivalries — skipping seed-time rivalry generation.")
+    else:
+        sim_date_str = SIM_DATE.strftime("%Y-%m-%d")
+
+        # ----- 1. rematch_hungry: pairs who fought 2+ times ----------
+        # Group fight_history by fighter pair (canonical: lower fid
+        # first). Count fights per pair.
+        pair_counts = _dd(int)
+        pair_fights = _dd(list)  # pair -> list of (fight_id, winner_id)
+        rows = conn.execute(
+            "SELECT fighter_id, opponent_id, fight_id, outcome "
+            "FROM fight_history"
+        ).fetchall()
+        for fid, oid, fight_id, outcome in rows:
+            if fid is None or oid is None or fid == oid:
+                continue
+            pair = (fid, oid) if fid < oid else (oid, fid)
+            pair_counts[pair] += 1
+            # Track who won each fight in the pair (from fid's
+            # perspective: outcome='win' means fid won).
+            pair_fights[pair].append((fight_id, fid if outcome == "win" else oid))
+        # Pairs with 2+ fights → rematch_hungry
+        rematch_pairs = [
+            (p, c) for p, c in pair_counts.items() if c >= 2
+        ]
+        # Sort by fight count desc so the biggest trilogies get
+        # seeded first (in case we hit a cap).
+        rematch_pairs.sort(key=lambda x: x[1], reverse=True)
+        # Cap to keep the seed-time rivalry total reasonable (50-
+        # 100 rivalries total per the brief — split roughly evenly
+        # across the 3 flavors).
+        MAX_REMATCH = 40
+        MAX_BAD_BLOOD = 40
+        MAX_TITLE_RIVALRY = 30
+        for (a_id, b_id), count in rematch_pairs[:MAX_REMATCH]:
+            # Compute head-to-head wins for the rivalry's
+            # fighter_a_wins / fighter_b_wins columns (optional —
+            # _create_rivalry doesn't set them, but we can UPDATE
+            # after).
+            a_wins = sum(1 for _, w in pair_fights[(a_id, b_id)] if w == a_id)
+            b_wins = sum(1 for _, w in pair_fights[(a_id, b_id)] if w == b_id)
+            draws = count - a_wins - b_wins
+            origin_narrative = (
+                "The rivalry started with multiple meetings in the cage — "
+                "the score still unsettled."
+            )
+            riv_id = _rivalries._create_rivalry(
+                conn, a_id, b_id, "rematch_hungry",
+                origin_event="seed:phase4:rematch_hungry",
+                origin_narrative=origin_narrative,
+                initial_heat=60, rng=rng_riv,
+                current_date=sim_date_str,
+            )
+            if riv_id is not None:
+                # Populate the head-to-head counts (the in-game
+                # _process_fight_rivalry does this incrementally; for
+                # seed-time we backfill from the historical record).
+                conn.execute(
+                    "UPDATE rivalries SET fights_count=?, "
+                    "fighter_a_wins=?, fighter_b_wins=?, draws=? "
+                    "WHERE rivalry_id=?",
+                    (count, a_wins, b_wins, draws, riv_id),
+                )
+                n_rivalries += 1
+                n_rematch += 1
+
+        # ----- 2. bad_blood: controversial decisions --------------
+        # Find fighter pairs where at least one fight was a decision
+        # with score_margin <= 2 (the close-decision threshold from
+        # src/rivalries.py — _CLOSE_DECISION_MARGIN). The brief says
+        # "controversial decisions" — split decisions and razor-thin
+        # unanimous decisions both qualify.
+        close_pairs = _dd(list)
+        rows = conn.execute(
+            "SELECT fighter_id, opponent_id, score_margin, result_type "
+            "FROM fight_history "
+            "WHERE result_type IN ('split_decision', 'unanimous_decision') "
+            "AND score_margin IS NOT NULL AND score_margin <= 2"
+        ).fetchall()
+        for fid, oid, margin, rt in rows:
+            if fid is None or oid is None or fid == oid:
+                continue
+            pair = (fid, oid) if fid < oid else (oid, fid)
+            close_pairs[pair].append((margin, rt))
+        # Sort by number of close decisions desc, then by smallest
+        # margin (the most controversial pair first).
+        close_pairs_sorted = sorted(
+            close_pairs.items(),
+            key=lambda x: (-len(x[1]), min(m for m, _ in x[1])),
+        )
+        # Skip pairs that already have a rivalry (from the rematch
+        # block above — a pair that fought 2+ times AND had a close
+        # decision already got a rematch_hungry rivalry; we don't
+        # want to stack two rivalries on the same pair).
+        for (a_id, b_id), close_fights in close_pairs_sorted[:MAX_BAD_BLOOD]:
+            existing = _rivalries.get_rivalry(conn, a_id, b_id)
+            if existing is not None:
+                continue
+            origin_narrative = (
+                "The rivalry started with a controversial decision — "
+                "the loser still wants vindication."
+            )
+            riv_id = _rivalries._create_rivalry(
+                conn, a_id, b_id, "bad_blood",
+                origin_event="seed:phase4:bad_blood",
+                origin_narrative=origin_narrative,
+                initial_heat=70, rng=rng_riv,
+                current_date=sim_date_str,
+            )
+            if riv_id is not None:
+                n_rivalries += 1
+                n_bad_blood += 1
+
+        # ----- 3. title_rivalry: champion vs same-WC same-promo contender
+        # For each current champion, find the top-3 ranked contenders
+        # in the same WC + promo who are NOT already in a rivalry
+        # with the champ. Pick 1-2 of them for a title_rivalry.
+        champions = conn.execute(
+            "SELECT t.current_champion_fighter_id, t.promotion_id, "
+            "t.weight_class_id "
+            "FROM titles t "
+            "WHERE t.current_champion_fighter_id IS NOT NULL "
+            "AND t.is_vacant = 0"
+        ).fetchall()
+        for champ_id, promo_id, wc_id in champions:
+            if n_title_rivalry >= MAX_TITLE_RIVALRY:
+                break
+            # Top-5 ranked contenders in the same WC + promo.
+            contenders = conn.execute(
+                "SELECT r.fighter_id "
+                "FROM rankings r "
+                "JOIN fighters f ON f.fighter_id = r.fighter_id "
+                "WHERE r.weight_class_id=? AND r.promotion_id=? "
+                "AND r.fighter_id != ? "
+                "AND f.is_active = 1 AND f.is_retired = 0 "
+                "ORDER BY r.rating DESC LIMIT 5",
+                (wc_id, promo_id, champ_id),
+            ).fetchall()
+            # Pick 1-2 contenders (rng-biased toward the top).
+            n_to_pick = min(len(contenders), rng_riv.randint(1, 2))
+            # Weight the top contenders higher (pick from top 3).
+            top_contenders = contenders[:min(3, len(contenders))]
+            rng_riv.shuffle(top_contenders)
+            for (contender_id,) in top_contenders[:n_to_pick]:
+                if n_title_rivalry >= MAX_TITLE_RIVALRY:
+                    break
+                # Skip if a rivalry already exists for this pair.
+                if _rivalries.get_rivalry(conn, champ_id, contender_id) is not None:
+                    continue
+                origin_narrative = (
+                    "The rivalry started with a title picture — the "
+                    "contender wants the belt the champion holds."
+                )
+                riv_id = _rivalries._create_rivalry(
+                    conn, champ_id, contender_id, "title_rivalry",
+                    origin_event="seed:phase4:title_rivalry",
+                    origin_narrative=origin_narrative,
+                    initial_heat=80, rng=rng_riv,
+                    current_date=sim_date_str,
+                )
+                if riv_id is not None:
+                    n_rivalries += 1
+                    n_title_rivalry += 1
+
+        conn.commit()
+        print(f"  Rivalries:           {n_rivalries}")
+        print(f"    rematch_hungry:    {n_rematch}")
+        print(f"    bad_blood:         {n_bad_blood}")
+        print(f"    title_rivalry:     {n_title_rivalry}")
+
+    # ----------------------------------------------------------------
     # Summary
     # ----------------------------------------------------------------
     print()
@@ -527,6 +750,8 @@ def main():
     print(f"  Titles:               {n_titles}")
     print(f"  Active contracts:     {n_contracts}")
     print(f"  Injuries:             {n_injuries}")
+    if 'n_rivalries' in locals():
+        print(f"  Seed-time rivalries: {n_rivalries}")
     print("=" * 60)
     print()
     print("Next: python scripts/seed_world_phase5.py (bios, gym histories, retired legends, news)")

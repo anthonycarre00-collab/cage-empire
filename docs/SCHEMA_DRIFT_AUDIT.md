@@ -153,6 +153,7 @@ historical fights have no round data.
 | `weight_cut_log` | yes (fighter_id, fight_id, event_id, weight_class_id, cut_date, target_weight_kg, actual_weight_kg, weight_missed_kg, cut_outcome, cardio_penalty, purse_penalty_pct, is_title_fight) | no | yes (v2.7.0) | `OK` — Task 17 |
 | `fighter_descriptors` | yes (fighter_id, attribute_descriptors, personality_descriptors, career_stage, career_health_desc, overall_desc, potential_desc, snapshot_version) | no | yes (v2.8.0) | `OK` — Task 19 |
 | `scouting_reports` | yes (scout_id, target_fighter_id, promotion_id, report_date, estimated_potential, estimated_ceiling, estimated_floor, estimated_strengths, estimated_weaknesses, marketability_assessment, injury_risk_assessment, contract_cost_estimate, scout_confidence, is_stale, report_text) | no | yes (v2.9.0) | `OK` — Task 18 |
+| `suspensions` | yes (fighter_id, suspension_type, start_date, end_date, duration_days, is_active) | no | yes (Phase B / v3.4.0) | `OK` — Phase B (B1+B2) added 9-column suspensions table (5 suspension_type values via CHECK, duration_days > 0 CHECK, is_active 0/1 CHECK, fighter_id FK NOT NULL ON DELETE CASCADE). Written by src/suspensions.py event-bus subscribers (FIGHT_RESOLVED → _maybe_random_suspension with 1% drug_test + 0.5% behavior chance; TICK_ADVANCED → check_suspension_recovery clears expired suspensions). Read by app._pick_matchup (SQL NOT IN excludes suspended fighters from booking, parallel to the injury exclusion). Player-facing narrative written by news.generate_suspension_news polling subscriber (topic='suspension'). NO raw duration day counts in news text per §14 — uses word-form phrases ("an extended ban", "a multi-month suspension"). Per docs/FULL_BUILD_AUDIT.md §9a. |
 
 ---
 
@@ -417,7 +418,7 @@ This is a minor convention deviation. The tests are:
 | Staff & broadcast | 2 | 2 (thin) | 2 (thin) | 0 tables, ~17 columns thin, no UI tab |
 | Contracts | 4 | 0 | 4 | 0 |
 | Events & fights | 5 | 4 | 4 | 1 table (fight_rounds still missing) |
-| Career & medical | 2 | 0 | 0 | 2 tables (Task 15-16) |
+| Career & medical | 2 | 0 | 6 (injuries Task 15, training_camps Task 16, weight_cut_log Task 17, fighter_descriptors Task 19, scouting_reports Task 18, suspensions Phase B) | 0 tables |
 | Scouting & analysis | 3 | 0 | 1 (matchup_analyses Task 24) | 2 tables (scouting_reports → Task 18, betting_odds → follow-up) |
 | News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, follow-up to Task 24) |
 | Rankings & titles | 2 | 0 | 2 | 0 |
@@ -428,7 +429,7 @@ This is a minor convention deviation. The tests are:
 | Portraits & art | 2 | 0 | 0 | 2 tables (Task 29) |
 | Finances | 1 | 0 | 0 | 1 table (Task 20) |
 | Modding | 1 | 0 | 0 | 1 table (Task 29) |
-| **TOTAL TABLES** | **~60** | **24** | **49** (48 user + 1 sqlite_sequence) | **~11 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, fighter_bios variants, hall_of_fame polish, etc.) |
+| **TOTAL TABLES** | **~60** | **24** | **50** (49 user + 1 sqlite_sequence) | **~10 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, fighter_bios variants, hall_of_fame polish, etc.) |
 | **TOTAL THIN COLUMNS** | — | — | — | **~67 columns** (geography 20 + promotions/gyms 16 + fighters 14 + staff 17) |
 | **WRONG (critical)** | — | — | — | **fighter_attributes (4/24) + fighter_personality (3/17)** — 34 columns missing |
 
@@ -445,7 +446,9 @@ This is a minor convention deviation. The tests are:
   finance_transactions (20), social_posts (21), rivalries (22).
 - Built v3.3.0 (Task 24): 49 tables (48 user + 1 sqlite_sequence).
   +1 from Task 24: matchup_analyses (punditry / matchup analysis).
-- 28 acceptance tests, 1700+ sub-checks, all passing.
+- Built v3.4.0 (Phase B — B1+B2): 50 tables (49 user + 1 sqlite_sequence).
+  +1 from Phase B: suspensions (fighter drug test / behavior bans).
+- 31 acceptance tests, 1900+ sub-checks, all passing.
 
 **Most critical gaps (priority order):**
 1. **fighter_attributes + fighter_personality extension** (Z.1) —

@@ -8,6 +8,85 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Phase B — B1+B2: Fighter suspensions + seed-time rivalries/social, schema 3.3.0 → 3.4.0 MINOR)
+- New `suspensions` table — one row per fighter suspension (drug
+  test failure, behavior, missed_weight_repeat, post_fight_brawl,
+  social_media_violation). 9 columns: suspension_id PK, fighter_id
+  FK (NOT NULL ON DELETE CASCADE), suspension_type (TEXT NOT NULL
+  CHECK IN 5 values), start_date (TEXT NOT NULL), end_date (TEXT
+  NOT NULL), duration_days (INTEGER NOT NULL CHECK > 0 — internal
+  only, NOT player-facing per §14), description (TEXT — admin
+  note), is_active (INTEGER NOT NULL DEFAULT 1 CHECK IN 0,1),
+  created_at. Migration `v3_4_0_add_suspensions`. Per CONVENTIONS
+  §5 (one table-group per task), this task adds ONLY the
+  `suspensions` table. Per docs/FULL_BUILD_AUDIT.md §9a.
+- New `src/suspensions.py` — entirely event-bus-driven (subscribes
+  to FIGHT_RESOLVED + TICK_ADVANCED per CONVENTIONS §15.4):
+  * `_maybe_random_suspension(conn, event)` — FIGHT_RESOLVED
+    subscriber. 1% chance of drug_test_failure (6-12 month ban,
+    morale -20, marketability -15). 0.5% chance of behavior
+    (3-6 month ban, morale -10) — bumped to 1.5% for high-
+    aggression + low-discipline "loose cannon" fighters
+    (aggression >= 70 AND discipline <= 30 → 3x multiplier).
+  * `check_suspension_recovery(conn, event)` — TICK_ADVANCED
+    subscriber. Clears active suspensions whose end_date has
+    passed (sets is_active=0).
+  * `is_fighter_suspended(conn, fighter_id)` — reader. Returns
+    True if the fighter has an active suspension.
+  * `register_subscribers()` — registers both subscribers on the
+    global event bus. Wired into `App.__init__` (lazy import,
+    defensive `except ImportError`).
+- `src/app.py` `_pick_matchup` modified — SQL excludes fighters
+  with active suspensions (`AND fighter_id NOT IN (SELECT
+  fighter_id FROM suspensions WHERE is_active = 1)`), parallel to
+  the existing injury exclusion. A suspended fighter cannot be
+  booked until cleared (CONVENTIONS §5.3 — every new table ships
+  with a reader).
+- `src/news.py` extended — new `generate_suspension_news` polling
+  subscriber on TICK_ADVANCED. Scans the suspensions table for:
+  (1) active suspensions with no creation news → writes a scandal-
+  style headline + body (tabloid "BREAKING:" / "SHOCK:" prefixes
+  via `_apply_source_tone`); (2) cleared suspensions with no
+  clearance news → writes a "cleared to return" / "reinstated"
+  narrative. Uses voice.describe_career_stage for narrative weight
+  ("the reigning champion fails a drug test" is a generational
+  scandal; "an unproven prospect fails a drug test" is a cautionary
+  tale). Duration described via word-form phrases ("an extended
+  ban", "a multi-month suspension") — NO raw day counts per §14.
+  Dedup via hidden `[suspension_id=N:create|clear]` marker in the
+  body. Added 'suspension' to `_NEWS_PRUNE_KEEP_TOPICS` (legacy
+  stories the player wants to browse years later).
+- `scripts/seed_world_phase4.py` extended — new seed-time rivalry
+  generation block (per docs/FULL_BUILD_AUDIT.md §4e). Three
+  flavors: rematch_hungry (heat 60, pairs who fought 2+ times),
+  bad_blood (heat 70, controversial decisions with score_margin
+  <= 2), title_rivalry (heat 80, champion vs same-WC same-promo
+  contender). Uses `rivalries._create_rivalry` so seed-time
+  rivalries have voice-layer-driven origin_descriptions. Backfills
+  head-to-head counts (fights_count, fighter_a_wins, fighter_b_wins,
+  draws) from the historical fight record. Idempotent — skips if
+  rivalries already exist. World seed produces 94 rivalries (40
+  rematch_hungry + 24 bad_blood + 30 title_rivalry).
+- `scripts/seed_world_phase5.py` extended — new seed-time social
+  post generation block (per docs/FULL_BUILD_AUDIT.md §3). Three
+  flavors: rivalry-driven (1-2 callout/trash_talk posts per active
+  rivalry), champion brag (1 brag post per current champion),
+  prospect hype (1 hype post per elite-potential fighter age < 24).
+  Uses `social.generate_post` so posts use voice-layer descriptors.
+  Idempotent — skips if social_posts already has rows. World seed
+  produces 281 social posts (90 callout + 79 trash_talk + 110 brag
+  + 2 hype).
+- New `scripts/test_suspensions.py` — 52 sub-checks across 10
+  cases (A-J). Tests schema + CHECKs, drug_test trigger, behavior
+  trigger + loose-cannon multiplier, recovery, is_fighter_suspended
+  reader, _pick_matchup exclusion, no-raw-numbers (§14), seed-time
+  rivalries (H, 50+), seed-time social posts (I, 100+), Design Law
+  (§13: Conflict + Stories + Anticipation). Follows the dynamic
+  version pattern (§10) — reads EXPECTED_CODE_VERSION from
+  build_db.CODE_SCHEMA_VERSION. Cases H + I SKIP gracefully if the
+  world DB isn't present (run scripts/seed_world_phase1-5.py to
+  enable).
+
 ### Added (Task 24 — Punditry / matchup analysis, schema 3.2.0 → 3.3.0 MINOR)
 - New `matchup_analyses` table — the pundit's pre-fight prediction
   for a fighter pair. 13 columns: analysis_id PK, fighter_a_id +

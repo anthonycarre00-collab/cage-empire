@@ -750,6 +750,170 @@ def main():
     print(f"  News items: {n_news}")
 
     # ----------------------------------------------------------------
+    # Phase B (B2): Seed-time social posts.
+    #
+    # Per docs/FULL_BUILD_AUDIT.md §3 ("The world seed doesn't
+    # generate any social_posts. The table is empty until the player
+    # starts resolving fights. Should have seed-time posts") and the
+    # Phase B brief, generate ~100-200 seed-time social posts so the
+    # social feed feels lived-in from day 1. Three flavors:
+    #
+    #   1. Rivalry-driven (callout / trash_talk): for each ACTIVE
+    #      rivalry, generate 1-2 posts between the rivals. The post
+    #      type is rng-picked between 'callout' and 'trash_talk'
+    #      (weighted toward 'callout' since that's the more natural
+    #      "I want the rematch" beat). Uses social.generate_post so
+    #      the post_text uses voice-layer descriptors (§14).
+    #   2. Champion brag: for each current champion, generate 1 'brag'
+    #      post. Champions brag — they hold the belt.
+    #   3. Prospect hype: for top prospects (elite potential, age <
+    #      24), generate 1 'hype' post. Prospects are hyped — the
+    #      future is bright.
+    #
+    # All posts use the sim clock's current_date as post_date so they
+    # appear as "recent" in the social feed. The generate_post
+    # function handles the voice-layer descriptor rendering, the
+    # engagement computation, and the beef-escalation flagging.
+    # ----------------------------------------------------------------
+    print("Generating seed-time social posts...")
+    import sys as _sys_social
+    _sys_social.path.insert(0, str(PROJECT_DIR / "src"))
+    import social as _social
+
+    rng_social = random.Random(20260725 + 1)  # distinct from main phase5 RNG
+    sim_date_str = SIM_DATE.strftime("%Y-%m-%d")
+    n_posts = 0
+    n_rivalry_posts = 0
+    n_champ_posts = 0
+    n_prospect_posts = 0
+
+    # Skip if Phase 5 social posts already seeded (idempotent — if
+    # the social_posts table already has rows, we assume the seed
+    # ran OR in-game ticks have added posts; either way, we don't
+    # want to stack duplicates on top).
+    existing_posts = conn.execute(
+        "SELECT COUNT(*) FROM social_posts"
+    ).fetchone()[0]
+    if existing_posts > 0:
+        print(f"  Already {existing_posts} social_posts — skipping seed-time social post generation.")
+    else:
+        # ----- 1. Rivalry-driven posts -------------------------------
+        # Iterate all active rivalries. For each, generate 1-2 posts
+        # between the two fighters. The post_type is rng-picked
+        # between 'callout' (weight 3) and 'trash_talk' (weight 2).
+        # The poster is rng-picked between fighter_a and fighter_b
+        # (with the target being the other). This seeds a realistic
+        # mix of "I want the rematch" callouts and "you got lucky"
+        # trash talk.
+        active_rivalries = conn.execute(
+            "SELECT rivalry_id, fighter_a_id, fighter_b_id, "
+            "rivalry_type, rivalry_heat "
+            "FROM rivalries WHERE is_active=1"
+        ).fetchall()
+        for (riv_id, a_id, b_id, rtype, heat) in active_rivalries:
+            # 1-2 posts per rivalry (higher heat → more likely 2).
+            n_for_this = 2 if (heat >= 70 or rng_social.random() < 0.5) else 1
+            for _ in range(n_for_this):
+                # Pick poster + target.
+                if rng_social.random() < 0.5:
+                    poster, target = a_id, b_id
+                else:
+                    poster, target = b_id, a_id
+                # Pick post type.
+                post_type = rng_social.choices(
+                    ["callout", "trash_talk"], weights=[3, 2], k=1,
+                )[0]
+                # Pick a post_date in the recent past (1-30 days ago)
+                # so the feed shows a mix of "today" and "last week"
+                # posts (a fresh feed with all today-dated posts would
+                # look artificial).
+                days_ago = rng_social.randint(0, 30)
+                post_date = (SIM_DATE - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+                try:
+                    post_id = _social.generate_post(
+                        conn, poster, post_type,
+                        target_fighter_id=target,
+                        post_date=post_date, rng=rng_social,
+                        bypass_cooldown=True,  # seed-time — no cooldown
+                    )
+                    if post_id is not None:
+                        n_posts += 1
+                        n_rivalry_posts += 1
+                except Exception as e:
+                    # Defensive — a single failed post shouldn't kill
+                    # the seed. Log and continue.
+                    print(f"    WARN: rivalry post failed for {poster}->{target}: {e}")
+
+        # ----- 2. Champion brag posts -------------------------------
+        # For each current champion, generate 1 'brag' post. Champions
+        # brag — they hold the belt. No target_fighter_id (a brag is
+        # a general "I'm the champ" post, not aimed at a specific
+        # rival).
+        champions = conn.execute(
+            "SELECT t.current_champion_fighter_id "
+            "FROM titles t "
+            "WHERE t.current_champion_fighter_id IS NOT NULL "
+            "AND t.is_vacant = 0"
+        ).fetchall()
+        for (champ_id,) in champions:
+            days_ago = rng_social.randint(0, 14)
+            post_date = (SIM_DATE - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            try:
+                post_id = _social.generate_post(
+                    conn, champ_id, "brag",
+                    post_date=post_date, rng=rng_social,
+                    bypass_cooldown=True,
+                )
+                if post_id is not None:
+                    n_posts += 1
+                    n_champ_posts += 1
+            except Exception as e:
+                print(f"    WARN: champ brag post failed for {champ_id}: {e}")
+
+        # ----- 3. Prospect hype posts -------------------------------
+        # For top prospects (elite potential, age < 24), generate 1
+        # 'hype' post. "Elite potential" maps to the voice.py tier
+        # 'elite' (potential >= 90). The brief says "top prospects
+        # (elite potential, age < 24)". We use the sim_date to
+        # compute age from date_of_birth (same as the bio tone picker).
+        prospects = conn.execute(
+            "SELECT f.fighter_id, f.date_of_birth "
+            "FROM fighters f "
+            "JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+            "WHERE f.is_active = 1 AND f.is_retired = 0 "
+            "AND fc.potential >= 90 "
+            "AND f.current_promotion_id IS NOT NULL"
+        ).fetchall()
+        for (fid, dob) in prospects:
+            # Compute age.
+            try:
+                dob_dt = datetime.strptime(dob, "%Y-%m-%d")
+                age = (SIM_DATE - dob_dt).days // 365
+            except (ValueError, TypeError):
+                continue
+            if age >= 24:
+                continue
+            days_ago = rng_social.randint(0, 21)
+            post_date = (SIM_DATE - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            try:
+                post_id = _social.generate_post(
+                    conn, fid, "hype",
+                    post_date=post_date, rng=rng_social,
+                    bypass_cooldown=True,
+                )
+                if post_id is not None:
+                    n_posts += 1
+                    n_prospect_posts += 1
+            except Exception as e:
+                print(f"    WARN: prospect hype post failed for {fid}: {e}")
+
+        conn.commit()
+        print(f"  Social posts:        {n_posts}")
+        print(f"    rivalry-driven:    {n_rivalry_posts}")
+        print(f"    champion brags:    {n_champ_posts}")
+        print(f"    prospect hype:     {n_prospect_posts}")
+
+    # ----------------------------------------------------------------
     # Summary
     # ----------------------------------------------------------------
     print()
@@ -758,6 +922,8 @@ def main():
     print(f"  Fighter bios:        {n_bios}")
     print(f"  Hall of Fame legends: {legend_count}")
     print(f"  News items:          {n_news}")
+    if 'n_posts' in locals():
+        print(f"  Seed-time social posts: {n_posts}")
 
     # ----------------------------------------------------------------
     # v2.9.0 (Task 19): populate fighter_descriptors snapshots for

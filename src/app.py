@@ -2900,6 +2900,14 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
         "WHERE current_promotion_id = ? AND is_active = 1 "
         "AND weight_class_id = ? "
         "AND fighter_id NOT IN (SELECT fighter_id FROM injuries WHERE is_active = 1)"
+        # v3.4.0 (Phase B): also exclude fighters with active
+        # suspensions. A suspended fighter cannot be booked — the
+        # commission / promotion hasn't cleared them to compete.
+        # Parallel to the injury exclusion above. The reader is
+        # src/suspensions.py:is_fighter_suspended (CONVENTIONS §5.3
+        # — every new table ships with at least one reader; the
+        # SQL form here is the in-query equivalent for efficiency).
+        " AND fighter_id NOT IN (SELECT fighter_id FROM suspensions WHERE is_active = 1)"
     )
     params = [promotion_id, weight_class_id]
     if exclude_fighter_ids:
@@ -6238,6 +6246,27 @@ class App(tk.Tk):
             _register_morale()
         except ImportError:
             pass  # morale.py not available — legacy behavior
+        # v3.4.0 (Phase B): register the suspensions subscribers on
+        # the global event bus. The suspensions system writes
+        # `suspensions` rows in response to FIGHT_RESOLVED (random
+        # drug-test / behavior trigger — rare events that generate
+        # big stories per docs/FULL_BUILD_AUDIT.md §9a) and clears
+        # them on TICK_ADVANCED (when end_date has passed). The
+        # news engine writes the player-facing narrative via a
+        # separate TICK_ADVANCED polling subscriber (news.
+        # generate_suspension_news). app._pick_matchup reads the
+        # suspensions table (SQL `NOT IN (SELECT fighter_id FROM
+        # suspensions WHERE is_active = 1)`) to exclude suspended
+        # fighters from booking — parallel to the existing injury
+        # exclusion. CONVENTIONS §15.4 — additive, no inline side
+        # effects added to resolve_next_fight or run_tick. Lazy
+        # import for the same reasons as news.py / social.py /
+        # rivalries.py / punditry.py / morale.py above.
+        try:
+            from suspensions import register_subscribers as _register_suspensions
+            _register_suspensions()
+        except ImportError:
+            pass  # suspensions.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.
