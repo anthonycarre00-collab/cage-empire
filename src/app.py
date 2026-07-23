@@ -4138,6 +4138,233 @@ def _check_post_fight_injuries(conn, fight_id, event_id, event_date,
     return injury_ids
 
 
+# ----------------------------------------------------------------
+# Phase A — A12: Preferred Gameplans + Bad Matchup Tags.
+#
+# The fighters.preferred_gameplans and fighters.bad_matchup_tags
+# columns are TEXT (nullable, JSON arrays) and were NULL for ALL
+# fighters at seed time. Phase A12 wires them dynamically based on
+# fight outcomes:
+#
+#   preferred_gameplans (A12a):
+#     - After a WIN, derive the winner's preferred gameplans from
+#       their attribute profile (the "winning gameplan" is the one
+#       their attributes most exemplify). Add to their existing list
+#       (no duplicates, cap at 3).
+#
+#   bad_matchup_tags (A12b):
+#     - After a LOSS, derive bad matchup tags from the result type
+#       and the opponent's style archetype. Add to their existing
+#       list (no duplicates, cap at 5).
+#
+# The population happens INSIDE resolve_next_fight — the brief
+# explicitly allows this exception to §15.4 (no new inline side
+# effects) because it's a direct DB write that enriches existing
+# fighter data, parallel to fight_history / rankings / titles
+# updates already in the function. It is NOT a new system
+# subscribing to events.
+#
+# Per §14: the JSON arrays are internal data (NOT player-facing
+# text). The UI will eventually display them as descriptor strings
+# ("prefers boxing pressure" / "vulnerable to strikers") via the
+# voice layer when a Task 19+ UI screen renders them. The raw JSON
+# is the storage format; the descriptor is the display format.
+# ----------------------------------------------------------------
+
+# Each rule fires when BOTH listed attributes are >= _GAMEPLAN_THRESHOLD
+# (the "capable" tier per voice.py §14.3 — 60 is the boundary between
+# "average" and "capable"). The 6 gameplans match the brief's spec
+# verbatim. "aggression" is a personality trait (loaded into stats
+# via _FIGHTER_PERS_COLUMNS) so the volume_striking rule works the
+# same way as the attribute-based rules.
+_GAMEPLAN_RULES = (
+    ("boxing_pressure",     "punch_power",       "punch_accuracy"),
+    ("wrestling_dominance", "takedown_offense",  "top_control"),
+    ("submission_hunting",  "submission_offense", "bottom_game"),
+    ("counter_striking",    "head_movement",     "footwork"),
+    ("volume_striking",     "cardio",            "aggression"),
+    ("cage_grinding",       "clinch_offense",    "cage_wrestling"),
+)
+
+_GAMEPLAN_THRESHOLD = 60   # voice.py "capable" tier floor
+_GAMEPLAN_CAP = 3
+_BAD_MATCHUP_CAP = 5
+
+
+def _derive_preferred_gameplans(stats):
+    """Derive up to 3 preferred gameplans from a fighter's stats dict.
+
+    Each gameplan rule fires when BOTH required attributes are >=
+    _GAMEPLAN_THRESHOLD (the "capable" tier per voice.py §14.3).
+    Multiple rules can fire; the top 3 by combined attribute value
+    are returned (deterministic ordering — highest combined value
+    first, so a fighter's truest style wins the slot).
+
+    Args:
+        stats: dict from _load_fighter_stats (25 attributes + 20
+            personality + 3 meta columns). All values are ints 0-100.
+
+    Returns:
+        A list of 0-3 gameplan name strings.
+    """
+    matches = []
+    for gameplan, attr1, attr2 in _GAMEPLAN_RULES:
+        v1 = stats.get(attr1)
+        v2 = stats.get(attr2)
+        if v1 is None or v2 is None:
+            continue
+        if v1 >= _GAMEPLAN_THRESHOLD and v2 >= _GAMEPLAN_THRESHOLD:
+            matches.append((gameplan, v1 + v2))
+    # Sort by combined attribute value (highest first) for deterministic
+    # ordering when more than 3 rules fire.
+    matches.sort(key=lambda x: x[1], reverse=True)
+    return [g for g, _ in matches[:_GAMEPLAN_CAP]]
+
+
+def _update_preferred_gameplans(conn, fighter_id, new_gameplans):
+    """Update a fighter's preferred_gameplans JSON column.
+
+    Reads the existing list (or empty list if NULL/malformed), adds
+    new_gameplans (no duplicates, preserves order), caps at
+    _GAMEPLAN_CAP, writes back as JSON.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the fighter to update.
+        new_gameplans: list of gameplan name strings to add.
+    """
+    if not new_gameplans:
+        return
+    row = conn.execute(
+        "SELECT preferred_gameplans FROM fighters WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if not row:
+        return
+    existing = []
+    if row[0]:
+        try:
+            parsed = json.loads(row[0])
+            if isinstance(parsed, list):
+                existing = [str(g) for g in parsed]
+        except (json.JSONDecodeError, TypeError):
+            existing = []
+    # Add new gameplans (dedupe, preserve order — existing first,
+    # then new ones in the order they appear in new_gameplans).
+    seen = set(existing)
+    for g in new_gameplans:
+        if g not in seen:
+            existing.append(g)
+            seen.add(g)
+            if len(existing) >= _GAMEPLAN_CAP:
+                break
+    # Cap at _GAMEPLAN_CAP (defensive — should already be capped by
+    # the loop above, but a pre-existing over-cap list would survive).
+    existing = existing[:_GAMEPLAN_CAP]
+    conn.execute(
+        "UPDATE fighters SET preferred_gameplans=?, "
+        "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+        (json.dumps(existing), fighter_id),
+    )
+
+
+def _derive_bad_matchup_tags(result_type, opponent_style_name):
+    """Derive bad matchup tags from a loss result + opponent's style.
+
+    Per the brief:
+      - Lost by KO/TKO to a Striker → "vulnerable_to_strikers"
+      - Lost by submission to a Grappler → "vulnerable_to_submission"
+      - Lost by decision to a Wrestler → "vulnerable_to_wrestlers"
+      - Lost to a Brawler (any result type) → "vulnerable_to_brawlers"
+      - Lost by doctor stoppage (any opponent style) → "cut_prone"
+
+    Args:
+        result_type: the fights.result_type string.
+        opponent_style_name: the opponent's style_archetype name
+            (e.g. "Striker", "Grappler", "Wrestler", "Brawler",
+            "Counter-Striker", "Submission Specialist", "Balanced").
+
+    Returns:
+        A list of bad matchup tag strings (may be empty).
+    """
+    tags = []
+    rt = (result_type or "").lower()
+    style = opponent_style_name or ""
+    if rt in ("ko_tko", "ko", "tko") and style == "Striker":
+        tags.append("vulnerable_to_strikers")
+    if rt == "submission" and style == "Grappler":
+        tags.append("vulnerable_to_submission")
+    if rt == "decision" and style == "Wrestler":
+        tags.append("vulnerable_to_wrestlers")
+    if style == "Brawler":
+        tags.append("vulnerable_to_brawlers")
+    if rt == "doctor_stoppage":
+        tags.append("cut_prone")
+    return tags
+
+
+def _update_bad_matchup_tags(conn, fighter_id, new_tags):
+    """Update a fighter's bad_matchup_tags JSON column.
+
+    Reads the existing list (or empty list if NULL/malformed), adds
+    new_tags (no duplicates, preserves order), caps at
+    _BAD_MATCHUP_CAP, writes back as JSON.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the fighter to update.
+        new_tags: list of tag strings to add.
+    """
+    if not new_tags:
+        return
+    row = conn.execute(
+        "SELECT bad_matchup_tags FROM fighters WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if not row:
+        return
+    existing = []
+    if row[0]:
+        try:
+            parsed = json.loads(row[0])
+            if isinstance(parsed, list):
+                existing = [str(t) for t in parsed]
+        except (json.JSONDecodeError, TypeError):
+            existing = []
+    # Add new tags (dedupe, preserve order).
+    seen = set(existing)
+    for t in new_tags:
+        if t not in seen:
+            existing.append(t)
+            seen.add(t)
+            if len(existing) >= _BAD_MATCHUP_CAP:
+                break
+    existing = existing[:_BAD_MATCHUP_CAP]
+    conn.execute(
+        "UPDATE fighters SET bad_matchup_tags=?, "
+        "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+        (json.dumps(existing), fighter_id),
+    )
+
+
+def _opponent_style_archetype_name(conn, fighter_id):
+    """Return the fighter's style_archetype name (or None).
+
+    Used by A12b to look up the opponent's style archetype when
+    deriving bad_matchup_tags. The query joins fighters →
+    style_archetypes so the caller gets the human-readable name
+    ("Striker", "Grappler", etc.) directly.
+    """
+    row = conn.execute(
+        "SELECT sa.name FROM fighters f "
+        "LEFT JOIN style_archetypes sa "
+        "ON sa.style_archetype_id = f.fight_style_archetype_id "
+        "WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def resolve_next_fight(conn):
     """Resolve the next scheduled fight using the beat-level engine (Task B2).
 
@@ -4952,6 +5179,44 @@ def resolve_next_fight(conn):
     # so the UI can read it without recomputing on every view.
     update_fighter_descriptor_snapshot(conn, a_id)
     update_fighter_descriptor_snapshot(conn, b_id)
+
+    # ----------------------------------------------------------------
+    # Phase A — A12: Preferred Gameplans + Bad Matchup Tags.
+    #
+    # Populate fighters.preferred_gameplans (A12a) for the winner and
+    # fighters.bad_matchup_tags (A12b) for the loser, based on the
+    # fight outcome. Both columns are TEXT (JSON arrays), nullable,
+    # and were NULL for all 4000 fighters at seed time. This is the
+    # system that finally writes to them.
+    #
+    # The brief explicitly allows this inline write inside
+    # resolve_next_fight (an exception to §15.4) because it's a
+    # direct DB write that enriches existing fighter data, parallel
+    # to fight_history / rankings / titles updates already in this
+    # function. It is NOT a new system subscribing to events.
+    #
+    # A12a — winner: derive preferred gameplans from their attribute
+    # profile (the "winning gameplan" is the one their attributes
+    # most exemplify) and add to their existing list (no duplicates,
+    # cap at 3).
+    #
+    # A12b — loser: derive bad matchup tags from the result type +
+    # opponent's style archetype and add to their existing list (no
+    # duplicates, cap at 5). Skipped for draws (no loser).
+    # ----------------------------------------------------------------
+    if result_type != "draw" and winner_id is not None:
+        winner_stats = stats_a if winner_id == a_id else stats_b
+        winner_gameplans = _derive_preferred_gameplans(winner_stats)
+        if winner_gameplans:
+            _update_preferred_gameplans(conn, winner_id, winner_gameplans)
+
+    if result_type != "draw" and loser_id is not None:
+        # Look up the opponent's (winner's) style archetype name for
+        # the bad_matchup_tags derivation. The opponent is the winner.
+        opponent_style = _opponent_style_archetype_name(conn, winner_id)
+        loser_tags = _derive_bad_matchup_tags(result_type, opponent_style)
+        if loser_tags:
+            _update_bad_matchup_tags(conn, loser_id, loser_tags)
 
     # v2.9.1 (Task 18.5): publish FIGHT_RESOLVED event on the event bus.
     # Stage 4+ systems (finances, social media, rivalries, news engine,

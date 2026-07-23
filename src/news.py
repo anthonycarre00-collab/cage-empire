@@ -34,7 +34,9 @@ NEWS SOURCE VARIETY (A4):
 
 EVENTS SUBSCRIBED (Phase A5):
   FIGHT_RESOLVED → generate_fight_news + generate_injury_news
-  TITLE_CHANGED  → generate_title_news
+  TITLE_CHANGED  → generate_title_news + generate_memory_resurfacing_news
+                   (A11a — torch-passing news when new champ has a
+                   'successor' memory link to a retired legend)
   TICK_ADVANCED  → generate_retirement_news (polls for newly
                    retired fighters identified by the existing
                    inline 'retirement' topic news written by
@@ -547,7 +549,7 @@ def _promotion_name(conn, promo_id):
 def _write_news_item(conn, headline, body, sentiment="neutral",
                      event_id=None, fight_id=None, fighter_id=None,
                      promotion_id=None, published_at=None, rng=None,
-                     source_id=None):
+                     source_id=None, topic=None):
     """Write a news_engine topic news item to news_items.
 
     A4 — if source_id is None (the default), pick a weighted-random
@@ -557,11 +559,19 @@ def _write_news_item(conn, headline, body, sentiment="neutral",
     Pass source_id explicitly to bypass the random pick + tone
     (used by subscribers that have a specific source already chosen,
     e.g., the CAGE Wire for legacy consistency on certain items).
+
+    A11a — the optional `topic` parameter (default None) lets a caller
+    write the item under a different topic than NEWS_TOPIC. Used by
+    the memory resurfacing subscriber (topic='memory_resurfacing')
+    so future UI filters can group legacy/torch-passing news
+    separately from the general 'news_engine' feed.
     """
     if rng is None:
         rng = random.Random()
     if source_id is None:
         source_id = _get_random_news_source(conn, rng=rng)
+    if topic is None:
+        topic = NEWS_TOPIC
     src_name = _source_name(conn, source_id)
     final_headline = _apply_source_tone(headline, src_name, rng=rng)
     conn.execute(
@@ -569,7 +579,7 @@ def _write_news_item(conn, headline, body, sentiment="neutral",
         "sentiment, topic, event_id, fight_id, fighter_id, "
         "promotion_id, published_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (source_id, final_headline, body, sentiment, NEWS_TOPIC,
+        (source_id, final_headline, body, sentiment, topic,
          event_id, fight_id, fighter_id, promotion_id, published_at),
     )
 
@@ -905,6 +915,152 @@ def generate_title_news(conn, event):
         conn, headline, body, sentiment="positive",
         event_id=event_id, fight_id=fight_id, fighter_id=winner_id,
         promotion_id=promo_id, published_at=since_date,
+    )
+
+
+# ----------------------------------------------------------------
+# MEMORY RESURFACING NEWS — A11a subscriber for TITLE_CHANGED
+#
+# When a new champion is crowned, the engine checks the
+# `fighter_memory_links` table for a 'successor' link on the new
+# champion's fighter_id. The regen system (tick_processor.
+# _check_retirements) writes these rows when a retiring champion
+# spawns a regen replacement — the replacement inherits the
+# retiring fighter's style archetype and gets a memory link
+# pointing back to the legend. Before A11a, that link was written
+# but NEVER read. This subscriber closes the loop: when the
+# successor wins a title of their own, the news engine tells the
+# story ("the torch passes", "echoes of the legend", "honors the
+# memory"). This is the Legacy pillar of the Design Law (§13) —
+# the world remembers what the player built.
+#
+# The news item is ADDITIONAL to generate_title_news (the standard
+# title change writeup). It uses topic='memory_resurfacing' so
+# future UI filters can group legacy/torch-passing stories
+# separately. The item is kept indefinitely by the A6 pruner
+# (added to _NEWS_PRUNE_KEEP_TOPICS) — memory stories are the
+# kind of long-tail content the player collects.
+# ----------------------------------------------------------------
+
+_MEMORY_HEADLINES = [
+    "The torch passes — {new_champ} carries the legacy of {legend}",
+    "Fans see echoes of {legend} in {new_champ}'s style",
+    "{new_champ} honors the memory of {legend} with the title win",
+    "A new chapter for an old story — {new_champ} channels {legend}",
+    "Echoes of the past — {new_champ} takes the throne {legend} once held",
+]
+
+_MEMORY_BODY_TEMPLATES = [
+    "{new_champ_full}, {new_champ_art} {new_champ_stage}, ascends to the "
+    "title — and fight fans can't help but remember {legend_full} "
+    "({legend_art} {legend_stage}). The echoes are unmistakable: the "
+    "same approach, the same killer instinct, a style passed down like "
+    "an heirloom. The legacy lives on.",
+
+    "Gold finds a familiar home. {new_champ_full}, {new_champ_art} "
+    "{new_champ_stage}, captures the title — and the comparisons to "
+    "{legend_full} ({legend_art} {legend_stage}) write themselves. "
+    "The sport has a long memory, and tonight it whispers a name from "
+    "a different era.",
+
+    "The crown passes, the memory endures. {new_champ_full} "
+    "({new_champ_art} {new_champ_stage}) honors {legend_full} "
+    "({legend_art} {legend_stage}) with the title win — a stylistic "
+    "succession that the old champion would have recognized and "
+    "respected. The torch has been passed.",
+
+    "{new_champ_full} ({new_champ_art} {new_champ_stage}) steps into "
+    "the role {legend_full} ({legend_art} {legend_stage}) once owned. "
+    "The title belt may be new in their hands, but the style, the "
+    "instincts, the very DNA of the approach — all of it recalls a "
+    "legend whose name still echoes through the division.",
+]
+
+
+def generate_memory_resurfacing_news(conn, event):
+    """Subscriber for TITLE_CHANGED — A11a memory resurfacing.
+
+    When a new champion is crowned, check `fighter_memory_links` for
+    a 'successor' link on the new champion. If one exists, the new
+    champion is the regen replacement of a retired legend — write a
+    memory resurfacing news item that tells the torch-passing story.
+
+    The item is ADDITIONAL to generate_title_news (which already
+    wrote the standard title change writeup). Uses
+    topic='memory_resurfacing' and a random news source (per A4).
+    """
+    title_id = event.get("title_id")
+    fight_id = event.get("fight_id")
+    event_id = event.get("event_id")
+    promo_id = event.get("promotion_id")
+
+    if not title_id or not fight_id:
+        return
+
+    title_row = conn.execute(
+        "SELECT current_champion_fighter_id, champion_since_date "
+        "FROM titles WHERE title_id=?",
+        (title_id,),
+    ).fetchone()
+    if not title_row:
+        return
+    new_champ_id, since_date = title_row
+    if not new_champ_id:
+        return  # title is currently vacant — nothing to resurface
+
+    # Look for a 'successor' link on the new champion. The regen
+    # system writes these rows with fighter_id=replacement and
+    # linked_fighter_id=retiring_champion. We only care about
+    # 'successor' links — other link_types (style_echo, gym_heir,
+    # regional_rival) are not torch-passing moments and don't get
+    # the memory resurfacing news on a title win.
+    link_row = conn.execute(
+        "SELECT linked_fighter_id, link_strength "
+        "FROM fighter_memory_links "
+        "WHERE fighter_id=? AND link_type='successor' "
+        "LIMIT 1",
+        (new_champ_id,),
+    ).fetchone()
+    if not link_row:
+        return  # the new champion has no predecessor — no memory story
+    legend_id, _link_strength = link_row
+
+    # Defensive: don't resurface memory if the legend is the same as
+    # the new champ (shouldn't happen — successor links always point
+    # at a different fighter — but the UNIQUE constraint allows it).
+    if legend_id == new_champ_id:
+        return
+
+    rng = random.Random()
+
+    new_champ_full = _fighter_full_name(conn, new_champ_id)
+    new_champ_last = _fighter_last_name(conn, new_champ_id)
+    new_champ_stage = _fighter_career_stage(
+        conn, new_champ_id, rng=rng, current_date=since_date,
+    )
+    legend_full = _fighter_full_name(conn, legend_id)
+    legend_last = _fighter_last_name(conn, legend_id)
+    legend_stage = _fighter_career_stage(
+        conn, legend_id, rng=rng, current_date=since_date,
+    )
+
+    headline = rng.choice(_MEMORY_HEADLINES).format(
+        new_champ=new_champ_last, legend=legend_last,
+    )
+    body = rng.choice(_MEMORY_BODY_TEMPLATES).format(
+        new_champ_full=new_champ_full,
+        new_champ_art=_article_for(new_champ_stage),
+        new_champ_stage=new_champ_stage,
+        legend_full=legend_full,
+        legend_art=_article_for(legend_stage),
+        legend_stage=legend_stage,
+    )
+
+    _write_news_item(
+        conn, headline, body, sentiment="positive",
+        event_id=event_id, fight_id=fight_id, fighter_id=new_champ_id,
+        promotion_id=promo_id, published_at=since_date,
+        rng=rng, topic="memory_resurfacing",
     )
 
 
@@ -1772,7 +1928,9 @@ def generate_event_recap_news(conn, event):
 # ----------------------------------------------------------------
 
 # Topics that are exempt from pruning (kept forever).
-_NEWS_PRUNE_KEEP_TOPICS = frozenset({"title", "retirement", "hall_of_fame"})
+_NEWS_PRUNE_KEEP_TOPICS = frozenset({
+    "title", "retirement", "hall_of_fame", "memory_resurfacing",
+})
 
 # Pruning threshold — news older than this many days is pruned.
 _NEWS_PRUNE_AGE_DAYS = 365
@@ -1852,6 +2010,15 @@ def register_subscribers():
     bus.subscribe(
         Events.TITLE_CHANGED, generate_title_news,
         name="news.generate_title_news",
+    )
+    # A11a — memory resurfacing: ADDITIONAL subscriber on TITLE_CHANGED.
+    # Writes a torch-passing news item when the new champion has a
+    # 'successor' link in fighter_memory_links (i.e. they're the regen
+    # replacement of a retired legend). Additive to generate_title_news
+    # — both fire on TITLE_CHANGED, both write their own news item.
+    bus.subscribe(
+        Events.TITLE_CHANGED, generate_memory_resurfacing_news,
+        name="news.generate_memory_resurfacing_news",
     )
     bus.subscribe(
         Events.TICK_ADVANCED, generate_retirement_news,

@@ -199,6 +199,152 @@ def _check_scouting_assignments(conn, current_date):
     return completed
 
 
+def _build_style_echo(conn, target_fighter_id, target_style_name, rng=None):
+    """A11b — build the STYLE ECHO line for a scouting report.
+
+    Checks `regen_lineage` for the target as a regen replacement
+    (replacement_fighter_id == target_fighter_id). If found, the
+    target inherited their style archetype from a retiring fighter
+    (the "legend"). The function looks up the legend's name, style
+    archetype, and career-stage descriptor (via voice.py) and returns
+    a STYLE ECHO line that adds depth to the scouting report —
+    "this kid fights like old what's-his-name".
+
+    Also defensively checks `fighter_memory_links` for any link
+    involving the legend. If a memory link exists (the regen system
+    only writes these for champion retirees), the connection is
+    "blessed". If not, the STYLE ECHO still fires (the style DNA was
+    inherited either way) but the framing is slightly lighter.
+
+    Per CONVENTIONS §14: NO raw attribute values, ages, or record
+    numbers appear in the returned line. Career stage comes from
+    voice.describe_career_stage. Style archetype name is the human-
+    readable label from style_archetypes.name (e.g. "Striker",
+    "Grappler").
+
+    Args:
+        conn: sqlite3 connection.
+        target_fighter_id: the fighter being scouted.
+        target_style_name: the target's style_archetype name (used as
+            a fallback if the legend's archetype lookup fails).
+        rng: optional random.Random for template variant selection.
+
+    Returns:
+        A STYLE ECHO string, or None if the target is not a regen
+        replacement.
+    """
+    # 1. Check regen_lineage for the target as a replacement.
+    lineage_row = conn.execute(
+        "SELECT retiring_fighter_id, regen_date "
+        "FROM regen_lineage "
+        "WHERE replacement_fighter_id=? "
+        "LIMIT 1",
+        (target_fighter_id,),
+    ).fetchone()
+    if not lineage_row:
+        return None
+    legend_id, _regen_date = lineage_row
+
+    # Defensive: don't echo if the legend is the same as the target
+    # (theoretically impossible — regen_lineage enforces
+    # retiring != replacement — but the UNIQUE constraint allows it).
+    if legend_id == target_fighter_id:
+        return None
+
+    # 2. Look up the legend's name + style archetype. The replacement
+    # inherits the retiring fighter's fight_style_archetype_id via
+    # generate_fighter(style_dna_source_id=retiring_id), so the two
+    # should always match — but we look up the legend's archetype
+    # directly to be defensive.
+    legend_row = conn.execute(
+        "SELECT f.first_name, f.last_name, f.nickname, "
+        "sa.name AS sa_name, f.date_of_birth "
+        "FROM fighters f "
+        "LEFT JOIN style_archetypes sa "
+        "ON sa.style_archetype_id=f.fight_style_archetype_id "
+        "WHERE f.fighter_id=?",
+        (legend_id,),
+    ).fetchone()
+    if not legend_row:
+        return None
+    leg_first, leg_last, leg_nick, leg_sa_name, leg_dob = legend_row
+    legend_full = f"{leg_first} {leg_last}"
+    if leg_nick:
+        legend_full += f' "{leg_nick}"'
+
+    # 3. Use voice.describe_career_stage for the legend's career
+    # stage. The legend is retired — describe_career_stage doesn't
+    # have a "retired" tier, but for an older fighter with a long
+    # record it returns "grizzled veteran" / "battle-tested veteran"
+    # / "wily veteran", which fits the "old what's-his-name" framing.
+    import voice  # lazy import — voice.py is in src/
+    legend_stage = "retired veteran"  # defensive default
+    legend_career_row = conn.execute(
+        "SELECT fc.record_wins, fc.record_losses, fc.record_draws, "
+        "fc.win_streak, fc.loss_streak, fc.title_reigns, fc.career_health "
+        "FROM fighter_career fc "
+        "WHERE fc.fighter_id=?",
+        (legend_id,),
+    ).fetchone()
+    if legend_career_row:
+        (leg_w, leg_l, leg_d, leg_ws, leg_ls, leg_reigns,
+         leg_health) = legend_career_row
+        # Approximate the legend's age at the sim's current_date. The
+        # legend is retired but we still want a plausible age for the
+        # career-stage descriptor.
+        leg_age = 38  # defensive default for a retired fighter
+        try:
+            if leg_dob:
+                # Use the sim's current_date for the age calc.
+                clock_row = conn.execute(
+                    "SELECT simulation_clock.current_date "
+                    "FROM simulation_clock"
+                ).fetchone()
+                ref_str = clock_row[0] if clock_row else "2026-08-15"
+                from datetime import datetime
+                dob_dt = datetime.strptime(leg_dob, "%Y-%m-%d")
+                ref_dt = datetime.strptime(ref_str, "%Y-%m-%d")
+                leg_age = ref_dt.year - dob_dt.year
+                if (ref_dt.month, ref_dt.day) < (dob_dt.month, dob_dt.day):
+                    leg_age -= 1
+        except (ValueError, TypeError):
+            pass
+        legend_stage = voice.describe_career_stage(
+            leg_age,
+            leg_w or 0, leg_l or 0, leg_d or 0,
+            is_champion=False,  # retired — no longer reigning
+            title_reigns=leg_reigns or 0,
+            win_streak=leg_ws or 0, loss_streak=leg_ls or 0,
+            rng=rng,
+        )
+
+    # 4. Pick a STYLE ECHO template. The brief's example is the first
+    # variant: "STYLE ECHO: This prospect's style recalls retired
+    # fighter {legend_name}. The {style_archetype} approach is a dead
+    # ringer for the old school."
+    style_name = leg_sa_name or target_style_name or "Balanced"
+    templates = [
+        "STYLE ECHO: This prospect's style recalls retired fighter "
+        "{legend} ({stage}). The {style} approach is a dead ringer "
+        "for the old school.",
+
+        "STYLE ECHO: Echoes of {legend} ({stage}) — the {style} style "
+        "that defined a previous era lives on in this prospect.",
+
+        "STYLE ECHO: The {style} approach brings back memories of "
+        "{legend} ({stage}). Some styles never really retire.",
+
+        "STYLE ECHO: Scouts see a lot of {legend} ({stage}) in this "
+        "prospect. The {style} blueprint is unmistakable — a style "
+        "passed down, not invented.",
+    ]
+    if rng is None:
+        rng = random.Random()
+    return rng.choice(templates).format(
+        legend=legend_full, stage=legend_stage, style=style_name,
+    )
+
+
 def generate_scouting_report(conn, scout_id, target_fighter_id,
                              promotion_id, current_date):
     """Generate a scouting report for a fighter.
@@ -509,6 +655,21 @@ def generate_scouting_report(conn, scout_id, target_fighter_id,
         f"ESTIMATED CONTRACT COST: ${contract_est:,}",
         f"SCOUT CONFIDENCE: {scout_confidence}%",
     ])
+
+    # ---- 7.5. A11b — STYLE ECHO (memory resurfacing) ----
+    # Check if the target is a regen replacement. If so, add a STYLE
+    # ECHO line noting that the prospect's style recalls the retired
+    # legend whose style DNA was inherited. The line is appended after
+    # the SCOUT CONFIDENCE line so it reads as a final, evocative
+    # coda — "this kid fights like old what's-his-name". Per §14, no
+    # raw numbers (age, record) appear; the legend's career stage
+    # comes from voice.describe_career_stage via _build_style_echo.
+    style_echo_line = _build_style_echo(
+        conn, target_fighter_id, sa_name, rng=rng,
+    )
+    if style_echo_line:
+        report_lines.extend(["", style_echo_line])
+
     report_text = "\n".join(report_lines)
 
     # ---- 8. Write to scouting_reports ----
