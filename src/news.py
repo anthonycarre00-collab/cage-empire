@@ -81,7 +81,9 @@ from datetime import datetime
 
 from voice import (
     describe_attribute,
+    describe_career_health,
     describe_career_stage,
+    describe_overall,
 )
 
 
@@ -540,6 +542,100 @@ def _fighter_career_stage(conn, fighter_id, rng=None, current_date=None):
     )
 
 
+def _fighter_career_health(conn, fighter_id, rng=None):
+    """Return the fighter's career-health descriptor (voice layer).
+
+    Wraps voice.describe_career_health — reads fighter_career.
+    career_health (0-100) and returns a phrase like "battling
+    injuries" or "in peak condition". Used by the injury/retirement
+    news body templates so the player gets a sense of the fighter's
+    overall wear and tear (not just the specific injury being
+    reported). Per CONVENTIONS §14 — no raw health numbers leak.
+    """
+    if fighter_id is None:
+        return "in fighting shape"
+    row = conn.execute(
+        "SELECT career_health FROM fighter_career WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return "in fighting shape"
+    return describe_career_health(row[0], rng=rng)
+
+
+def _fighter_overall(conn, fighter_id, rng=None, current_date=None):
+    """Return a one-sentence voice-layer summary of a fighter.
+
+    Wraps voice.describe_overall — loads the fighter's career state +
+    top attributes and builds a sentence like "John Vale is a striker
+    with one-punch knockout threat and an excellent chin, currently a
+    seasoned competitor." Used by the fight-result body templates as
+    an alternate summary line so the news reads like a journalist's
+    fight recap rather than a scoreboard.
+
+    Per CONVENTIONS §14 — no raw numbers leak (voice.describe_overall
+    was made digit-free in v2.10.0 / FIX-VoiceRep).
+    """
+    if fighter_id is None:
+        return "an unprofiled fighter steps into the cage"
+    row = conn.execute(
+        "SELECT f.first_name, f.last_name, f.nickname, "
+        "f.fight_style_archetype_id, sa.name AS style_archetype_name, "
+        "fc.record_wins, fc.record_losses, fc.record_draws, "
+        "fc.win_streak, fc.loss_streak, fc.title_reigns, "
+        "fc.career_health, "
+        "EXISTS(SELECT 1 FROM titles t "
+        "       WHERE t.current_champion_fighter_id = f.fighter_id) AS is_champ "
+        "FROM fighters f "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+        "LEFT JOIN style_archetypes sa "
+        "       ON sa.style_archetype_id = f.fight_style_archetype_id "
+        "WHERE f.fighter_id = ?",
+        (fighter_id,),
+    ).fetchone()
+    if not row:
+        return "an unprofiled fighter steps into the cage"
+    (first, last, nick, sa_id, sa_name,
+     wins, losses, draws, ws, ls, reigns, health, is_champ) = row
+    age = _fighter_age(conn, fighter_id, current_date=current_date)
+    # Pull the fighter's top 2 attributes by value for the summary
+    # flavor (same approach as _fighter_descriptor_summary but
+    # returning a dict for voice.describe_overall's key_attributes
+    # slot).
+    cols_sql = ", ".join(_ATTR_NAMES)
+    attr_row = conn.execute(
+        f"SELECT {cols_sql} FROM fighter_attributes WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    key_attrs = {}
+    if attr_row:
+        paired = list(zip(_ATTR_NAMES, attr_row))
+        paired.sort(
+            key=lambda x: (x[1] if x[1] is not None else 0),
+            reverse=True,
+        )
+        for attr_name, value in paired[:2]:
+            if value is not None:
+                key_attrs[attr_name] = value
+    fighter_data = {
+        "first_name": first or "",
+        "last_name": last or "",
+        "nickname": nick,
+        "age": age,
+        "record_wins": wins or 0,
+        "record_losses": losses or 0,
+        "record_draws": draws or 0,
+        "is_champion": bool(is_champ),
+        "title_reigns": reigns or 0,
+        "win_streak": ws or 0,
+        "loss_streak": ls or 0,
+        "career_health": health or 100,
+        "style_archetype_name": sa_name or "Balanced",
+        "key_attributes": key_attrs,
+    }
+    return describe_overall(fighter_data, rng=rng)
+
+
 def _promotion_name(conn, promo_id):
     """Return a promotion's name, or 'the promotion' as fallback."""
     if not promo_id:
@@ -649,6 +745,15 @@ _FIGHT_HEADLINES_OTHER = [
 # slots are filled with "a" or "an" based on the career-stage word
 # so the text reads grammatically regardless of which stage voice.py
 # returns.
+#
+# v2.10.0 (FIX-VoiceRep, §14): two new templates added that use
+# {winner_overall} — a one-sentence voice.describe_overall summary
+# of the winner ("John Vale is a striker with one-punch knockout
+# threat and an excellent chin, currently a seasoned competitor").
+# This closes the §14 violation where the news engine wasn't using
+# voice.describe_overall (one of the 4 required voice functions per
+# the brief). The summary is digit-free (voice.describe_overall was
+# made digit-free in v2.10.0).
 _FIGHT_BODY_TEMPLATES = [
     "{winner_full}, {winner_art} {career_stage}, {attr_summary}, earns the "
     "{result_label} over {loser_full} {time_phrase} of the {round_word} "
@@ -666,6 +771,17 @@ _FIGHT_BODY_TEMPLATES = [
     "{winner_full}, {winner_art} {career_stage}, {attr_summary}, claims the "
     "{result_label} over {loser_full} {time_phrase}. The {promotion_name} "
     "crowd watches {loser_last} ({loser_art} {loser_stage}) come up short.",
+
+    "{winner_overall}. That line writes itself after {winner_last} "
+    "({winner_art} {career_stage}) {attr_summary} claims the {result_label} "
+    "over {loser_full} ({loser_art} {loser_stage}) {time_phrase} of the "
+    "{round_word} round — a {promotion_name} result that reshuffles the "
+    "division.",
+
+    "The {promotion_name} cage sees {winner_full} ({winner_art} {career_stage}) "
+    "{attr_summary} take the {result_label} over {loser_full} {time_phrase}. "
+    "{winner_overall}. {loser_last} ({loser_art} {loser_stage}) is left "
+    "searching for answers in the aftermath.",
 ]
 
 
@@ -727,6 +843,14 @@ def generate_fight_news(conn, event):
             conn, loser_id, rng=rng, current_date=event_date,
         )
         attr_summary = _fighter_descriptor_summary(conn, winner_id, rng=rng)
+        # v2.10.0 (FIX-VoiceRep): one-sentence voice.describe_overall
+        # summary of the winner — used by the {winner_overall} body
+        # template slots. Closes the §14 violation where the news
+        # engine didn't use voice.describe_overall (one of the 4
+        # required voice functions per the brief).
+        winner_overall = _fighter_overall(
+            conn, winner_id, rng=rng, current_date=event_date,
+        )
         result_label = _result_label(result_type)
         result_label_cap = result_label.capitalize()
         promotion_name = _promotion_name(conn, promo_id)
@@ -759,6 +883,7 @@ def generate_fight_news(conn, event):
             time_phrase=time_phrase, result_label=result_label,
             result_label_cap=result_label_cap,
             promotion_name=promotion_name,
+            winner_overall=winner_overall,
         )
         news_fighter_id = winner_id
         sentiment = "positive"
@@ -1093,6 +1218,16 @@ _INJURY_BODY_TEMPLATES = [
     "Bad news for {fighter_full}: {injury}. The {career_stage} faces "
     "{return_phrase} before they can compete again. {fighter_last}'s "
     "future hangs in the balance.",
+
+    # v2.10.0 (FIX-VoiceRep): new template using {health_state} —
+    # voice.describe_career_health descriptor ("battling injuries",
+    # "worn down", "in peak condition"). Closes the §14 violation
+    # where the news engine didn't use voice.describe_career_health
+    # (one of the 4 required voice functions per the brief).
+    "{fighter_full}, {art} {career_stage} already {health_state}, "
+    "now faces {injury} on top of the wear and tear. {return_phrase} "
+    "on the shelf — the {attr_summary} that defined {fighter_last}'s "
+    "run will be tested in the comeback.",
 ]
 
 
@@ -1144,6 +1279,13 @@ def generate_injury_news(conn, event):
             conn, fighter_id, rng=rng, current_date=event_date,
         )
         attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+        # v2.10.0 (FIX-VoiceRep): voice.describe_career_health
+        # descriptor for the {health_state} body template slot —
+        # phrases like "battling injuries" or "worn down" give the
+        # player a sense of the fighter's overall wear and tear
+        # (not just the specific injury being reported). §14 — no
+        # raw health numbers leak.
+        health_state = _fighter_career_health(conn, fighter_id, rng=rng)
         sev_phrase = _severity_phrase(severity)
         ret_phrase = _return_phrase(projected_return_date, event_date)
 
@@ -1159,7 +1301,7 @@ def generate_injury_news(conn, event):
         body = rng.choice(_INJURY_BODY_TEMPLATES).format(
             fighter_full=fighter_full, fighter_last=fighter_last,
             career_stage=career_stage, art=_article_for(career_stage),
-            attr_summary=attr_summary,
+            attr_summary=attr_summary, health_state=health_state,
             injury=injury_phrase, return_phrase=ret_phrase,
         )
 
@@ -1195,6 +1337,16 @@ _RETIREMENT_BODY_TEMPLATES = [
     "{fighter_full} ({art} {career_stage}) {attr_summary} calls it a "
     "career. {reign_phrase} {fighter_last} {legacy_phrase}. The cage "
     "loses a fighter who left it all inside.",
+
+    # v2.10.0 (FIX-VoiceRep): new template using {health_state} —
+    # voice.describe_career_health descriptor. Retirement is the
+    # natural place to describe the fighter's overall wear and tear
+    # ("physically broken", "should retire", "battling injuries").
+    # Closes the §14 violation where the news engine didn't use
+    # voice.describe_career_health in retirement news.
+    "{fighter_full}, {art} {career_stage} now {health_state}, calls "
+    "it a career. {reign_phrase} {fighter_last} {legacy_phrase}. The "
+    "{promotion_name} roster loses a competitor who left it all inside.",
 ]
 
 _LEGACY_PHRASES = [
@@ -1256,6 +1408,9 @@ def generate_retirement_news(conn, event):
             conn, fighter_id, rng=rng, current_date=current_date,
         )
         attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+        # v2.10.0 (FIX-VoiceRep): voice.describe_career_health
+        # descriptor for the {health_state} body template slot.
+        health_state = _fighter_career_health(conn, fighter_id, rng=rng)
 
         # Career stats for the legacy phrase. Word-form numbers (no
         # digit characters per CONVENTIONS §14).
@@ -1303,7 +1458,7 @@ def generate_retirement_news(conn, event):
             career_stage=career_stage,
             art=_article_for(career_stage),
             attr_summary=attr_summary, reign_phrase=reign_phrase,
-            legacy_phrase=legacy_phrase,
+            legacy_phrase=legacy_phrase, health_state=health_state,
             promotion_name=promotion_name,
         )
 
@@ -1562,6 +1717,10 @@ def generate_injury_created_news(conn, event):
         conn, fighter_id, rng=rng, current_date=event_date,
     )
     attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+    # v2.10.0 (FIX-VoiceRep): voice.describe_career_health descriptor
+    # for the {health_state} body template slot (same fix as
+    # generate_injury_news above).
+    health_state = _fighter_career_health(conn, fighter_id, rng=rng)
     sev_phrase = _severity_phrase(severity)
     ret_phrase = _return_phrase(ret_date, event_date)
     injury_phrase = f"a {sev_phrase} {injury_type or 'injury'}"
@@ -1571,7 +1730,7 @@ def generate_injury_created_news(conn, event):
     body = rng.choice(_INJURY_BODY_TEMPLATES).format(
         fighter_full=fighter_full, fighter_last=fighter_last,
         career_stage=career_stage, art=_article_for(career_stage),
-        attr_summary=attr_summary,
+        attr_summary=attr_summary, health_state=health_state,
         injury=injury_phrase, return_phrase=ret_phrase,
     )
     _write_news_item(
@@ -1633,6 +1792,10 @@ def generate_fighter_retired_news(conn, event):
         conn, fighter_id, rng=rng, current_date=current_date,
     )
     attr_summary = _fighter_descriptor_summary(conn, fighter_id, rng=rng)
+    # v2.10.0 (FIX-VoiceRep): voice.describe_career_health descriptor
+    # for the {health_state} body template slot (same fix as
+    # generate_retirement_news above).
+    health_state = _fighter_career_health(conn, fighter_id, rng=rng)
     career_row = conn.execute(
         "SELECT record_wins, record_losses, record_draws, "
         "title_reigns, career_health "
@@ -1670,7 +1833,7 @@ def generate_fighter_retired_news(conn, event):
         career_stage=career_stage,
         art=_article_for(career_stage),
         attr_summary=attr_summary, reign_phrase=reign_phrase,
-        legacy_phrase=legacy_phrase,
+        legacy_phrase=legacy_phrase, health_state=health_state,
         promotion_name=promotion_name,
     )
     _write_news_item(

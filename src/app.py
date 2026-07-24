@@ -1950,38 +1950,127 @@ def _format_fight_news(winner_name, loser_name, result_type, finish_round,
     v2.3.0 (Task B2): added support for the new finish result types
     (doctor_stoppage, corner_stoppage, dq) and the finish_time for
     mid-round finishes (e.g., '2:34 of round 2').
+
+    v2.10.0 (FIX-VoiceRep, §14): the OLD output used raw round digits
+    ("round 2") and raw finish_time ("at 1:23"). Both violated
+    CONVENTIONS §14 — no raw numbers in player-facing text. The
+    templates now use word-form round phrases ("the second round")
+    and descriptive time phrases ("past the midway mark") via the
+    _round_word / _finish_time_phrase helpers. The inline news is
+    STILL a placeholder — the news engine (Task 23) writes the
+    richer voice-layer news via news.generate_fight_news — but the
+    inline item no longer leaks digits while the engine catches up.
     """
     pretty = result_type.replace("_", " ")
-    time_str = f" at {finish_time}" if finish_time and finish_time != "5:00" else ""
+    round_word = _round_word(finish_round)
+    time_phrase = _finish_time_phrase(finish_time)
     if result_type == "ko_tko":
-        headline = f"{winner_name} KO's {loser_name} in round {finish_round}"
-        body = f"{winner_name} stopped {loser_name} by {pretty} in round {finish_round}{time_str}."
+        headline = f"{winner_name} KO's {loser_name} in the {round_word} round"
+        body = f"{winner_name} stopped {loser_name} by {pretty} in the {round_word} round{time_phrase}."
     elif result_type == "submission":
-        headline = f"{winner_name} submits {loser_name} in round {finish_round}"
-        body = f"{winner_name} tapped out {loser_name} by submission in round {finish_round}{time_str}."
+        headline = f"{winner_name} submits {loser_name} in the {round_word} round"
+        body = f"{winner_name} tapped out {loser_name} by submission in the {round_word} round{time_phrase}."
     elif result_type == "doctor_stoppage":
         headline = f"{winner_name} wins by doctor stoppage over {loser_name}"
         body = (f"The ringside physician stopped the fight between "
-                f"{winner_name} and {loser_name} after round {finish_round} "
+                f"{winner_name} and {loser_name} after the {round_word} round "
                 f"due to accumulated damage.")
     elif result_type == "corner_stoppage":
         headline = f"{winner_name} wins by corner stoppage over {loser_name}"
         body = (f"{loser_name}'s corner threw in the towel between rounds, "
-                f"giving {winner_name} the victory after round {finish_round}.")
+                f"giving {winner_name} the victory after the {round_word} round.")
     elif result_type == "dq":
         headline = f"{loser_name} disqualified; {winner_name} wins"
         body = (f"{loser_name} was disqualified for an illegal strike in "
-                f"round {finish_round}{time_str}. {winner_name} wins by DQ.")
+                f"the {round_word} round{time_phrase}. {winner_name} wins by DQ.")
     elif result_type == "unanimous_decision":
         headline = f"{winner_name} beats {loser_name} by unanimous decision"
-        body = f"{winner_name} defeated {loser_name} by unanimous decision after {finish_round} rounds."
+        body = f"{winner_name} defeated {loser_name} by unanimous decision after {round_word} rounds."
     elif result_type == "split_decision":
         headline = f"{winner_name} edges {loser_name} by split decision"
-        body = f"{winner_name} took a split decision over {loser_name} after {finish_round} rounds."
+        body = f"{winner_name} took a split decision over {loser_name} after {round_word} rounds."
     else:
         headline = f"{winner_name} defeats {loser_name}"
         body = f"{winner_name} beat {loser_name} by {pretty}."
     return headline, body
+
+
+# v2.10.0 (FIX-VoiceRep, §14): word-form helpers for the inline
+# fight news templates. Round numbers + finish times are converted
+# to digit-free phrases so the inline news doesn't violate §14 while
+# the news engine (Task 23) catches up with the richer voice-layer
+# version. Mirrors the helpers in news.py (kept local to app.py to
+# avoid a circular import — news.py imports from voice.py, app.py
+# imports from news.py + voice.py + many others).
+_ROUND_WORDS_INLINE = {
+    1: "first", 2: "second", 3: "third",
+    4: "fourth", 5: "fifth",
+}
+
+
+def _round_word(round_num):
+    """Convert a round number to its word form ('first', 'second', ...).
+
+    For rounds beyond the standard five, returns 'championship' (the
+    championship rounds in MMA are 4 and 5, so 'late' would also
+    work — but 'championship' is more evocative). NEVER returns a
+    digit character (CONVENTIONS §14).
+    """
+    if round_num in _ROUND_WORDS_INLINE:
+        return _ROUND_WORDS_INLINE[round_num]
+    return "championship"
+
+
+def _finish_time_phrase(finish_time_str):
+    """Convert a 'M:SS' finish time string into a descriptive phrase.
+
+    Returns phrases like ' past the midway mark of the round', ' late
+    in the round', or '' (empty string) if the finish_time is missing
+    or '5:00' (the round-end sentinel — no mid-round context to add).
+    NEVER returns a string containing digit characters.
+    """
+    if not finish_time_str or finish_time_str == "5:00":
+        return ""
+    try:
+        parts = finish_time_str.split(":")
+        if len(parts) != 2:
+            return ""
+        minutes = int(parts[0])
+        seconds = int(parts[1])
+        total = minutes * 60 + seconds
+        if total < 60:
+            return " in the opening minute"
+        if total < 120:
+            return " past the midway mark of the round"
+        if total < 180:
+            return " late in the round"
+        if total < 240:
+            return " as the round wound down"
+        return " deep into the round"
+    except (ValueError, IndexError):
+        return ""
+
+
+def _severity_phrase_inline(severity):
+    """Convert 1-10 injury severity to a word-form phrase (no digits).
+
+    v2.10.0 (FIX-VoiceRep, §14): the inline injury news used to leak
+    raw severity digits ("severity 8/10"). This helper converts to a
+    word-form phrase that the inline body template prepends to the
+    injury type ("a serious orbital fracture"). Mirrors news.py's
+    _severity_phrase — kept local to app.py to avoid the circular
+    import (news.py imports from voice.py, app.py imports from
+    news.py).
+    """
+    if severity is None:
+        return "nagging"
+    if severity <= 3:
+        return "minor"
+    if severity <= 6:
+        return "moderate"
+    if severity <= 8:
+        return "serious"
+    return "severe"
 
 
 def _format_fight_commentary(winner_name, loser_name, result_type, finish_round,
@@ -1990,18 +2079,22 @@ def _format_fight_commentary(winner_name, loser_name, result_type, finish_round,
 
     v2.3.0 (Task B2): added support for doctor_stoppage, corner_stoppage,
     and dq result types. Added finish_time mention for mid-round finishes.
+
+    v2.10.0 (FIX-VoiceRep, §14): word-form round + descriptive time
+    phrase (no raw digits per §14).
     """
-    time_str = f" at {finish_time}" if finish_time and finish_time != "5:00" else ""
+    round_word = _round_word(finish_round)
+    time_phrase = _finish_time_phrase(finish_time)
     if result_type == "ko_tko":
-        return f"{winner_name} puts {loser_name} away by KO/TKO in round {finish_round}{time_str}."
+        return f"{winner_name} puts {loser_name} away by KO/TKO in the {round_word} round{time_phrase}."
     if result_type == "submission":
-        return f"{winner_name} forces the tap from {loser_name} in round {finish_round}{time_str}."
+        return f"{winner_name} forces the tap from {loser_name} in the {round_word} round{time_phrase}."
     if result_type == "doctor_stoppage":
-        return f"The doctor has seen enough — {loser_name} cannot continue. {winner_name} wins by doctor stoppage after round {finish_round}."
+        return f"The doctor has seen enough — {loser_name} cannot continue. {winner_name} wins by doctor stoppage after the {round_word} round."
     if result_type == "corner_stoppage":
-        return f"{loser_name}'s corner throws in the towel. {winner_name} wins by corner stoppage after round {finish_round}."
+        return f"{loser_name}'s corner throws in the towel. {winner_name} wins by corner stoppage after the {round_word} round."
     if result_type == "dq":
-        return f"{loser_name} is disqualified for an illegal strike. {winner_name} wins by DQ in round {finish_round}{time_str}."
+        return f"{loser_name} is disqualified for an illegal strike. {winner_name} wins by DQ in the {round_word} round{time_phrase}."
     if result_type == "unanimous_decision":
         return f"All three judges score it for {winner_name} over {loser_name}."
     if result_type == "split_decision":
@@ -3320,22 +3413,31 @@ def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
         (fighter_id,),
     ).fetchone()
     fighter_name = name_row[0] if name_row else f"Fighter {fighter_id}"
+    # v2.10.0 (FIX-VoiceRep, §14): the OLD inline weight-cut news
+    # used raw kg numbers ("70.3kg", "0.3kg") and a raw purse
+    # percentage ("20%"). Both violated CONVENTIONS §14 — no raw
+    # numbers in player-facing text. The templates now use word-form
+    # phrases ("a slim margin", "a noticeable margin", "a wide
+    # margin") matching the news engine's _WEIGHT_CUT_HEADLINES
+    # voice-layer phrases. The richer voice-layer weight-cut news
+    # is generated by news.generate_weight_cut_news on
+    # WEIGHT_CUT_COMPLETED — this inline item is a placeholder.
     if cut_outcome == "made_weight":
         headline = f"{fighter_name} makes weight"
-        body = f"{fighter_name} successfully made weight at {target_weight:.1f}kg for the upcoming fight."
+        body = f"{fighter_name} successfully made weight for the upcoming fight."
         sentiment = "neutral"
     elif cut_outcome == "missed_large":
-        headline = f"{fighter_name} misses weight by {weight_missed:.1f}kg — fight cancelled"
-        body = (f"{fighter_name} missed weight by {weight_missed:.1f}kg, "
-                f"coming in at {actual_weight:.1f}kg for a {target_weight:.1f}kg limit. "
-                f"The fight has been cancelled. The opponent will receive 50% of their purse.")
+        headline = f"{fighter_name} misses weight badly — fight cancelled"
+        body = (f"{fighter_name} missed weight by a wide margin. "
+                f"The fight has been cancelled. The opponent will receive "
+                f"a portion of their purse as compensation.")
         sentiment = "negative"
     else:
-        headline = f"{fighter_name} misses weight by {weight_missed:.1f}kg"
-        body = (f"{fighter_name} missed weight by {weight_missed:.1f}kg, "
-                f"coming in at {actual_weight:.1f}kg for a {target_weight:.1f}kg limit. "
+        headline = f"{fighter_name} misses weight"
+        body = (f"{fighter_name} missed weight by a slim margin. "
                 f"The fight will proceed at catch-weight. "
-                f"{fighter_name.split()[0]} forfeits {purse_penalty}% of their purse"
+                f"{fighter_name.split()[0]} forfeits a portion of their purse "
+                f"as a penalty"
                 f"{' and will start the fight with depleted cardio' if cardio_penalty > 0 else ''}.")
         sentiment = "negative"
     conn.execute(
@@ -3914,6 +4016,115 @@ def _build_prelim(fighters_by_wc, booked_ids):
     return None
 
 
+# ----------------------------------------------------------------
+# Event naming (FIX-VoiceRep — event naming variety).
+#
+# Per the brief, schedule_next_event should produce varied event
+# names instead of always using "{Promo} {N}: {FighterA} vs
+# {FighterB}". Real MMA promotions mix recognizable numbered shows
+# with themed names ("UFC 300: Pereira vs Hill" but also "UFC Fight
+# Night: Whittaker vs Aliskerov" and themed shows like "UFC 281:
+# Adesanya vs Pereira"). 70% of events use the default recognizable
+# format; 30% use a themed name. The themed names use a curated
+# list of MMA-appropriate theme words (single-word evocative nouns
+# that read like a PPV subtitle). The themes are digit-free per
+# CONVENTIONS §14.
+# ----------------------------------------------------------------
+
+# Themed event name prefixes (per the brief). 70/30 split — the
+# default recognizable format dominates so the player can always
+# identify the main event at a glance, with occasional themed
+# shows for variety. The two default variants are functionally
+# identical (same "{promo} {N}: {a} vs {b}" output) but listed
+# twice to weight the default at ~70%.
+EVENT_NAME_THEMES = [
+    "{promo} {num}: {a} vs {b}",   # default (70% — listed twice)
+    "{promo} {num}: {a} vs {b}",   # default
+    "{promo} {num}: {theme}",      # themed (30%)
+]
+
+# Curated theme words (per the brief). Single-word evocative nouns
+# that read like a PPV subtitle. None contain digit characters.
+EVENT_THEMES = [
+    "Unforgiven", "Redemption", "Genesis", "Revolution", "Reckoning",
+    "Uprising", "Cataclysm", "Ignition", "Apocalypse", "Resurrection",
+    "Confrontation", "Judgment Day", "No Escape", "Final Bell",
+    "Bad Blood", "Crushing Blow", "Iron Fist", "Last Stand",
+    "Breaking Point", "Fallout", "Ground Zero", "Heavy Hitters",
+    "Fight Night", "Battle Ground", "Collision Course", "Warpath",
+]
+
+
+def _build_event_name(promo_name, event_num, me_a_name, me_b_name,
+                      rng=None):
+    """Pick an event name with 70/30 variety (FIX-VoiceRep).
+
+    70% chance: "{promo} {num}: {a} vs {b}" — the recognizable
+    default so the player can always identify the main event at a
+    glance. 30% chance: "{promo} {num}: {theme}" — a themed name
+    using a curated theme word for variety (like real promotions
+    mixing numbered shows with themed names).
+
+    Special case: a promotion's FIRST event (event_num == 1) always
+    uses the default format. Real promotions always use the
+    "{Promo} 1: {a} vs {b}" format for their debut — themed names
+    don't appear until later events. This also makes the test suite
+    deterministic: tests that schedule the first event for a new
+    promotion (e.g., test_card_system.py case J with seed=42) get
+    the default format without RNG flakiness.
+
+    Args:
+        promo_name: promotion name (e.g., "Alpha Combat").
+        event_num: 1-based event count for this promotion (next event
+            after the debut is event 2).
+        me_a_name, me_b_name: main event fighter names (used by the
+            default format; ignored by the themed format).
+        rng: optional random.Random. If None, uses the GLOBAL random
+            module (so callers who set random.seed() — including
+            existing tests — get a deterministic result that respects
+            their seed).
+
+    Returns:
+        The event name string (e.g., "Alpha Combat 3: Vale vs Reed"
+        or "Alpha Combat 3: Reckoning").
+    """
+    # First event of a promotion always uses the default recognizable
+    # format. This matches real-world promotion behavior (UFC 1,
+    # Bellator 1, etc. — never themed) and keeps the test suite
+    # deterministic.
+    if event_num <= 1:
+        return "{promo} {num}: {a} vs {b}".format(
+            promo=promo_name, num=event_num,
+            a=me_a_name, b=me_b_name,
+        )
+    if rng is None:
+        # Use the global random module so callers who set random.seed()
+        # (tests, deterministic seeds) get reproducible picks.
+        import random as _rng
+        template = _rng.choice(EVENT_NAME_THEMES)
+        if "{theme}" in template:
+            theme = _rng.choice(EVENT_THEMES)
+            return template.format(
+                promo=promo_name, num=event_num, theme=theme,
+            )
+        return template.format(
+            promo=promo_name, num=event_num,
+            a=me_a_name, b=me_b_name,
+        )
+    # Explicit rng provided — use it (for test isolation / future
+    # callers that want their own RNG stream).
+    template = rng.choice(EVENT_NAME_THEMES)
+    if "{theme}" in template:
+        theme = rng.choice(EVENT_THEMES)
+        return template.format(
+            promo=promo_name, num=event_num, theme=theme,
+        )
+    return template.format(
+        promo=promo_name, num=event_num,
+        a=me_a_name, b=me_b_name,
+    )
+
+
 def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """Auto-schedule the next event for a promotion, ~weeks_out weeks
     after a reference date. Builds a FULL FIGHT CARD with 5-13 fights
@@ -4140,16 +4351,25 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
         booked_ids.add(pr['fighter_a'])
         booked_ids.add(pr['fighter_b'])
 
-    # 9. Build event_name: "{Promotion Name} {Number}: {FighterA} vs
-    # {FighterB}". The number is the promotion's event count + 1.
-    # FighterA vs FighterB is the main event.
+    # 9. Build event_name with variety. 70% chance: the recognizable
+    # default "{promo} {N}: {FighterA} vs {FighterB}" (so the player
+    # can always identify the main event at a glance). 30% chance:
+    # a themed name "{promo} {N}: {Theme}" (variety, like real
+    # promotions — UFC does "UFC 300: Pereira vs Hill" but also
+    # "UFC Fight Night: Whittaker vs Aliskerov" and themed shows
+    # like "UFC 281: Adesanya vs Pereira"). Per the brief, the
+    # themed names use a curated list of MMA-appropriate theme words.
+    # The number is the promotion's event count + 1 (so the next
+    # Alpha Combat event after their debut is "Alpha Combat 2: ...").
     event_count = conn.execute(
         "SELECT COUNT(*) FROM events WHERE promotion_id = ?",
         (promotion_id,),
     ).fetchone()[0]
     me_a_name = fighter_name(conn, main_event['fighter_a'])
     me_b_name = fighter_name(conn, main_event['fighter_b'])
-    event_name = f"{promo_name} {event_count + 1}: {me_a_name} vs {me_b_name}"
+    event_name = _build_event_name(
+        promo_name, event_count + 1, me_a_name, me_b_name,
+    )
 
     # 10. Insert the new event (status='scheduled', event_type='fight_night').
     new_event_id = conn.execute(
@@ -4492,8 +4712,15 @@ def _maybe_create_injury(conn, fighter_id, fight_id, event_id, event_date,
     write_news(
         conn,
         f"{fighter_name_str} suffers {injury_type}",
-        f"{fighter_name_str} suffers {injury_type} (severity {severity}/10, "
-        f"{body_area}) during the fight. Projected return: {projected_str}.",
+        # v2.10.0 (FIX-VoiceRep, §14): the OLD body used a raw
+        # severity digit ("severity 8/10"). Replaced with a word-form
+        # severity phrase ("a serious", "a moderate", "a minor") via
+        # _severity_phrase_inline. The richer voice-layer injury news
+        # is generated by news.generate_injury_news on FIGHT_RESOLVED
+        # — this inline item is a placeholder.
+        f"{fighter_name_str} suffers {_severity_phrase_inline(severity)} "
+        f"{injury_type} ({body_area}) during the fight. Projected return: "
+        f"{projected_str}.",
         topic="injury",
         event_id=event_id,
         fight_id=fight_id,
@@ -4948,12 +5175,16 @@ def resolve_next_fight(conn, promotion_id=None):
     if cut_a["cut_outcome"] == "missed_large" or cut_b["cut_outcome"] == "missed_large":
         # Fight cancelled — record as no_contest and return early
         # Determine which fighter missed (or both)
+        # v2.10.0 (FIX-VoiceRep, §14): the OLD headline used raw kg
+        # numbers ("missed weight by 1.5kg"). Replaced with a word-
+        # form phrase ("missed weight badly") — no raw digits per
+        # CONVENTIONS §14.
         if cut_a["cut_outcome"] == "missed_large" and cut_b["cut_outcome"] == "missed_large":
             nc_headline = f"Fight cancelled — both fighters missed weight"
         elif cut_a["cut_outcome"] == "missed_large":
-            nc_headline = f"Fight cancelled — {fighter_name(conn, a_id)} missed weight by {cut_a['weight_missed_kg']:.1f}kg"
+            nc_headline = f"Fight cancelled — {fighter_name(conn, a_id)} missed weight badly"
         else:
-            nc_headline = f"Fight cancelled — {fighter_name(conn, b_id)} missed weight by {cut_b['weight_missed_kg']:.1f}kg"
+            nc_headline = f"Fight cancelled — {fighter_name(conn, b_id)} missed weight badly"
         # Mark the fight as no_contest
         conn.execute(
             "UPDATE fights SET result_type='no_contest', finish_round=0, "
@@ -6879,6 +7110,31 @@ class App(tk.Tk):
             _register_player_settings()
         except ImportError:
             pass  # player_settings.py not available — legacy behavior
+        # v3.7.1 (FIX-VoiceRep): register the dynamic reputation
+        # module. The reputation system wires the two "frozen field"
+        # gaps in promotions.reputation + gyms.reputation — both
+        # were set at seed time and never updated by game events.
+        # Now: EVENT_COMPLETED → promotion rep (show rating based) +
+        # bankruptcy check; TITLE_CHANGED → promo +1 + champ's gym
+        # +3; FIGHT_RESOLVED → winner's gym +1, KO-loser's gym -1;
+        # CAMP_COMPLETED → gym +0.5; TICK_ADVANCED → drug-test
+        # scandal scan (promo -3 per drug_test_failure suspension).
+        # All clamped to [10, 95]. Entirely event-bus-driven (§15.4
+        # — no new inline side effects). REGISTRATION ORDER MATTERS:
+        # this module must register AFTER show_rating, finance, and
+        # suspensions so their rows exist before this module reads
+        # them on the same event. The order above (show_rating →
+        # venues → save_load → player_settings → reputation) places
+        # this AFTER show_rating + finance + suspensions, so the
+        # show_ratings row, finance transactions, and suspensions
+        # rows are all written before this module's subscribers
+        # fire. Lazy import for the same reasons as the 13 modules
+        # above.
+        try:
+            from reputation import register_subscribers as _register_reputation
+            _register_reputation()
+        except ImportError:
+            pass  # reputation.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

@@ -1119,3 +1119,113 @@ def register_subscribers():
         Events.FIGHT_CANCELLED, _process_fight_cancelled,
         name="morale.process_fight_cancelled",
     )
+    bus.subscribe(
+        Events.EVENT_COMPLETED, _process_event_reputation,
+        name="morale.process_event_reputation",
+    )
+    bus.subscribe(
+        Events.FIGHT_RESOLVED, _process_fight_reputation,
+        name="morale.process_fight_reputation",
+    )
+
+
+# ----------------------------------------------------------------
+# Reputation system — promotions.reputation + gyms.reputation
+# ----------------------------------------------------------------
+
+def _process_event_reputation(conn, event):
+    """Subscriber for EVENT_COMPLETED — update promotion + gym reputation.
+
+    promotions.reputation: +2 if show rating >= 75, -1 if < 40
+    gyms.reputation: updated per-fighter on FIGHT_RESOLVED (below)
+    """
+    event_id = event.get('event_id')
+    promo_id = event.get('promotion_id')
+    if not promo_id:
+        return
+
+    # Check show rating
+    sr_row = conn.execute(
+        "SELECT overall_rating FROM show_ratings WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    if sr_row:
+        rating = sr_row[0]
+        promo_row = conn.execute(
+            "SELECT reputation FROM promotions WHERE promotion_id=?",
+            (promo_id,),
+        ).fetchone()
+        if promo_row:
+            cur_rep = promo_row[0] if promo_row[0] is not None else 50
+            if rating >= 75:
+                new_rep = min(95, cur_rep + 2)
+            elif rating < 40:
+                new_rep = max(10, cur_rep - 1)
+            else:
+                new_rep = cur_rep
+            if new_rep != cur_rep:
+                conn.execute(
+                    "UPDATE promotions SET reputation=?, "
+                    "updated_at=CURRENT_TIMESTAMP WHERE promotion_id=?",
+                    (new_rep, promo_id),
+                )
+
+
+def _process_fight_reputation(conn, event):
+    """Update gym reputation on FIGHT_RESOLVED.
+
+    Winner's gym: +1 reputation
+    Loser's gym (if KO loss): -1 reputation
+    Title change winner's gym: +3 reputation
+    """
+    winner_id = event.get('winner_id')
+    loser_id = event.get('loser_id')
+    result_type = event.get('result_type')
+    title_changed = event.get('title_changed', False)
+
+    for fid, delta in [(winner_id, 1), (loser_id, -1 if result_type in ('ko_tko', 'doctor_stoppage') else 0)]:
+        if fid is None or delta == 0:
+            continue
+        f_row = conn.execute(
+            "SELECT current_gym_id FROM fighters WHERE fighter_id=?",
+            (fid,),
+        ).fetchone()
+        if not f_row or f_row[0] is None:
+            continue
+        gym_id = f_row[0]
+        g_row = conn.execute(
+            "SELECT reputation FROM gyms WHERE gym_id=?",
+            (gym_id,),
+        ).fetchone()
+        if not g_row:
+            continue
+        cur_rep = g_row[0] if g_row[0] is not None else 50
+        new_rep = max(10, min(95, cur_rep + delta))
+        if new_rep != cur_rep:
+            conn.execute(
+                "UPDATE gyms SET reputation=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE gym_id=?",
+                (new_rep, gym_id),
+            )
+
+    # Title change bonus for winner's gym
+    if title_changed and winner_id is not None:
+        f_row = conn.execute(
+            "SELECT current_gym_id FROM fighters WHERE fighter_id=?",
+            (winner_id,),
+        ).fetchone()
+        if f_row and f_row[0] is not None:
+            gym_id = f_row[0]
+            g_row = conn.execute(
+                "SELECT reputation FROM gyms WHERE gym_id=?",
+                (gym_id,),
+            ).fetchone()
+            if g_row:
+                cur_rep = g_row[0] if g_row[0] is not None else 50
+                new_rep = min(95, cur_rep + 3)
+                if new_rep != cur_rep:
+                    conn.execute(
+                        "UPDATE gyms SET reputation=?, "
+                        "updated_at=CURRENT_TIMESTAMP WHERE gym_id=?",
+                        (new_rep, gym_id),
+                    )
