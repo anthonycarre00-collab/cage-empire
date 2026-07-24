@@ -4373,7 +4373,7 @@ def _opponent_style_archetype_name(conn, fighter_id):
     return row[0] if row else None
 
 
-def resolve_next_fight(conn):
+def resolve_next_fight(conn, promotion_id=None):
     """Resolve the next scheduled fight using the beat-level engine (Task B2).
 
     Picks the lowest-fight_id unresolved fight, loads both fighters'
@@ -4385,6 +4385,16 @@ def resolve_next_fight(conn):
     runs ALL the existing side effects from the Task 3 resolver
     (fight_history, rankings, titles, event lifecycle,
     schedule_next_event, news, commentary).
+
+    v3.6.0 (Task 25 — rival promotion AI): the optional promotion_id
+    parameter filters the pick-query to a specific promotion. When
+    None (default), behavior is unchanged — the lowest-fight_id
+    unresolved fight across ALL promotions is picked (the player's
+    "Resolve Fight" button). When set (rival AI passes its own
+    promotion_id), only unresolved fights from that promotion are
+    eligible. This keeps the rival AI from accidentally resolving
+    the player's scheduled fights — the player resolves their own
+    fights manually via the UI button.
 
     v2.3.0 (Task B2) additions:
       - Fatigue: gas starts at 100, depletes per beat, recovers
@@ -4431,7 +4441,9 @@ def resolve_next_fight(conn):
         "f.weight_class_id, e.event_date, f.card_slot, f.is_title_fight "
         "FROM fights f JOIN events e ON e.event_id=f.event_id "
         "WHERE f.winner_fighter_id IS NULL AND f.result_type IS NULL "
-        "ORDER BY f.fight_id LIMIT 1"
+        + ("AND e.promotion_id=? " if promotion_id is not None else "")
+        + "ORDER BY f.fight_id LIMIT 1",
+        ((promotion_id,) if promotion_id is not None else ()),
     ).fetchone()
     if not fight:
         return None
@@ -6290,6 +6302,38 @@ class App(tk.Tk):
             _register_agent_offers()
         except ImportError:
             pass  # agent_offers.py not available — legacy behavior
+        # v3.6.0 (Stage 5 — Task 25 + Career Arc): register the
+        # career arc + rival promotion AI subscribers on the global
+        # event bus. The career arc system applies natural attribute
+        # growth (age 18-27) and decline (age 30+) on monthly ticks
+        # — closes the "frozen attributes" gap the user identified
+        # (fighters grew only via camps and injuries, never naturally
+        # over a career). The rival AI system runs booking loops for
+        # every rival promotion (promotion_id != 1) on weekly ticks:
+        # schedules events, resolves ONE fight per week per rival
+        # promotion (spreads results for narrative pacing), and signs
+        # free agents based on ai_aggression + ai_spending_style.
+        # Both systems are entirely event-bus-driven (CONVENTIONS
+        # §15.4 — no new inline side effects added to run_tick or
+        # resolve_next_fight). The rival AI uses the EXISTING
+        # schedule_next_event + resolve_next_fight (now with an
+        # optional promotion_id parameter) + sign_free_agent
+        # functions — so all the event bus subscribers (news, social,
+        # morale, finance, punditry) fire for rival promotion fights
+        # too, creating a living world across all promotions. Lazy
+        # import for the same reasons as news.py / social.py /
+        # rivalries.py / punditry.py / morale.py / suspensions.py /
+        # agent_offers.py above.
+        try:
+            from career_arc import register_subscribers as _register_career_arc
+            _register_career_arc()
+        except ImportError:
+            pass  # career_arc.py not available — legacy behavior
+        try:
+            from rival_ai import register_subscribers as _register_rival_ai
+            _register_rival_ai()
+        except ImportError:
+            pass  # rival_ai.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.
