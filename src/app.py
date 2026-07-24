@@ -3520,29 +3520,443 @@ def update_fighter_descriptor_snapshot(conn, fighter_id):
     )
 
 
+# ----------------------------------------------------------------
+# Full fight card construction (Task FIX-CardSystem).
+#
+# schedule_next_event builds a FULL CARD with 5-13 fights depending
+# on promotion.size_tier, structured as:
+#   - Main event (title fight if champion or vacant title available)
+#   - Co-main event
+#   - 2-3 featured prelims
+#   - 3-8 prelims (fill the rest up to target card size)
+#
+# Matchmaking is "intelligent" (Kingmaker fantasy, Soul doc §3):
+#   - Main event: champion vs #1 contender, OR #1 vs #2 for vacant title
+#   - Co-main: next-best contender bout
+#   - Featured prelims: mid-tier rated fighters
+#   - Prelims: mix of prospects, journeymen, debuts, must-win fights
+#
+# Matchmaking rules (per the brief):
+#   - Same weight class per fight (no featherweight vs heavyweight)
+#   - Same promotion (no cross-promotion booking)
+#   - Both fighters active (is_active=1, is_retired=0)
+#   - Neither fighter injured (not in injuries WHERE is_active=1)
+#   - Neither fighter suspended (not in suspensions WHERE is_active=1)
+#   - Neither fighter fought in last 21 days (rest period)
+#   - No fighter booked twice on the same card
+#
+# If there aren't enough available fighters for a full card, book as
+# many as possible (don't crash). A 1-fight card is better than no card.
+# ----------------------------------------------------------------
+
+# Card size targets by promotion size_tier. Per the brief:
+#   major: 10-13 fights (main event + co-main + 3 featured + 6-8 prelims)
+#   mid:   7-9 fights   (main event + co-main + 2 featured + 4-5 prelims)
+#   small: 5-6 fights   (main event + 1 featured + 3-4 prelims)
+_CARD_SIZE_BY_TIER = {
+    'major': (10, 13),
+    'mid':   (7, 9),
+    'small': (5, 6),
+}
+
+# Featured prelim count by size_tier. Per the brief:
+#   major: 3 featured prelims
+#   mid:   2 featured prelims
+#   small: 1 featured prelim
+_FEATURED_PRELIM_COUNT_BY_TIER = {
+    'major': 3,
+    'mid':   2,
+    'small': 1,
+}
+
+# Rest period: fighters who fought in the last N days are not eligible.
+_REST_PERIOD_DAYS = 21
+
+# Title fights are 5 rounds; non-title fights are 3 rounds.
+_TITLE_FIGHT_ROUNDS = 5
+_NON_TITLE_FIGHT_ROUNDS = 3
+
+
+def _get_available_fighters_for_card(conn, promotion_id,
+                                     rest_days=_REST_PERIOD_DAYS,
+                                     before_date=None):
+    """Return all fighters eligible to be booked on a new card.
+
+    Eligibility:
+      - current_promotion_id = promotion_id (same promotion)
+      - is_active = 1
+      - is_retired = 0
+      - weight_class_id IS NOT NULL (must have a weight class)
+      - Not currently injured (no active injuries row)
+      - Not currently suspended (no active suspensions row)
+      - Has not fought in the last `rest_days` days (rest period —
+        checked against rankings.last_fight_date, relative to the
+        new event's date)
+
+    Returns a list of dicts with keys: fighter_id, weight_class_id,
+    rating (ELO from rankings, default 1000.0), record_wins,
+    record_losses, record_draws, win_streak, loss_streak, potential,
+    last_fight_date.
+
+    Args:
+        conn: sqlite3 connection (read-only — no writes here).
+        promotion_id: the promotion whose roster to draw from.
+        rest_days: minimum days since the fighter's last fight.
+            Default 21 (per the brief).
+        before_date: ISO date string 'YYYY-MM-DD' of the new event's
+            date. The rest period is measured relative to this date
+            (a fighter who fought on 2026-08-15 is eligible for a
+            new event on 2026-09-12, since 28 >= 21 days). If None,
+            falls back to simulation_clock.current_date (used by
+            callers that don't have a specific event date yet).
+
+    Returns:
+        List of fighter-dict rows. Empty list if no fighters are
+        eligible.
+    """
+    rows = conn.execute(
+        "SELECT f.fighter_id, f.weight_class_id, "
+        "COALESCE(r.rating, 1000.0) AS rating, "
+        "COALESCE(fc.record_wins, 0), COALESCE(fc.record_losses, 0), "
+        "COALESCE(fc.record_draws, 0), COALESCE(fc.win_streak, 0), "
+        "COALESCE(fc.loss_streak, 0), COALESCE(fc.potential, 50), "
+        "r.last_fight_date "
+        "FROM fighters f "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+        "LEFT JOIN rankings r ON r.fighter_id = f.fighter_id "
+        "  AND r.weight_class_id = f.weight_class_id "
+        "  AND r.promotion_id = f.current_promotion_id "
+        "WHERE f.current_promotion_id = ? "
+        "  AND f.is_active = 1 "
+        "  AND f.is_retired = 0 "
+        "  AND f.weight_class_id IS NOT NULL "
+        "  AND f.fighter_id NOT IN "
+        "    (SELECT fighter_id FROM injuries WHERE is_active = 1) "
+        "  AND f.fighter_id NOT IN "
+        "    (SELECT fighter_id FROM suspensions WHERE is_active = 1)",
+        (promotion_id,),
+    ).fetchall()
+
+    # Resolve the reference date for the 21-day rest check. Prefer
+    # before_date (the new event's date) — this lets us book fighters
+    # whose last fight was AFTER the current sim date (e.g., the just-
+    # completed event is dated 2026-08-15 but the sim clock is still
+    # at 2026-07-21 — the rest period is measured relative to the NEW
+    # event's date 2026-09-12, not the sim clock). Falls back to
+    # simulation_clock.current_date for callers without a specific
+    # event date.
+    ref_date_str = before_date
+    if ref_date_str is None:
+        clock_row = conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        ref_date_str = clock_row[0] if clock_row else None
+    ref_dt = None
+    if ref_date_str:
+        try:
+            ref_dt = datetime.strptime(ref_date_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            ref_dt = None
+
+    available = []
+    for row in rows:
+        (fighter_id, weight_class_id, rating,
+         wins, losses, draws, win_streak, loss_streak, potential,
+         last_fight_date) = row
+        # Rest period: skip fighters who fought in the last `rest_days`
+        # days BEFORE the new event's date. If we can't parse the date
+        # or there's no reference date, be lenient and include the
+        # fighter (defensive — the seed may not populate last_fight_date
+        # for all fighters).
+        if last_fight_date and ref_dt:
+            try:
+                last_dt = datetime.strptime(last_fight_date, "%Y-%m-%d")
+                if (ref_dt - last_dt).days < rest_days:
+                    continue
+            except (ValueError, TypeError):
+                pass  # bad date — be lenient and include the fighter
+        available.append({
+            'fighter_id': fighter_id,
+            'weight_class_id': weight_class_id,
+            'rating': rating,
+            'record_wins': wins,
+            'record_losses': losses,
+            'record_draws': draws,
+            'win_streak': win_streak,
+            'loss_streak': loss_streak,
+            'potential': potential,
+            'last_fight_date': last_fight_date,
+        })
+    return available
+
+
+def _group_available_by_wc(fighters):
+    """Group a list of available-fighter dicts by weight_class_id.
+
+    Returns dict: weight_class_id -> list of fighter dicts.
+    """
+    by_wc = {}
+    for f in fighters:
+        by_wc.setdefault(f['weight_class_id'], []).append(f)
+    return by_wc
+
+
+def _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids):
+    """Build the main event fight.
+
+    Per the brief:
+      1. If the promotion has a champion (any WC, not vacant): book
+         the champion vs the #1 contender (highest-ELO challenger
+         who is available).
+      2. If no champion (vacant title): book #1 vs #2 contenders for
+         the vacant title.
+      3. If not enough ranked fighters (or no title at all): book the
+         two highest-rated available fighters in the same weight class.
+
+    Main event is 5 rounds (scheduled_rounds=5) if a title is on the
+    line, 3 rounds otherwise. is_title_fight=1 if a title is on the
+    line.
+
+    Returns a fight dict (with keys: weight_class_id, fighter_a,
+    fighter_b, card_slot, is_title_fight, scheduled_rounds) or None
+    if can't book.
+    """
+    # Look at all titles for this promotion, find the best title fight.
+    title_rows = conn.execute(
+        "SELECT title_id, weight_class_id, current_champion_fighter_id, "
+        "is_vacant FROM titles WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchall()
+
+    for title_id, wc_id, champion_id, is_vacant in title_rows:
+        if wc_id not in fighters_by_wc:
+            continue
+        wc_fighters = [f for f in fighters_by_wc[wc_id]
+                       if f['fighter_id'] not in booked_ids]
+        wc_fighters.sort(key=lambda f: f['rating'], reverse=True)
+
+        if not is_vacant and champion_id is not None:
+            # Champion defending — find champion (if available) + top
+            # contender. The champion must be in the available pool
+            # (not injured, not suspended, rested).
+            champion = next((f for f in wc_fighters
+                             if f['fighter_id'] == champion_id), None)
+            if champion is None:
+                continue  # champion not available — try next title
+            contenders = [f for f in wc_fighters
+                          if f['fighter_id'] != champion_id]
+            if not contenders:
+                continue  # no contender available
+            return {
+                'weight_class_id': wc_id,
+                'fighter_a': champion['fighter_id'],
+                'fighter_b': contenders[0]['fighter_id'],
+                'card_slot': 'main_event',
+                'is_title_fight': 1,
+                'scheduled_rounds': _TITLE_FIGHT_ROUNDS,
+            }
+        elif is_vacant:
+            # Vacant title — book #1 vs #2 contenders for the belt.
+            if len(wc_fighters) < 2:
+                continue
+            return {
+                'weight_class_id': wc_id,
+                'fighter_a': wc_fighters[0]['fighter_id'],
+                'fighter_b': wc_fighters[1]['fighter_id'],
+                'card_slot': 'main_event',
+                'is_title_fight': 1,
+                'scheduled_rounds': _TITLE_FIGHT_ROUNDS,
+            }
+
+    # No title fight possible — book the two highest-rated fighters
+    # in the same weight class (non-title main event).
+    by_wc_avail = {}
+    for wc_id, fighters in fighters_by_wc.items():
+        avail = [f for f in fighters if f['fighter_id'] not in booked_ids]
+        avail.sort(key=lambda f: f['rating'], reverse=True)
+        if len(avail) >= 2:
+            by_wc_avail[wc_id] = avail
+    if not by_wc_avail:
+        return None
+    # Pick the WC with the highest top-2 rating sum.
+    best = None
+    for wc_id, fs in by_wc_avail.items():
+        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        if best is None or top2_sum > best[0]:
+            best = (top2_sum, wc_id, fs[0], fs[1])
+    _, wc_id, f1, f2 = best
+    return {
+        'weight_class_id': wc_id,
+        'fighter_a': f1['fighter_id'],
+        'fighter_b': f2['fighter_id'],
+        'card_slot': 'main_event',
+        'is_title_fight': 0,
+        'scheduled_rounds': _NON_TITLE_FIGHT_ROUNDS,
+    }
+
+
+def _build_co_main(fighters_by_wc, booked_ids, exclude_wc=None):
+    """Build the co-main event: next 2 best-rated in same WC.
+
+    3 rounds, is_title_fight=0. exclude_wc skips a WC (for variety
+    — we don't want the entire main card in one weight class).
+    Returns fight dict or None.
+    """
+    by_wc_avail = {}
+    for wc_id, fighters in fighters_by_wc.items():
+        if exclude_wc is not None and wc_id == exclude_wc:
+            continue
+        avail = [f for f in fighters if f['fighter_id'] not in booked_ids]
+        avail.sort(key=lambda f: f['rating'], reverse=True)
+        if len(avail) >= 2:
+            by_wc_avail[wc_id] = avail
+    if not by_wc_avail:
+        # Fallback: try including the excluded WC (any matchup is
+        # better than no co-main).
+        if exclude_wc is not None:
+            return _build_co_main(fighters_by_wc, booked_ids, exclude_wc=None)
+        return None
+    best = None
+    for wc_id, fs in by_wc_avail.items():
+        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        if best is None or top2_sum > best[0]:
+            best = (top2_sum, wc_id, fs[0], fs[1])
+    _, wc_id, f1, f2 = best
+    return {
+        'weight_class_id': wc_id,
+        'fighter_a': f1['fighter_id'],
+        'fighter_b': f2['fighter_id'],
+        'card_slot': 'co_main',
+        'is_title_fight': 0,
+        'scheduled_rounds': _NON_TITLE_FIGHT_ROUNDS,
+    }
+
+
+def _build_featured_prelim(fighters_by_wc, booked_ids, exclude_wc=None):
+    """Build a featured prelim: mid-tier rated in same WC.
+
+    3 rounds, is_title_fight=0. exclude_wc skips a WC for variety.
+    Returns fight dict or None.
+    """
+    by_wc_avail = {}
+    for wc_id, fighters in fighters_by_wc.items():
+        if exclude_wc is not None and wc_id == exclude_wc:
+            continue
+        avail = [f for f in fighters if f['fighter_id'] not in booked_ids]
+        avail.sort(key=lambda f: f['rating'], reverse=True)
+        if len(avail) >= 2:
+            by_wc_avail[wc_id] = avail
+    if not by_wc_avail:
+        return None
+    # Pick the WC with the highest top-2 rating sum.
+    best = None
+    for wc_id, fs in by_wc_avail.items():
+        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        if best is None or top2_sum > best[0]:
+            best = (top2_sum, wc_id, fs[0], fs[1])
+    _, wc_id, f1, f2 = best
+    return {
+        'weight_class_id': wc_id,
+        'fighter_a': f1['fighter_id'],
+        'fighter_b': f2['fighter_id'],
+        'card_slot': 'featured_prelim',
+        'is_title_fight': 0,
+        'scheduled_rounds': _NON_TITLE_FIGHT_ROUNDS,
+    }
+
+
+def _build_prelim(fighters_by_wc, booked_ids):
+    """Build a prelim: mix of prospects, journeymen, debuts, must-wins.
+
+    3 rounds, is_title_fight=0. Returns fight dict or None.
+
+    Priority: weight classes with debuts (0-0 records) or must-win
+    fighters (loss_streak >= 2) are preferred — this is where the
+    "prospect development" and "must-win fight" storylines live
+    (Kingmaker fantasy).
+    """
+    by_wc_avail = {}
+    for wc_id, fighters in fighters_by_wc.items():
+        avail = [f for f in fighters if f['fighter_id'] not in booked_ids]
+        if len(avail) >= 2:
+            by_wc_avail[wc_id] = avail
+    if not by_wc_avail:
+        return None
+
+    # Priority: WC with debuts (0-0 records) or must-win fighters
+    # (loss_streak >= 2). This is where the prospect-development
+    # and must-win storylines live.
+    def wc_priority(item):
+        wc_id, fs = item
+        has_debut = any(
+            (f['record_wins'] + f['record_losses'] + f['record_draws']) == 0
+            for f in fs)
+        has_must_win = any(f['loss_streak'] >= 2 for f in fs)
+        return (has_debut, has_must_win, len(fs))
+
+    sorted_wcs = sorted(by_wc_avail.items(), key=wc_priority, reverse=True)
+    for wc_id, fs in sorted_wcs:
+        # Within this WC, prefer prospect (high potential) — sort by
+        # potential desc and pick top 2. This gives the "prospect
+        # development" storyline a chance to fire (the prospect gets
+        # matched against the next-available fighter, who may be a
+        # journeyman or another prospect).
+        fs_sorted = sorted(fs, key=lambda f: f['potential'], reverse=True)
+        return {
+            'weight_class_id': wc_id,
+            'fighter_a': fs_sorted[0]['fighter_id'],
+            'fighter_b': fs_sorted[1]['fighter_id'],
+            'card_slot': 'prelim',
+            'is_title_fight': 0,
+            'scheduled_rounds': _NON_TITLE_FIGHT_ROUNDS,
+        }
+    return None
+
+
 def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     """Auto-schedule the next event for a promotion, ~weeks_out weeks
-    after a reference date.
+    after a reference date. Builds a FULL FIGHT CARD with 5-13 fights
+    depending on promotion.size_tier (Task FIX-CardSystem).
+
+    Card structure (per the brief):
+      - Main event (card_slot='main_event', is_title_fight=1 if champion
+        or vacant title available, scheduled_rounds=5 if title fight)
+      - Co-main event (card_slot='co_main', 3 rounds, is_title_fight=0)
+      - 2-3 featured prelims (card_slot='featured_prelim', 3 rounds)
+      - 3-8 prelims (card_slot='prelim', 3 rounds)
+
+    Card size by promotion size_tier:
+      - major: 10-13 fights
+      - mid:   7-9 fights
+      - small: 5-6 fights
+
+    Matchmaking (Kingmaker fantasy, Soul doc §3):
+      - Main event: champion vs #1 contender (title defense), OR #1 vs
+        #2 for vacant title, OR top 2 rated (non-title)
+      - Co-main: next 2 best-rated (different WC for variety if possible)
+      - Featured prelims: mid-tier rated (different WC for variety)
+      - Prelims: mix of prospects, journeymen, debuts, must-win fighters
+
+    Matchmaking rules:
+      - Same weight class per fight (no featherweight vs heavyweight)
+      - Same promotion (no cross-promotion booking)
+      - Both fighters active (is_active=1, is_retired=0)
+      - Neither fighter injured (not in injuries WHERE is_active=1)
+      - Neither fighter suspended (not in suspensions WHERE is_active=1)
+      - Neither fighter fought in last 21 days (rest period)
+      - No fighter booked twice on the same card
+
+    If there aren't enough available fighters for a full card, book as
+    many as possible (don't crash). A 1-fight card is better than no card.
+
+    Event name format: "{Promotion Name} {Number}: {FighterA} vs
+    {FighterB}" where Number = promotion's event count + 1, and
+    FighterA/FighterB are the main event fighters.
 
     Called by resolve_next_fight() as a side effect when an event just
     transitioned to 'completed' (Task ID 8). Can also be called directly
     for testing or for "I want to schedule an event now" UI actions.
-
-    The new event:
-      - Has the same promotion_id as the just-completed event.
-      - Is scheduled at the same venue and market as the promotion's
-        most recent completed event (the seeded Metro Arena / Metro
-        City market). Task ID 27 will add venue/market depth; for now
-        we reuse.
-      - Has event_date = from_event_date + weeks_out*7 days. If
-        from_event_date is None, uses today's sim date from
-        simulation_clock.
-      - Has at least 1 fight with 2 participants from the promotion's
-        roster (active fighters, same weight class as the original
-        event). Matchmaking is random for now (Task 10 will add
-        ranking-proximity matchmaking; Task 22 will add rivalry logic).
-      - Returns the new event_id, or None if scheduling failed (e.g.,
-        not enough available fighters).
 
     Args:
         conn: sqlite3 connection (caller commits).
@@ -3582,21 +3996,21 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     new_date = ref_date + timedelta(weeks=weeks_out)
     new_date_str = new_date.strftime("%Y-%m-%d")
 
-    # 3. Find venue + market + weight_class for the new event. Reuse
-    # the values from the promotion's most recent completed event.
-    # events has no weight_class_id column — join through fights to
-    # get it. ORDER BY e.event_date DESC so the most recent completed
-    # event wins (defensive: in normal gameplay only 1 completed event
-    # exists at this point, but multi-event histories are possible).
+    # 3. Find venue + market for the new event. Reuse the values from
+    # the promotion's most recent completed event. (The old code also
+    # reused weight_class_id from the completed event — but the new
+    # card-construction logic picks weight classes per fight based on
+    # available fighters, so we no longer need a single weight_class_id
+    # for the whole event. Each fight on the card has its own WC.)
     completed = conn.execute(
-        "SELECT e.venue_id, e.market_id, f.weight_class_id "
+        "SELECT e.venue_id, e.market_id "
         "FROM events e JOIN fights f ON f.event_id = e.event_id "
         "WHERE e.promotion_id = ? AND e.status = 'completed' "
         "ORDER BY e.event_date DESC LIMIT 1",
         (promotion_id,),
     ).fetchone()
     if completed:
-        venue_id, market_id, weight_class_id = completed
+        venue_id, market_id = completed
     else:
         # Degenerate fallback: no completed event yet for this
         # promotion. This can happen when schedule_next_event() is
@@ -3604,13 +4018,19 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
         # resolved. Fall back to any venue in any city whose nation
         # matches the promotion's nation. If that also fails, give up.
         promo_row = conn.execute(
-            "SELECT nation_id FROM promotions WHERE promotion_id = ?",
+            "SELECT nation_id, name, size_tier "
+            "FROM promotions WHERE promotion_id = ?",
             (promotion_id,),
         ).fetchone()
-        nation_id = promo_row[0] if promo_row else None
-        if nation_id is None:
+        if promo_row is None:
             print(f"Warning: could not auto-schedule next event — "
                   f"promotion_id={promotion_id} not found and no "
+                  f"completed event to reuse.")
+            return None
+        nation_id = promo_row[0]
+        if nation_id is None:
+            print(f"Warning: could not auto-schedule next event — "
+                  f"promotion_id={promotion_id} has no nation_id and no "
                   f"completed event to reuse.")
             return None
         fallback = conn.execute(
@@ -3628,46 +4048,110 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
                   f"(promotion_id={promotion_id}).")
             return None
         venue_id, market_id = fallback
-        # Need a weight_class_id too — use any weight class. In the
-        # seeded DB there's exactly one (Lightweight, id=1).
-        wc_row = conn.execute(
-            "SELECT weight_class_id FROM weight_classes "
-            "ORDER BY weight_class_id LIMIT 1"
-        ).fetchone()
-        if not wc_row:
-            print(f"Warning: could not auto-schedule next event — no "
-                  f"weight_classes exist (promotion_id={promotion_id}).")
-            return None
-        weight_class_id = wc_row[0]
 
-    # 4. Pick 2 distinct fighters from the promotion's roster in this
-    # weight class. For now: random. exclude_fighter_ids is left empty
-    # because the just-completed event's fighters can fight again on
-    # the next card (4 weeks out is enough rest in this thin sim).
-    matchup = _pick_matchup(conn, promotion_id, weight_class_id)
-    if matchup is None:
-        print(f"Warning: could not auto-schedule next event — not "
-              f"enough active fighters in promotion_id={promotion_id}, "
-              f"weight_class_id={weight_class_id} (need 2).")
+    # 4. Get promotion info (name, size_tier).
+    promo_row = conn.execute(
+        "SELECT name, size_tier FROM promotions WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchone()
+    if promo_row is None:
+        print(f"Warning: could not auto-schedule next event — "
+              f"promotion_id={promotion_id} not found.")
         return None
-    fighter_a_id, fighter_b_id = matchup
+    promo_name, size_tier = promo_row
+    size_tier_key = (size_tier or 'small').lower()
 
-    # 5. Build the event_name. Use a counter: count existing events
-    # for this promotion + 1. Format chosen: "{promo_name}: Card {N}"
-    # to foreshadow the "card" terminology from the v1.6 spec. See
-    # worklog decision D1.
+    # 5. Determine target card size + featured prelim count from size_tier.
+    target_min, target_max = _CARD_SIZE_BY_TIER.get(
+        size_tier_key, _CARD_SIZE_BY_TIER['small'])
+    featured_count = _FEATURED_PRELIM_COUNT_BY_TIER.get(
+        size_tier_key, _FEATURED_PRELIM_COUNT_BY_TIER['small'])
+
+    # 6. Get all available fighters (active, not injured, not suspended,
+    # not fought in last 21 days). The rest period is measured relative
+    # to the NEW event's date (a fighter who fought on 2026-08-15 is
+    # eligible for a new event on 2026-09-12, since 28 >= 21 days).
+    available = _get_available_fighters_for_card(
+        conn, promotion_id, before_date=new_date_str)
+    if len(available) < 2:
+        print(f"Warning: could not auto-schedule next event — not "
+              f"enough active fighters in promotion_id={promotion_id} "
+              f"(need at least 2, got {len(available)}).")
+        return None
+
+    # 7. Group available fighters by weight class.
+    fighters_by_wc = _group_available_by_wc(available)
+
+    # 8. Build the card: main event → co-main → featured prelims →
+    # prelims. Each fight picks 2 fighters in the same weight class
+    # who have not been booked yet on this card.
+    booked_ids = set()
+    card_fights = []
+
+    # 8a. Main event (title fight if possible).
+    main_event = _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids)
+    if main_event is None:
+        print(f"Warning: could not auto-schedule next event — could not "
+              f"book a main event for promotion_id={promotion_id} "
+              f"(no 2 available fighters in the same weight class).")
+        return None
+    card_fights.append(main_event)
+    booked_ids.add(main_event['fighter_a'])
+    booked_ids.add(main_event['fighter_b'])
+    main_event_wc = main_event['weight_class_id']
+
+    # 8b. Co-main event. Try a different WC for variety; fall back to
+    # any WC if needed.
+    if len(card_fights) < target_max:
+        co_main = _build_co_main(fighters_by_wc, booked_ids,
+                                 exclude_wc=main_event_wc)
+        if co_main is not None:
+            card_fights.append(co_main)
+            booked_ids.add(co_main['fighter_a'])
+            booked_ids.add(co_main['fighter_b'])
+
+    # 8c. Featured prelims (2-3 fights, varying WCs for variety).
+    for i in range(featured_count):
+        if len(card_fights) >= target_max:
+            break
+        # Try to exclude the main event's WC for variety on the first
+        # featured prelim. Subsequent ones pick the best WC available.
+        exclude_wc = main_event_wc if i == 0 else None
+        fp = _build_featured_prelim(fighters_by_wc, booked_ids,
+                                    exclude_wc=exclude_wc)
+        if fp is None and exclude_wc is not None:
+            # Fallback: try without the exclusion.
+            fp = _build_featured_prelim(fighters_by_wc, booked_ids,
+                                        exclude_wc=None)
+        if fp is None:
+            break
+        card_fights.append(fp)
+        booked_ids.add(fp['fighter_a'])
+        booked_ids.add(fp['fighter_b'])
+
+    # 8d. Prelims (fill the rest up to target_max). Each prelim picks
+    # 2 available fighters in the same WC, prioritizing prospects and
+    # must-win fighters for the undercard storylines.
+    while len(card_fights) < target_max:
+        pr = _build_prelim(fighters_by_wc, booked_ids)
+        if pr is None:
+            break
+        card_fights.append(pr)
+        booked_ids.add(pr['fighter_a'])
+        booked_ids.add(pr['fighter_b'])
+
+    # 9. Build event_name: "{Promotion Name} {Number}: {FighterA} vs
+    # {FighterB}". The number is the promotion's event count + 1.
+    # FighterA vs FighterB is the main event.
     event_count = conn.execute(
         "SELECT COUNT(*) FROM events WHERE promotion_id = ?",
         (promotion_id,),
     ).fetchone()[0]
-    promo_name_row = conn.execute(
-        "SELECT name FROM promotions WHERE promotion_id = ?",
-        (promotion_id,),
-    ).fetchone()
-    promo_name = promo_name_row[0] if promo_name_row else f"Promotion {promotion_id}"
-    event_name = f"{promo_name}: Card {event_count + 1}"
+    me_a_name = fighter_name(conn, main_event['fighter_a'])
+    me_b_name = fighter_name(conn, main_event['fighter_b'])
+    event_name = f"{promo_name} {event_count + 1}: {me_a_name} vs {me_b_name}"
 
-    # 6. Insert the new event (status='scheduled', event_type='fight_night').
+    # 10. Insert the new event (status='scheduled', event_type='fight_night').
     new_event_id = conn.execute(
         "INSERT INTO events (promotion_id, venue_id, market_id, event_name, "
         "event_date, event_type, status) VALUES (?, ?, ?, ?, ?, ?, 'scheduled')",
@@ -3675,82 +4159,71 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
          new_date_str, "fight_night"),
     ).lastrowid
 
-    # 7. Insert the fight + 2 participants + 1 event_cards row. Mirror
-    # the seed pattern (main_event, 3 rounds, red/blue corners, card
-    # position 1 / card_tier 'main_event' / is_main_event 1).
-    # v2.2.0 (Task pre-B2-fix): the INSERT now also sets
-    # `card_slot='main_event'` and `is_title_fight=0` explicitly (the
-    # deprecated `bout_type='main_event'` is kept for backward
-    # compatibility — external readers that still check bout_type keep
-    # working). Auto-scheduled fights are never title fights by
-    # default — the player / booking UI (future Task B2+) decides
-    # when to promote a fight to a title fight.
-    new_fight_id = conn.execute(
-        "INSERT INTO fights (event_id, weight_class_id, bout_type, "
-        "card_slot, is_title_fight, round_limit, scheduled_rounds) "
-        "VALUES (?, ?, 'main_event', 'main_event', 0, 3, 3)",
-        (new_event_id, weight_class_id),
-    ).lastrowid
-    conn.execute(
-        "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
-        "VALUES (?, ?, 'red')",
-        (new_fight_id, fighter_a_id),
-    )
-    conn.execute(
-        "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
-        "VALUES (?, ?, 'blue')",
-        (new_fight_id, fighter_b_id),
-    )
-    conn.execute(
-        "INSERT INTO event_cards (event_id, fight_id, card_position, "
-        "card_tier, is_main_event, is_co_main) "
-        "VALUES (?, ?, 1, 'main_event', 1, 0)",
-        (new_event_id, new_fight_id),
-    )
-
-    # ----------------------------------------------------------------
-    # v2.5.0 (Task 16): create training camps for both booked fighters.
-    # Each fighter gets one training_camps row representing the ~2-week
-    # training block at their gym leading up to the fight. The camp's
-    # start_date = new_date_str - 14 days, end_date = new_date_str,
-    # camp_focus derived from the fighter's style archetype. The camp
-    # is then progressed / completed by _check_training_camps in
-    # tick_processor.py on every tick within [start_date, end_date].
-    #
-    # If a fighter's current_gym_id is NULL (a free agent without a
-    # home gym — possible for fighters generated by generate_fighter
-    # who were signed via sign_free_agent without a gym assignment),
-    # the camp is skipped with a printed warning. The fighter still
-    # gets to fight — they just don't get the camp progression / gain
-    # benefits (and don't suffer the camp fatigue / injury risk either,
-    # which is the realistic trade-off for not having a home gym).
-    # ----------------------------------------------------------------
-    for fid in (fighter_a_id, fighter_b_id):
-        f_row = conn.execute(
-            "SELECT current_gym_id, fight_style_archetype_id "
-            "FROM fighters WHERE fighter_id=?",
-            (fid,),
-        ).fetchone()
-        if f_row is None:
-            print(f"Warning: could not create training camp — fighter "
-                  f"{fid} not found in fighters table.")
-            continue
-        f_gym_id, f_archetype_id = f_row
-        if f_gym_id is None:
-            print(f"Warning: fighter {fid} has no current_gym_id — "
-                  f"skipping training camp creation (no home gym).")
-            continue
-        _create_training_camp(
-            conn,
-            fighter_id=fid,
-            gym_id=f_gym_id,
-            event_id=new_event_id,
-            fight_id=new_fight_id,
-            event_date=new_date_str,
-            style_archetype_id=f_archetype_id,
+    # 11. Insert all fight rows + 2 participants each + 1 event_cards
+    # row each. Also create training camps for all booked fighters
+    # (existing behavior from Task 16 — preserves the camp progression
+    # system that drives the Talent Hunter fantasy).
+    # v2.2.0 (Task pre-B2-fix): card_slot + is_title_fight are the
+    # canonical signals (bout_type is kept for backward compatibility —
+    # we set bout_type = card_slot for external readers that still
+    # check bout_type).
+    for position, fight in enumerate(card_fights, start=1):
+        new_fight_id = conn.execute(
+            "INSERT INTO fights (event_id, weight_class_id, bout_type, "
+            "card_slot, is_title_fight, round_limit, scheduled_rounds) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (new_event_id, fight['weight_class_id'], fight['card_slot'],
+             fight['card_slot'], fight['is_title_fight'], 3,
+             fight['scheduled_rounds']),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
+            "VALUES (?, ?, 'red')",
+            (new_fight_id, fight['fighter_a']),
         )
+        conn.execute(
+            "INSERT INTO fight_participants (fight_id, fighter_id, corner) "
+            "VALUES (?, ?, 'blue')",
+            (new_fight_id, fight['fighter_b']),
+        )
+        conn.execute(
+            "INSERT INTO event_cards (event_id, fight_id, card_position, "
+            "card_tier, is_main_event, is_co_main) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_event_id, new_fight_id, position, fight['card_slot'],
+             1 if fight['card_slot'] == 'main_event' else 0,
+             1 if fight['card_slot'] == 'co_main' else 0),
+        )
+        # Create training camps for both booked fighters. If a fighter
+        # has no current_gym_id, the camp is skipped with a warning
+        # (existing pattern — the fighter still gets to fight, just
+        # without the camp progression / gain benefits).
+        for fid in (fight['fighter_a'], fight['fighter_b']):
+            f_row = conn.execute(
+                "SELECT current_gym_id, fight_style_archetype_id "
+                "FROM fighters WHERE fighter_id=?",
+                (fid,),
+            ).fetchone()
+            if f_row is None:
+                print(f"Warning: could not create training camp — fighter "
+                      f"{fid} not found in fighters table.")
+                continue
+            f_gym_id, f_archetype_id = f_row
+            if f_gym_id is None:
+                print(f"Warning: fighter {fid} has no current_gym_id — "
+                      f"skipping training camp creation (no home gym).")
+                continue
+            _create_training_camp(
+                conn,
+                fighter_id=fid,
+                gym_id=f_gym_id,
+                event_id=new_event_id,
+                fight_id=new_fight_id,
+                event_date=new_date_str,
+                style_archetype_id=f_archetype_id,
+            )
 
-    # 8. Return the new event_id. Do NOT commit — the caller commits,
+    # 12. Return the new event_id. Do NOT commit — the caller commits,
     # matching the existing pattern (resolve_next_fight, advance_day,
     # etc.).
     return new_event_id

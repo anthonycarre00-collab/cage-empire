@@ -760,6 +760,7 @@ def case_d_phase_transitions():
     # this by checking the first beat's phase across the 50 sims we
     # just ran (we re-run a few to make the check self-contained).
     always_starts_standing = True
+    non_standing_count = 0
     for i in range(10):
         a_val = 50 + (i * 7) % 40
         b_val = 50 + (i * 11) % 40
@@ -768,17 +769,24 @@ def case_d_phase_transitions():
         conn.commit()
         app.resolve_next_fight(conn)
         conn.commit()
+        # v2 card system: weight cut cancellation may produce no_contest
+        # fights with no beats — skip those
+        rt = conn.execute("SELECT result_type FROM fights WHERE fight_id=?", (fight_id,)).fetchone()
+        if rt and rt[0] == "no_contest":
+            reset_fight(conn, fight_id)
+            continue
         first_beat_phase = conn.execute(
             "SELECT phase FROM fight_beats WHERE fight_id=? AND round_number=1 AND beat_number=1",
             (fight_id,),
         ).fetchone()
         if first_beat_phase is None or first_beat_phase[0] != "standing":
             always_starts_standing = False
+            non_standing_count += 1
         reset_fight(conn, fight_id)
     results.append((
-        "D.4 every fight's first beat is in 'standing' phase",
+        "D.4 every fight's first beat is in 'standing' phase (v2: no_contest fights exempt)",
         always_starts_standing,
-        f"always_starts_standing={always_starts_standing}",
+        f"always_starts_standing={always_starts_standing}, non_standing={non_standing_count}",
     ))
 
     # D.5 B2 supervisor fix: round 1 starts in 'standing' phase. B2 finishes may
@@ -1095,7 +1103,8 @@ def case_f_decision_scoring():
     # B1 only had decisions; B2 adds KO/submission/doctor/corner/DQ.
     random.seed(RANDOM_SEED)
     valid_types = {"unanimous_decision", "split_decision", "draw",
-                   "ko_tko", "submission", "doctor_stoppage", "corner_stoppage", "dq"}
+                   "ko_tko", "submission", "doctor_stoppage", "corner_stoppage", "dq",
+                   "no_contest"}  # v2 card system: no_contest from weight cut cancellation
     all_valid = True
     bad_types = set()
     for i in range(50):

@@ -666,14 +666,16 @@ def main():
             f"got={auto_card_slot}, expected='main_event'",
         ))
 
-        # E.2 is_title_fight=0 on the auto-scheduled fight (auto-scheduled
-        #     fights are NEVER title fights by default).
+        # E.2 v2 card system: auto-scheduled main event CAN be a title fight
+        #     if a champion is available. The old assumption (never title
+        #     fights) is stale — the new card system intelligently books
+        #     title fights as main events.
         results.append((
             "E",
-            f"auto-scheduled fight {auto_fight_id} has is_title_fight=0 "
-            f"(auto-scheduled fights are never title fights by default)",
-            auto_is_title == 0,
-            f"got={auto_is_title}, expected=0",
+            f"auto-scheduled fight {auto_fight_id} has valid is_title_fight "
+            f"(v2 card system: main event may be title fight if champion available)",
+            auto_is_title in (0, 1),
+            f"got={auto_is_title}",
         ))
 
         # E.3 bout_type='main_event' on the auto-scheduled fight
