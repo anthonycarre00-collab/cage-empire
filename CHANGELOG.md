@@ -8,6 +8,85 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Stage 5 — Save/Load System, Task ID Stage5-SaveLoad, no schema change)
+- New `src/save_load.py` — save/load functionality. The game previously
+  had NO save/load — the DB IS the game state, so saving = backing up
+  the DB file to `data/saves/{name}.db`; loading = copying that file
+  back to the active DB path. Uses `shutil.copy2` (byte-for-byte file
+  copy, NOT database dumps — preserves AUTOINCREMENT counters, exact
+  row order, and all 52 tables including `sqlite_sequence`). Per the
+  brief: "Do NOT add new tables — the DB IS the save state." No schema
+  change in this task.
+  * `save_game(conn, save_name=None)` — copies `data/cage_empire.db`
+    to `data/saves/{save_name}.db`. If save_name is None, generates a
+    timestamp-based name (`save_YYYYMMDD_HHMMSS`). Calls `conn.commit()`
+    BEFORE the copy (D2 — critical for auto_save fired as a TICK_
+    ADVANCED subscriber, because run_tick commits AFTER bus.publish;
+    without this commit, the auto-save would capture the pre-tick
+    state). Also writes a save metadata JSON file alongside the .db
+    file with: save_name, timestamp (ISO), sim_date (from
+    simulation_clock.current_date), promotion_name + current_cash
+    (from promotions where promotion_id=1), fighter_count (COUNT(*)
+    FROM fighters), event_count (COUNT(*) FROM events), schema_version
+    (from schema_meta). Save names are sanitized to `[a-zA-Z0-9_-]`
+    only (D4 — prevents path traversal, enforces the brief's "no
+    spaces, no special chars" rule).
+  * `load_game(save_name)` — copies `data/saves/{save_name}.db` back
+    to the active DB path, overwriting the current DB. Returns a NEW
+    sqlite3.Connection to the restored DB (with PRAGMA foreign_keys =
+    ON). Raises FileNotFoundError for missing saves. The caller is
+    responsible for closing any existing connection BEFORE calling
+    load_game (D5 — Windows can't overwrite an open file).
+  * `list_saves()` — reads all .json files in data/saves/ and returns
+    a list of save metadata dicts (name, timestamp, sim_date,
+    promotion, cash, fighters, events, schema_version, is_autosave,
+    db_path). Sorted by timestamp DESC (newest first). Tags saves
+    whose name starts with `autosave_` as `is_autosave=True`.
+  * `delete_save(save_name)` — removes both the .db and .json files.
+    Returns True if any file was deleted, False for non-existent
+    saves. Defensive — OSError on individual file deletion is
+    swallowed.
+  * `auto_save(conn, event)` — TICK_ADVANCED subscriber. Fires every
+    30 sim days (monthly cadence — checks `simulation_clock.current_
+    day % 30 == 0`). Writes a rotating auto-save to `data/saves/
+    autosave_<sim_date>_<wallclock>.db` (D3 — sim_date is human-
+    readable, wall-clock timestamp guarantees uniqueness). After
+    saving, calls `_prune_autosaves()` which lists all `autosave_*.db`
+    files, sorts by mtime DESC, and deletes all but the newest 3
+    (per the brief: "Keeps only the last 3 auto-saves (rotating)").
+    SILENT — no news item, no print to stdout (per the brief: "Auto-
+    save should be SILENT — it's a background operation"). Errors
+    print to stderr (defensive — a broken auto-save shouldn't crash
+    the game).
+  * `register_subscribers()` — registers the auto_save subscriber on
+    the global event bus (TICK_ADVANCED). Wired into App.__init__
+    (lazy import, defensive except ImportError — same pattern as all
+    other systems).
+- New `scripts/test_save_load.py` — 8 cases (A-H), 82 sub-checks.
+  Case A: save_game creates a .db file (valid SQLite DB, non-zero
+  size, save_name=None generates timestamped name). Case B:
+  save_game writes metadata JSON with all 8 required fields
+  (save_name, timestamp, sim_date, promotion_name, current_cash,
+  fighter_count, event_count, schema_version — verified against the
+  DB values). Case C: load_game restores the DB (saves → modifies →
+  loads → verifies the modifications are undone — D2 round-trip
+  test). Case D: list_saves returns save info (sorted by timestamp
+  DESC, is_autosave flag, empty when no saves). Case E: delete_save
+  removes the file (both .db + .json, returns False for non-existent
+  saves, sanitizes unsafe chars). Case F: auto_save fires on
+  TICK_ADVANCED (monthly — day 30, 60 trigger; day 2, 31 don't;
+  SILENT — no stdout output). Case G: auto_save keeps only 3 rotating
+  saves (5 monthly ticks → 3 files remain; .json pruned alongside
+  .db; surviving 3 are the newest by sim_date; manual saves NOT
+  pruned — D4). Case H: Design Law (§13) — Investment pillar (the
+  player's progress — signed fighter, advanced clock, deducted cash,
+  scheduled event — is preserved across save → wipe → load round-
+  trip). All 82 checks pass. Verified stable across 3 consecutive
+  runs (no flakes).
+- Modified `src/app.py` — App.__init__ wires save_load.register_
+  subscribers (lazy import + try/except, same pattern as the 10
+  other systems registered before this task).
+
 ### Added (Stage 5 — Show rating engine + Venues/markets deeper simulation, schema 3.5.0 → 3.6.0 MINOR)
 - New `show_ratings` table — one row per completed event (UNIQUE
   event_id). 10 columns: rating_id PK, event_id FK (NOT NULL ON

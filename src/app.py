@@ -6363,6 +6363,31 @@ class App(tk.Tk):
             _register_venues()
         except ImportError:
             pass  # venues.py not available — legacy behavior
+        # v3.6.0 (Stage 5 — Task ID Stage5-SaveLoad): register the
+        # save/load auto-save subscriber on the global event bus.
+        # The auto_save subscriber fires on every TICK_ADVANCED and,
+        # on every 30th sim day (monthly), writes a rotating backup
+        # of the DB file to data/saves/autosave_*.db (keeping only
+        # the last 3 — the "rotating" pattern). The save is SILENT
+        # (no news item, no print — background operation per the
+        # brief) and entirely event-bus-driven (CONVENTIONS §15.4 —
+        # no new inline side effects added to run_tick). save_game
+        # calls conn.commit() before shutil.copy2 so the auto-save
+        # captures the post-tick state (run_tick commits AFTER
+        # bus.publish; without this commit, the auto-save would
+        # capture the pre-tick state). Lazy import for the same
+        # reasons as news.py / social.py / rivalries.py / punditry.
+        # py / morale.py / suspensions.py / agent_offers.py /
+        # career_arc.py / rival_ai.py / show_rating.py / venues.py
+        # above. This task adds NO new tables — the DB IS the save
+        # state (per the brief). save_game + load_game + list_saves
+        # + delete_save are the public API for manual save/load
+        # (called by a future UI Save/Load panel).
+        try:
+            from save_load import register_subscribers as _register_save_load
+            _register_save_load()
+        except ImportError:
+            pass  # save_load.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.
