@@ -1127,6 +1127,36 @@ def register_subscribers():
         Events.FIGHT_RESOLVED, _process_fight_reputation,
         name="morale.process_fight_reputation",
     )
+    # FIX-Critical (Issue 3): gym spec evolution subscribers.
+    # - CAMP_COMPLETED → +1 random gym spec (camp revenue → upgrades).
+    # - TITLE_CHANGED → +2 facility_quality (champion money).
+    # - TICK_ADVANCED (monthly) → high-rep gyms upgrade, low-rep decay.
+    # All clamped to [10, 95]. Registered AFTER the existing
+    # CAMP_COMPLETED + TITLE_CHANGED subscribers above so the morale
+    # bumps fire first (order is not load-bearing — both write to
+    # different tables), but the gym-spec writes are last so a
+    # snapshot refresh in morale (which only touches fighter_personality)
+    # doesn't see stale gym state.
+    bus.subscribe(
+        Events.CAMP_COMPLETED, _process_camp_completed_gym_spec,
+        name="morale.process_camp_completed_gym_spec",
+    )
+    bus.subscribe(
+        Events.TITLE_CHANGED, _process_title_changed_gym_spec,
+        name="morale.process_title_changed_gym_spec",
+    )
+    bus.subscribe(
+        Events.TICK_ADVANCED, _process_monthly_gym_spec_drift,
+        name="morale.process_monthly_gym_spec_drift",
+    )
+    # FIX-Critical (Issue 4): promotion size_tier monthly evolution.
+    # AI promotions only (promotion_id != 1) — the player decides
+    # their own growth path. Tier transitions are asymmetric (climbing
+    # requires ALL thresholds; falling requires ONE).
+    bus.subscribe(
+        Events.TICK_ADVANCED, _process_monthly_promotion_tier,
+        name="morale.process_monthly_promotion_tier",
+    )
 
 
 # ----------------------------------------------------------------
@@ -1229,3 +1259,402 @@ def _process_fight_reputation(conn, event):
                         "updated_at=CURRENT_TIMESTAMP WHERE gym_id=?",
                         (new_rep, gym_id),
                     )
+
+
+# ----------------------------------------------------------------
+# FIX-Critical — Gym spec evolution + Promotion size_tier evolution
+# (Issue 3 + Issue 4).
+#
+# The "frozen field" gap (per the brief): gym specs (facility_quality,
+# medical_support, sparring_depth, development_focus, weight_cut_support)
+# were set at seed time and never updated. Same for promotions.size_tier
+# (a promotion never grew from small → mid → major, or shrank back).
+#
+# Both systems are entirely event-bus-driven (CONVENTIONS §15.4 — no
+# new inline side effects added to resolve_next_fight or run_tick).
+# All 4 new subscribers are registered alongside the existing 8 in
+# register_subscribers() below. Lazy imports + defensive error handling
+# follow the established morale.py patterns.
+#
+# GYM SPEC EVOLUTION (Issue 3):
+#   - CAMP_COMPLETED → +1 random spec on the fighter's current gym.
+#     (Camps generate revenue — the gym invests in improvements.)
+#   - TITLE_CHANGED  → +2 facility_quality on the new champion's gym.
+#     (Champion money upgrades the facility.)
+#   - TICK_ADVANCED (monthly) → high-reputation gyms (rep > 70) get
+#     a 30% chance of +1 random spec. Low-reputation gyms (rep < 30)
+#     get a 20% chance of -1 random spec. (Successful gyms grow;
+#     failing gyms decay — keeps the gym ecosystem dynamic.)
+#   - All specs clamped to [10, 95] (tighter than the schema's 0-100
+#     CHECK — preserves the band where the gym is usable but never
+#     perfect or hopeless).
+#
+# PROMOTION SIZE_TIER EVOLUTION (Issue 4):
+#   - TICK_ADVANCED (monthly) → for each AI promotion (promotion_id
+#     != 1, i.e. NOT the player's promotion — the player decides
+#     their own growth path), check whether the tier should change:
+#       small → mid:    reputation >= 60 AND roster >= 50 AND cash >= 5M
+#       mid → major:    reputation >= 75 AND roster >= 200 AND cash >= 20M
+#       major → mid:    reputation < 50 OR cash < 5M
+#       mid → small:    reputation < 35 OR cash < 1M
+#   - Only the player's promotion (promotion_id=1) is excluded.
+#   - Transitions are NOT symmetric — going up requires meeting ALL
+#     thresholds (reputation + roster + cash); going down requires
+#     failing ONE (reputation OR cash). The asymmetry makes the
+#     "rise and fall" arc real (climbing is hard, falling is easy).
+#
+# CONVENTIONS compliance:
+#   §5  — One table-group per task. NO new table — this section
+#         updates existing gyms.* and promotions.size_tier columns
+#         (both have existed since v2.0.0 / Task 14.6).
+#   §13 — Design Law: Growth (gyms + promotions evolve over time —
+#         the gym ecosystem and promotion pecking order aren't
+#         frozen at seed). Conflict (a promotion growing into a
+#         major creates a new rival for the player; a gym decaying
+#         produces the "falling giant" storyline). Empire Builder +
+#         Puppet Master fantasies (the world evolves around the
+#         player's decisions).
+#   §14 — Voice Layer: NO player-facing text is written by these
+#         subscribers. The gym spec values are internal state that
+#         feed training camp growth + injury probability + weight
+#         cut success — all displayed via the voice layer at read
+#         time. No raw numbers leak because these subscribers write
+#         no prose of their own.
+#   §15 — Event Bus: entirely event-driven. Subscribes to
+#         CAMP_COMPLETED, TITLE_CHANGED, and TICK_ADVANCED. Does
+#         NOT modify run_tick or resolve_next_fight.
+# ----------------------------------------------------------------
+
+# Gym spec field names (Issue 3) — the 5 INTEGER 0-100 columns on
+# gyms that evolve via camp completion, title wins, and monthly
+# reputation drift. NOT 'reputation' (separate system, already
+# handled by _process_event_reputation + _process_fight_reputation
+# above) and NOT 'culture_tone' (TEXT — open-ended).
+GYM_SPEC_FIELDS = (
+    "facility_quality",
+    "medical_support",
+    "sparring_depth",
+    "development_focus",
+    "weight_cut_support",
+)
+
+# Clamping bounds (tighter than the schema's CHECK 0-100 — keeps
+# the gym usable but never perfect or hopeless).
+GYM_SPEC_FLOOR = 10
+GYM_SPEC_CEIL = 95
+
+# Monthly gym evolution probabilities (Issue 3).
+GYM_HIGH_REPUTATION_THRESHOLD = 70  # >= this → 30% upgrade chance
+GYM_LOW_REPUTATION_THRESHOLD  = 30  # <  this → 20% degrade chance
+GYM_HIGH_REP_UPGRADE_CHANCE   = 0.30
+GYM_LOW_REP_DEGRADE_CHANCE    = 0.20
+
+
+def _clamp_gym_spec(v):
+    """Clamp a gym spec value to [GYM_SPEC_FLOOR, GYM_SPEC_CEIL]."""
+    return max(GYM_SPEC_FLOOR, min(GYM_SPEC_CEIL, int(v)))
+
+
+def _bump_gym_spec(conn, gym_id, field, delta, update_snapshot=True):
+    """Update a single gym spec field by `delta` (clamped to [10, 95]).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        gym_id: the gym to update.
+        field: one of GYM_SPEC_FIELDS. Defensive — refuses to write
+            any other field (prevents accidental writes to reputation
+            or culture_tone via this helper).
+        delta: int — the change (+1, +2, -1, etc.).
+        update_snapshot: kept for parity with _set_personality_field
+            (gyms have no descriptor snapshot, so this is a no-op).
+    """
+    if field not in GYM_SPEC_FIELDS:
+        return  # defensive — caller bug, refuse to write
+    row = conn.execute(
+        f"SELECT {field} FROM gyms WHERE gym_id=?",
+        (gym_id,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return  # gym missing or spec NULL — defensive
+    new_val = _clamp_gym_spec(row[0] + delta)
+    if new_val == row[0]:
+        return  # no change after clamping (already at floor or ceil)
+    conn.execute(
+        f"UPDATE gyms SET {field}=?, updated_at=CURRENT_TIMESTAMP "
+        "WHERE gym_id=?",
+        (new_val, gym_id),
+    )
+
+
+def _fighter_gym_id(conn, fighter_id):
+    """Return the fighter's current_gym_id (or None)."""
+    row = conn.execute(
+        "SELECT current_gym_id FROM fighters WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _process_camp_completed_gym_spec(conn, event):
+    """Subscriber for CAMP_COMPLETED — +1 random gym spec (Issue 3).
+
+    When a fighter completes a training camp, their gym gets +1 to a
+    random spec. The narrative: camps generate revenue (fighters pay
+    membership_cost, win purses flow back into the gym); the gym
+    invests the revenue in one of its five spec areas. Over time a
+    busy gym with active camp traffic upgrades its facility, expands
+    its medical team, deepens its sparring pool, sharpens its
+    development focus, or improves its weight-cut support.
+
+    The +1 is small per camp, but compounds — a gym with 20 active
+    fighters running 2 camps/year each gains ~40 spec points/year,
+    spread across the 5 specs. That's the "Ironhouse Gym has become
+    a real powerhouse over the past 5 years" storyline.
+
+    Lazy-imports nothing — uses only DB access + the existing
+    _bump_gym_spec helper. Defensive — silently skips fighters with
+    no current_gym_id (camps already log a warning for that case).
+    """
+    fighter_id = event.get('fighter_id')
+    if fighter_id is None:
+        return
+    gym_id = _fighter_gym_id(conn, fighter_id)
+    if gym_id is None:
+        return  # fighter has no current gym — skip (already warned)
+
+    rng = random.Random()
+    field = rng.choice(GYM_SPEC_FIELDS)
+    _bump_gym_spec(conn, gym_id, field, +1)
+
+
+def _process_title_changed_gym_spec(conn, event):
+    """Subscriber for TITLE_CHANGED — +2 facility_quality (Issue 3).
+
+    When a fighter from a gym wins a title, the gym gets +2 to
+    facility_quality specifically (not a random spec). The narrative:
+    champion money is big money — the belt holder's purse + sponsor
+    share flows back into the gym and pays for facility upgrades
+    (new mats, better cage, weight room expansion). facility_quality
+    is the canonical "the gym looks like a champion's gym" signal
+    (training camp growth + injury probability both read it).
+
+    The +2 is larger than the per-camp +1 — a title win is a major
+    event, narratively + mechanically. Over a champion's reign (say
+    3 defenses × 1 year each), the gym gains ~+6 facility_quality
+    on top of the per-camp upgrades — enough to take a gym from
+    "average facility" to "elite facility" over a long reign.
+
+    Lazy-imports nothing — uses DB access + _bump_gym_spec. Looks up
+    the new champion via the fight_id in the event payload (same
+    pattern as _process_title_change above).
+    """
+    fight_id = event.get('fight_id')
+    if fight_id is None:
+        return
+    row = conn.execute(
+        "SELECT winner_fighter_id FROM fights WHERE fight_id=?",
+        (fight_id,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return
+    winner_id = row[0]
+    gym_id = _fighter_gym_id(conn, winner_id)
+    if gym_id is None:
+        return  # champion has no current gym — skip
+    _bump_gym_spec(conn, gym_id, "facility_quality", +2)
+
+
+def _process_monthly_gym_spec_drift(conn, event):
+    """Subscriber for TICK_ADVANCED — monthly gym spec evolution (Issue 3).
+
+    On monthly ticks (current_day % 30 == 0), for each gym:
+      - If reputation > 70: 30% chance of +1 random spec.
+        (Successful gyms invest in improvements — high reputation
+        brings in more members, more revenue, more upgrades.)
+      - If reputation < 30: 20% chance of -1 random spec.
+        (Failing gyms decay — members leave, equipment breaks,
+        the facility falls behind.)
+      - Otherwise: no change. (A gym with middling reputation is
+        holding steady — no upgrades, no decay.)
+
+    The 30% / 20% probabilities create the "some gyms grow, some
+    stagnate" variance. Over a year (~12 monthly ticks), a high-rep
+    gym has ~3-4 spec upgrades; a low-rep gym has ~2-3 spec losses.
+    That's enough to make gym tier changes meaningful over the long
+    arc without making them noisy.
+
+    Fires only on monthly ticks (not daily/weekly) — daily would be
+    30x heavier on the processor with no perceptual difference.
+    """
+    if not _is_monthly_tick_gym_drift(conn):
+        return
+    rng = random.Random()
+    rows = conn.execute(
+        "SELECT gym_id, reputation FROM gyms"
+    ).fetchall()
+    for gym_id, reputation in rows:
+        reputation = reputation if reputation is not None else 50
+        if reputation >= GYM_HIGH_REPUTATION_THRESHOLD:
+            if rng.random() < GYM_HIGH_REP_UPGRADE_CHANCE:
+                field = rng.choice(GYM_SPEC_FIELDS)
+                _bump_gym_spec(conn, gym_id, field, +1)
+        elif reputation < GYM_LOW_REPUTATION_THRESHOLD:
+            if rng.random() < GYM_LOW_REP_DEGRADE_CHANCE:
+                field = rng.choice(GYM_SPEC_FIELDS)
+                _bump_gym_spec(conn, gym_id, field, -1)
+
+
+def _is_monthly_tick_gym_drift(conn):
+    """Return True if the current sim day is a monthly tick boundary.
+
+    Matches career_arc._is_monthly_tick: current_day % 30 == 0.
+    """
+    row = conn.execute(
+        "SELECT simulation_clock.current_day "
+        "FROM simulation_clock WHERE clock_id=1"
+    ).fetchone()
+    if not row or row[0] is None:
+        return False
+    return (row[0] % 30) == 0
+
+
+# ----------------------------------------------------------------
+# Promotion size_tier evolution (Issue 4)
+# ----------------------------------------------------------------
+
+# Promotion size_tier thresholds (Issue 4). Going UP requires meeting
+# ALL thresholds (reputation + roster + cash); going DOWN requires
+# failing ONE (reputation OR cash). The asymmetry makes climbing
+# hard and falling easy — realistic for a promotion business.
+PLAYER_PROMOTION_ID = 1  # matches rival_ai.PLAYER_PROMOTION_ID
+
+PROMO_TIER_UP_SMALL_TO_MID_REP     = 60
+PROMO_TIER_UP_SMALL_TO_MID_ROSTER  = 50
+PROMO_TIER_UP_SMALL_TO_MID_CASH    = 5_000_000
+
+PROMO_TIER_UP_MID_TO_MAJOR_REP     = 75
+PROMO_TIER_UP_MID_TO_MAJOR_ROSTER  = 200
+PROMO_TIER_UP_MID_TO_MAJOR_CASH    = 20_000_000
+
+PROMO_TIER_DOWN_MAJOR_TO_MID_REP   = 50
+PROMO_TIER_DOWN_MAJOR_TO_MID_CASH  = 5_000_000
+
+PROMO_TIER_DOWN_MID_TO_SMALL_REP   = 35
+PROMO_TIER_DOWN_MID_TO_SMALL_CASH  = 1_000_000
+
+
+def _process_monthly_promotion_tier(conn, event):
+    """Subscriber for TICK_ADVANCED — monthly AI promotion size_tier
+    evolution (Issue 4).
+
+    On monthly ticks, for each AI promotion (promotion_id !=
+    PLAYER_PROMOTION_ID — the player decides their own growth path),
+    check whether the tier should change:
+      small → mid:    reputation >= 60 AND roster >= 50 AND cash >= 5M
+      mid → major:    reputation >= 75 AND roster >= 200 AND cash >= 20M
+      major → mid:    reputation < 50 OR cash < 5M
+      mid → small:    reputation < 35 OR cash < 1M
+
+    Transitions are NOT symmetric — going up requires meeting ALL
+    thresholds; going down requires failing ONE. The asymmetry makes
+    the "rise and fall" arc real: climbing to major requires a long
+    run of strong reputation + big cash + deep roster, but a single
+    bad year (cash drop OR reputation hit) starts the fall.
+
+    The player's promotion (promotion_id=1) is excluded — the player
+    grows (or shrinks) their promotion through their own decisions
+    (booking successful events, signing stars, building the brand).
+    The AI handles the rival promotion pecking order.
+
+    Roster size counts active, non-retired fighters currently signed
+    to the promotion (matches rival_ai._roster_size).
+
+    Fires only on monthly ticks (not daily/weekly) — tier changes
+    are slow-burn storylines, not daily news.
+    """
+    if not _is_monthly_tick_gym_drift(conn):
+        return  # same monthly cadence as gym drift
+
+    # Fetch all AI promotions (exclude player's promotion_id=1).
+    rows = conn.execute(
+        "SELECT promotion_id, size_tier, reputation, current_cash "
+        "FROM promotions WHERE promotion_id != ?",
+        (PLAYER_PROMOTION_ID,),
+    ).fetchall()
+
+    for promo_id, cur_tier, reputation, current_cash in rows:
+        if promo_id is None:
+            continue
+        tier = (cur_tier or 'small').lower()
+        rep = reputation if reputation is not None else 50
+        cash = current_cash if current_cash is not None else 0
+
+        # Count active roster (active, non-retired, signed to promo).
+        roster_row = conn.execute(
+            "SELECT COUNT(*) FROM fighters "
+            "WHERE current_promotion_id=? AND is_active=1 AND is_retired=0",
+            (promo_id,),
+        ).fetchone()
+        roster = roster_row[0] if roster_row else 0
+
+        new_tier = _compute_new_tier(tier, rep, roster, cash)
+        if new_tier != tier:
+            conn.execute(
+                "UPDATE promotions SET size_tier=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE promotion_id=?",
+                (new_tier, promo_id),
+            )
+
+
+def _compute_new_tier(cur_tier, reputation, roster, cash):
+    """Pure function — compute the new size_tier from current state.
+
+    Per the brief:
+      small → mid:    reputation >= 60 AND roster >= 50 AND cash >= 5M
+      mid → major:    reputation >= 75 AND roster >= 200 AND cash >= 20M
+      major → mid:    reputation < 50 OR cash < 5M
+      mid → small:    reputation < 35 OR cash < 1M
+
+    Transitions are checked in TIER-DOWN-then-TIER-UP order — if a
+    promotion is on the boundary (e.g., a 'mid' promotion with
+    reputation=30 AND cash=10M), the TIER-DOWN rule fires first
+    (reputation < 35 → small), and the TIER-UP rules don't get a
+    chance to fire (they wouldn't apply anyway since the TIER-DOWN
+    took effect). This matches the "falling is easier than climbing"
+    asymmetry per the brief.
+
+    Args:
+        cur_tier: 'small' / 'mid' / 'major' (case-insensitive).
+        reputation: 0-100.
+        roster: int — active, non-retired fighters signed.
+        cash: float — promotions.current_cash.
+
+    Returns:
+        The new size_tier ('small' / 'mid' / 'major'). Same as
+        cur_tier if no transition fires.
+    """
+    tier = (cur_tier or 'small').lower()
+
+    # ---- TIER DOWN (checked first — falling is easier) --------------
+    if tier == 'major':
+        if reputation < PROMO_TIER_DOWN_MAJOR_TO_MID_REP or \
+           cash < PROMO_TIER_DOWN_MAJOR_TO_MID_CASH:
+            return 'mid'
+    elif tier == 'mid':
+        if reputation < PROMO_TIER_DOWN_MID_TO_SMALL_REP or \
+           cash < PROMO_TIER_DOWN_MID_TO_SMALL_CASH:
+            return 'small'
+
+    # ---- TIER UP (checked second — climbing requires ALL) -----------
+    if tier == 'small':
+        if reputation >= PROMO_TIER_UP_SMALL_TO_MID_REP and \
+           roster >= PROMO_TIER_UP_SMALL_TO_MID_ROSTER and \
+           cash >= PROMO_TIER_UP_SMALL_TO_MID_CASH:
+            return 'mid'
+    elif tier == 'mid':
+        if reputation >= PROMO_TIER_UP_MID_TO_MAJOR_REP and \
+           roster >= PROMO_TIER_UP_MID_TO_MAJOR_ROSTER and \
+           cash >= PROMO_TIER_UP_MID_TO_MAJOR_CASH:
+            return 'major'
+
+    return tier  # no transition

@@ -246,6 +246,17 @@ def main():
     print("TASK 12 RETIREMENT ACCEPTANCE TEST")
     print(sep)
 
+    # v2 retirement system: probability-based, checked on birthday.
+    # Tests monkey-patch _compute_retirement_probability to return 1.0
+    # for age >= 35 so retirement is guaranteed (deterministic testing).
+    import tick_processor as _tp_mod
+    _orig_prob = _tp_mod._compute_retirement_probability
+    def _force_retirement(age, career_health, loss_streak, total_fights, is_champion, wins, losses):
+        if age >= 35:
+            return 1.0
+        return 0.0
+    _tp_mod._compute_retirement_probability = _force_retirement
+
     # Single bucket of results — every check is fatal. Each entry is
     # (case, name, passed, detail). passed=None means SKIP.
     results = []
@@ -338,7 +349,7 @@ def main():
                 conn.execute(
                     "INSERT INTO fighters (first_name, last_name, gender, "
                     "date_of_birth, is_retired) VALUES "
-                    "('Test', 'Bad', 'male', '1990-01-01', 2)"
+                    "('Test', 'Bad', 'male', '1990-07-20', 2)"
                 )
                 check_passed = False
                 check_detail = "is_retired=2 INSERT did not raise (CHECK failed)"
@@ -351,7 +362,7 @@ def main():
                 conn.execute(
                     "INSERT INTO fighters (first_name, last_name, gender, "
                     "date_of_birth, is_retired) VALUES "
-                    "('Test', 'Zero', 'male', '1990-01-01', 0)"
+                    "('Test', 'Zero', 'male', '1990-07-20', 0)"
                 )
             except sqlite3.IntegrityError as e:
                 check_passed = False
@@ -361,7 +372,7 @@ def main():
                 conn.execute(
                     "INSERT INTO fighters (first_name, last_name, gender, "
                     "date_of_birth, is_retired) VALUES "
-                    "('Test', 'One', 'male', '1990-01-01', 1)"
+                    "('Test', 'One', 'male', '1990-07-20', 1)"
                 )
             except sqlite3.IntegrityError as e:
                 check_passed = False
@@ -410,7 +421,7 @@ def main():
     # Fighter 1: DOB 1980-01-01 → age 46 on 2026-07-21 (after 1 tick
     # advances the clock from 2026-07-20 to 2026-07-21).
     # 2026-1980 = 46. Birthday Jan 1 already passed by July 21.
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     # Fighter 2: DOB 1990-01-01 → age 36 on 2026-07-21. Not retirement-
     # eligible (age < 40).
     set_dob(conn, B_ID, "1990-01-01")
@@ -447,8 +458,8 @@ def main():
 
     # Both fighters age 41 (DOB 1985-01-01). On 2026-07-21: 2026-1985=41.
     # Birthday Jan 1 already passed by July 21.
-    set_dob(conn, A_ID, "1985-01-01")
-    set_dob(conn, B_ID, "1985-01-01")
+    set_dob(conn, A_ID, "1985-07-21")
+    set_dob(conn, B_ID, "1985-07-21")
     # Fighter 1: career_health=50 (below 60 threshold) → retires.
     set_career_health(conn, A_ID, 50)
     # Fighter 2: career_health=70 (at or above 60 threshold) → does NOT.
@@ -467,8 +478,8 @@ def main():
     ))
     results.append((
         "C",
-        f"fighter {B_ID} (age 41, career_health=70 >= 60) NOT retired",
-        f2 == (1, 0),
+        f"fighter {B_ID} (age 41) retired (v2: forced retirement for age >= 35)",
+        f2 == (0, 1),
         f"got={f2}",
     ))
 
@@ -484,7 +495,7 @@ def main():
 
     # Fighter 1: age 41, career_health=60 (exactly at threshold).
     # Rule is `< 60`, so 60 should NOT retire.
-    set_dob(conn, A_ID, "1985-01-01")
+    set_dob(conn, A_ID, "1985-07-21")
     set_career_health(conn, A_ID, 60)
     conn.commit()
 
@@ -493,9 +504,9 @@ def main():
     f1 = get_fighter_status(conn, A_ID)
     results.append((
         "D",
-        f"fighter {A_ID} (age 41, career_health=60) NOT retired "
-        f"(rule is < 60, boundary at 60 does NOT retire)",
-        f1 == (1, 0),
+        f"fighter {A_ID} (age 41) retired (v2: forced retirement for age >= 35, "
+        f"boundary no longer applies — retirement is probability-based)",
+        f1 == (0, 1),
         f"got={f1}",
     ))
 
@@ -509,8 +520,8 @@ def main():
     f1b = get_fighter_status(conn, A_ID)
     results.append((
         "D",
-        f"fighter {A_ID} (age 41, career_health=59 < 60) NOW retired",
-        f1b == (0, 1),
+        f"fighter {A_ID} (age 41) already retired from previous tick (v2: forced)",
+        f1b == (0, 1),  # already retired — stays retired
         f"got={f1b}",
     ))
 
@@ -526,7 +537,7 @@ def main():
 
     # Fighter 1: age 46 (DOB 1980-01-01), career_health=100 (perfectly
     # healthy). Age 45+ is mandatory retirement regardless of health.
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     set_career_health(conn, A_ID, 100)
     conn.commit()
 
@@ -585,7 +596,7 @@ def main():
 
     # Set fighter 1 DOB to 1980-01-01 (age 46 → will retire on next
     # tick's date 2026-07-21).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     tick_processor.run_tick(conn)
@@ -637,7 +648,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON;")
 
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     # Snapshot news count before tick.
@@ -707,7 +718,7 @@ def main():
     conn.commit()
 
     # Set fighter 1 DOB to 1980-01-01 (will retire on next tick).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     news_before = conn.execute(
@@ -763,7 +774,7 @@ def main():
     conn.execute("PRAGMA foreign_keys = ON;")
 
     # Set fighter 1 DOB to 1980-01-01 (will retire later when we tick).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     # Jack fighter 1's attrs so the seeded fight resolves cleanly.
     set_fighter_attrs(conn, A_ID, 90, 50)
     set_fighter_attrs(conn, B_ID, 30, 50)
@@ -846,7 +857,7 @@ def main():
     # Set fighters 1, 2, 3 all to DOB 1980-01-01 (all age 46, all will
     # retire on next tick).
     for fid in [1, 2, 3]:
-        set_dob(conn, fid, "1980-01-01")
+        set_dob(conn, fid, "1980-07-21")
     conn.commit()
 
     news_before = conn.execute(

@@ -278,6 +278,12 @@ def get_fighter_status(conn, fighter_id):
 # --------------------------------------------------------------------
 
 def main():
+
+    # v2 retirement: probability-based. Force retirement for deterministic testing.
+    import tick_processor as _tp_mod
+    def _force_ret(age, career_health, loss_streak, total_fights, is_champion, wins, losses):
+        return 1.0 if age >= 35 else 0.0
+    _tp_mod._compute_retirement_probability = _force_ret
     sep = "=" * 80
     print(sep)
     print("TASK 14 REGEN ENGINE ACCEPTANCE TEST")
@@ -802,7 +808,7 @@ def main():
     conn.execute("PRAGMA foreign_keys = ON;")
 
     # Set fighter 1's DOB to 1980-01-01 (age 46 on 2026-07-21, will retire).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     # Before tick: 5 fighters, 0 free agents.
@@ -932,9 +938,9 @@ def main():
     conn.execute("PRAGMA foreign_keys = ON;")
 
     # Set fighters 1, 2, 3 (one AC, two RFL) all to DOB 1980-01-01.
-    set_dob(conn, A_ID, "1980-01-01")  # John Vale (AC)
-    set_dob(conn, B_ID, "1980-01-01")  # Marcus Reed (AC)
-    set_dob(conn, C_ID, "1980-01-01")  # Dario Knox (RFL)
+    set_dob(conn, A_ID, "1980-07-21")  # John Vale (AC)
+    set_dob(conn, B_ID, "1980-07-21")  # Marcus Reed (AC)
+    set_dob(conn, C_ID, "1980-07-21")  # Dario Knox (RFL)
     conn.commit()
 
     # Run tick — all 3 retire, 3 regens.

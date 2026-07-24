@@ -116,6 +116,11 @@ DEFAULT_SETTINGS = {
     "auto_save_frequency":         "30",
     "difficulty":                  "normal",
     "display_descriptors":         "true",
+    # FIX-Critical (Issue 5): event name format the player prefers.
+    # 'mixed' (default) = 70% numbered + 30% themed (backward compat).
+    # 'numbered' = always "{Promo} {N}: {A} vs {B}".
+    # 'themed'   = always "{Promo} {N}: {Theme}".
+    "event_naming_style":          "mixed",
 }
 
 

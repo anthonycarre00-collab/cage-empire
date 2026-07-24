@@ -332,6 +332,12 @@ def expire_contract_end_date(conn, contract_id, end_date="2026-07-19"):
 # --------------------------------------------------------------------
 
 def main():
+
+    # v2 retirement: probability-based. Force retirement for deterministic testing.
+    import tick_processor as _tp_mod
+    def _force_ret(age, career_health, loss_streak, total_fights, is_champion, wins, losses):
+        return 1.0 if age >= 35 else 0.0
+    _tp_mod._compute_retirement_probability = _force_ret
     sep = "=" * 80
     print(sep)
     print("TASK 13 FREE AGENCY ACCEPTANCE TEST")
@@ -868,7 +874,7 @@ def main():
     # logic would skip the current_promotion_id=NULL update (case J
     # verifies this). For this case, we just want fighter 1 to be
     # retired — we don't care about the contract.
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
     tick_processor.run_tick(conn)
 
@@ -1074,7 +1080,7 @@ def main():
     # AND set fighter 1's contract end_date to 2026-07-19 (will expire
     # on tick). Both retirement and contract expiry will fire on the
     # same tick.
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     expire_contract_end_date(conn, A_CONTRACT_ID, "2026-07-19")
     conn.commit()
 

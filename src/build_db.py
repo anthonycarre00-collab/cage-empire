@@ -3090,7 +3090,9 @@ def _migrate_v3_7_0_add_player_settings(conn):
     Migration name: v3_7_0_add_player_settings. Idempotent — checks
     for the table's existence before creating. Seeds 6 default
     settings on first apply (idempotent via INSERT OR IGNORE — a
-    re-run preserves any user-modified values).
+    re-run preserves any user-modified values). FIX-Critical (Issue 5)
+    added a 7th default setting: event_naming_style='mixed' (the
+    event-name format toggle).
     """
     if not _has_table(conn, "player_settings"):
         conn.execute(
@@ -3101,6 +3103,8 @@ def _migrate_v3_7_0_add_player_settings(conn):
             ")"
         )
     # Seed default settings (idempotent — preserves user-modified values).
+    # FIX-Critical (Issue 5): added event_naming_style = 'mixed' for the
+    # event-name format toggle ('numbered' / 'themed' / 'mixed').
     defaults = [
         ("news_filter_topics",         "all"),
         ("news_filter_min_importance", "0"),
@@ -3108,6 +3112,7 @@ def _migrate_v3_7_0_add_player_settings(conn):
         ("auto_save_frequency",        "30"),
         ("difficulty",                 "normal"),
         ("display_descriptors",        "true"),
+        ("event_naming_style",         "mixed"),
     ]
     conn.executemany(
         "INSERT OR IGNORE INTO player_settings "
@@ -3250,6 +3255,8 @@ def _build_fresh(conn):
             ("auto_save_frequency",        "30"),
             ("difficulty",                 "normal"),
             ("display_descriptors",        "true"),
+            # FIX-Critical (Issue 5): event name format toggle.
+            ("event_naming_style",         "mixed"),
         ],
     )
     conn.execute(

@@ -16,18 +16,23 @@ columns — no schema change required (both columns have existed since
 v2.0.0 / Task 14.6, seeded by world_phase2).
 
 Entirely event-bus-driven (CONVENTIONS §15.4 — no new inline side
-effects added to run_tick). Subscribes to TICK_ADVANCED. Detects a
-WEEKLY tick (current_day % 7 == 0 — matches the cadence used by
-morale, agent_offers, and other weekly systems). On weekly ticks:
+effects added to run_tick). Subscribes to TICK_ADVANCED.
 
-  For each rival promotion (promotion_id != 1):
-    1. If the promotion has no scheduled event, call
-       schedule_next_event to book the next card.
-    2. If the promotion has unresolved fights, call
-       resolve_next_fight(promotion_id=X) ONCE per weekly tick.
-       This spreads rival results over days/weeks (narrative pacing
-       — rival results trickle in, not dumped all at once).
-    3. 10% chance per week of signing a free agent (if roster < 50).
+  On EVERY tick (daily):
+    For each rival promotion (promotion_id != 1):
+      1. If the promotion has any scheduled event whose event_date
+         <= current_date (i.e. the show is tonight or already past)
+         AND that event has unresolved fights, resolve ALL unresolved
+         fights on that event in a single tick. An MMA event is a
+         SINGLE-NIGHT SHOW — the whole card resolves on the evening
+         of event_date, not spread across weeks.
+
+  On WEEKLY ticks (current_day % 7 == 0 — matches the cadence used
+  by morale, agent_offers, and other weekly systems):
+    For each rival promotion (promotion_id != 1):
+      1. If the promotion has no scheduled event, call
+         schedule_next_event to book the next card.
+      2. 10% chance per week of signing a free agent (if roster < 50).
 
 The AI's booking decisions are influenced by ai_aggression:
   Low (0-30): conservative — schedule events every 6 weeks (slower
@@ -53,6 +58,26 @@ manually via the UI "Resolve Fight" button. The AI only handles
 rival promotions. This is enforced by the promotion_id != 1 filter
 in _process_rival_promotions and by passing promotion_id=X to
 resolve_next_fight (which filters the pick-query to that promotion).
+
+DESIGN DECISIONS (FIX-Critical, v3.7.x):
+  - SINGLE-NIGHT RESOLUTION. The OLD code resolved ONE fight per
+    weekly tick per rival promotion (a 5-fight card took 5 weeks).
+    That's not how MMA works — an event is one evening. The new
+    code resolves ALL fights on an event in a single tick, the
+    moment the event's event_date has arrived (event_date <=
+    current_date). This means a 10-fight RFL card resolves in ONE
+    tick (the night of the show), not 10 ticks.
+  - Daily event-date check. We poll every tick (not just weekly)
+    for events whose event_date has arrived. This is cheap (one
+    SELECT per rival promotion per tick) and prevents the situation
+    where an event is scheduled for a Tuesday but no resolution
+    fires until the next weekly tick (a Saturday). The show must
+    go on, on its scheduled date.
+  - Weekly scheduling + free agent signing. The schedule_next_event
+    + sign_free_agent loops remain weekly — they don't need to fire
+    daily (scheduling an event a few days earlier vs later is
+    imperceptible; free agent signings weekly is already enough
+    fluidity).
 
 CONVENTIONS compliance:
   §5  — One table-group per task. NO new table — this module reads
@@ -83,13 +108,14 @@ USAGE:
   register_subscribers()  # call once at startup (UI App.__init__,
                           # test setup). Safe to call multiple times.
 
-DESIGN DECISIONS:
-  - Weekly cadence (not daily) — daily would resolve too many rival
-    fights per week, flooding the news feed. Weekly = 1 fight per
-    rival promotion per week = a manageable trickle of rival news.
-  - ONE fight per weekly tick per rival promotion (not all of them)
-    — spreads rival results over days/weeks for narrative pacing.
-    A 5-fight RFL card resolves over 5 weekly ticks, not all at once.
+DESIGN DECISIONS (FIX-Critical, updated):
+  - Daily event-date check (cheap SELECT) + single-night resolution.
+    An MMA event resolves ALL its fights the evening of event_date —
+    the OLD weekly-resolution pattern was unrealistic (spread a card
+    across weeks). Now the show goes on, on its scheduled date.
+  - Weekly scheduling + free agent signing. schedule_next_event +
+    sign_free_agent remain weekly (scheduling cadence doesn't need
+    daily granularity; free agent signings weekly is enough).
   - The AI uses EXISTING functions — no reimplemented matchmaking,
     no reimplemented fight resolution. This is critical: it means
     every event bus subscriber fires for rival fights, creating a
@@ -233,8 +259,9 @@ def _has_unresolved_fight(conn, promotion_id):
     """Return True if the promotion has at least one unresolved fight
     (winner_fighter_id IS NULL and result_type IS NULL).
 
-    The AI resolves ONE such fight per weekly tick — spreads results
-    over days/weeks for narrative pacing.
+    Used as a fast guard before the single-night-resolution loop —
+    avoids the per-tick SELECT-then-resolve call when the promotion
+    has no work to do.
     """
     row = conn.execute(
         "SELECT 1 FROM fights f JOIN events e ON e.event_id=f.event_id "
@@ -243,6 +270,69 @@ def _has_unresolved_fight(conn, promotion_id):
         (promotion_id,),
     ).fetchone()
     return row is not None
+
+
+def _events_due_for_resolution(conn, promotion_id, current_date):
+    """Return the list of (event_id, event_date) tuples for events owned
+    by `promotion_id` whose event_date <= current_date AND that still
+    have at least one unresolved fight.
+
+    An event whose event_date has arrived (or already passed) is "due" —
+    the show is tonight (or was tonight) and the unresolved fights on
+    the card should ALL be resolved in a single tick. We require at
+    least one unresolved fight in the event so we don't keep looping
+    over already-completed events (a no-op).
+
+    Returns events in event_id ASC order so older cards resolve first
+    (defensive — shouldn't matter since each card resolves fully in
+    one tick, but keeps the audit trail tidy).
+    """
+    if not current_date:
+        return []
+    rows = conn.execute(
+        "SELECT e.event_id, e.event_date FROM events e "
+        "WHERE e.promotion_id=? AND e.event_date <= ? "
+        "AND e.status != 'completed' "
+        "AND EXISTS ("
+        "  SELECT 1 FROM fights f "
+        "  WHERE f.event_id=e.event_id "
+        "  AND f.winner_fighter_id IS NULL "
+        "  AND f.result_type IS NULL"
+        ") "
+        "ORDER BY e.event_id ASC",
+        (promotion_id, current_date),
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _resolve_event_card(conn, promotion_id, resolve_next_fight_fn):
+    """Resolve ALL unresolved fights on the promotion's NEXT due event
+    in a single tick (the night of the show).
+
+    Loops `resolve_next_fight(promotion_id=X)` until it returns None
+    (no more unresolved fights on any of the promotion's events whose
+    event_date <= current_date). Each call commits inside
+    resolve_next_fight's caller (run_tick commits after publish()).
+
+    Defensive — any single fight resolution failure (e.g. a corrupt
+    fight row missing participants) is logged and breaks the loop,
+    so one bad fight doesn't block resolution of the rest of the card
+    on the next tick. The failed fight is skipped (the next tick will
+    re-attempt it; if it's truly stuck, the SHOW will hang on that
+    fight — flagging as a known edge case for future debugging).
+    """
+    while True:
+        try:
+            fid = resolve_next_fight_fn(conn, promotion_id=promotion_id)
+        except Exception as e:
+            import sys
+            print(f"WARNING: rival_ai resolve_next_fight failed "
+                  f"for promotion_id={promotion_id}: "
+                  f"{type(e).__name__}: {e}",
+                  file=sys.stderr)
+            break
+        if fid is None:
+            break  # no more unresolved fights on this promotion
 
 
 def _roster_size(conn, promotion_id):
@@ -271,15 +361,19 @@ def _current_sim_date(conn):
 def _process_rival_promotions(conn, event):
     """Subscriber for TICK_ADVANCED — rival promotion booking loop.
 
-    Fires only on weekly ticks (current_day % 7 == 0). For each rival
-    promotion (promotion_id != PLAYER_PROMOTION_ID):
-      1. If no scheduled event exists, call schedule_next_event with
-         the promotion's ai_aggression-derived weeks_out.
-      2. If unresolved fights exist, call resolve_next_fight with
-         promotion_id=X — ONCE per weekly tick (spreads results for
-         narrative pacing).
-      3. 10% chance per week of signing a free agent (if roster < 50),
-         filtered by ai_spending_style potential floor.
+    On EVERY tick (daily):
+      For each rival promotion (promotion_id != PLAYER_PROMOTION_ID):
+        - If the promotion has any scheduled event whose event_date
+          <= current_date AND that event has unresolved fights,
+          resolve ALL unresolved fights on that event in a single
+          tick (the show goes on, on its scheduled date).
+
+    On WEEKLY ticks (current_day % 7 == 0):
+      For each rival promotion (promotion_id != PLAYER_PROMOTION_ID):
+        1. If no scheduled event exists, call schedule_next_event
+           with the promotion's ai_aggression-derived weeks_out.
+        2. 10% chance per week of signing a free agent (if roster
+           < 50), filtered by ai_spending_style potential floor.
 
     The function does NOT commit — the caller (run_tick) commits
     after publish() returns, matching the established pattern.
@@ -289,18 +383,50 @@ def _process_rival_promotions(conn, event):
     at App.__init__, so rival_ai cannot import app at module load
     without creating an import cycle.
     """
-    if not _is_weekly_tick(conn):
-        return
+    current_date = event.get('current_date') or _current_sim_date(conn)
 
     # Lazy-import app functions (avoids circular dependency).
     from app import schedule_next_event, resolve_next_fight, sign_free_agent
 
-    # Fetch all rival promotions + their AI tuning columns.
+    # Fetch all rival promotions + their AI tuning columns ONCE per
+    # tick (the loop touches all of them in two phases: daily resolve
+    # + weekly schedule/sign).
     rival_rows = conn.execute(
         "SELECT promotion_id, ai_aggression, ai_spending_style "
         "FROM promotions WHERE promotion_id != ?",
         (PLAYER_PROMOTION_ID,),
     ).fetchall()
+
+    # ---- DAILY PHASE: single-night event resolution -----------------
+    # On every tick, check each rival promotion for events whose
+    # event_date <= current_date AND that have unresolved fights.
+    # When found, resolve ALL the fights on that event in one go (the
+    # show is tonight — an MMA event is a single-night card, not a
+    # week-by-week trickle). Cheap SELECT per promo per tick.
+    for (promo_id, _aggression, _spending_style) in rival_rows:
+        if promo_id is None:
+            continue
+        due_events = _events_due_for_resolution(
+            conn, promo_id, current_date,
+        )
+        if not due_events:
+            continue
+        # Resolve each due event's full card. resolve_next_fight picks
+        # the lowest-fight_id unresolved fight across the promotion's
+        # events (with the promotion_id filter), so looping until it
+        # returns None drains ALL unresolved fights on ALL due events
+        # — typically one event per promo per tick, but defensive in
+        # case two events somehow stacked up.
+        _resolve_event_card(conn, promo_id, resolve_next_fight)
+
+    # ---- WEEKLY PHASE: scheduling + free agent signing --------------
+    # Only on weekly ticks (current_day % 7 == 0). Scheduling cadence
+    # doesn't need daily granularity (a few days' difference is
+    # imperceptible). Free agent signings weekly is already enough
+    # fluidity (10% per promo per week × ~8 rival promos ≈ 0.8
+    # signings per sim week).
+    if not _is_weekly_tick(conn):
+        return
 
     rng = random.Random()
 
@@ -326,19 +452,7 @@ def _process_rival_promotions(conn, event):
                       f"for promotion_id={promo_id}: {type(e).__name__}: {e}",
                       file=sys.stderr)
 
-        # 2. Resolve ONE unresolved fight (if any). Spreads results
-        # over days/weeks for narrative pacing — a 5-fight card
-        # resolves over 5 weekly ticks, not all at once.
-        if _has_unresolved_fight(conn, promo_id):
-            try:
-                resolve_next_fight(conn, promotion_id=promo_id)
-            except Exception as e:
-                import sys
-                print(f"WARNING: rival_ai resolve_next_fight failed "
-                      f"for promotion_id={promo_id}: {type(e).__name__}: {e}",
-                      file=sys.stderr)
-
-        # 3. 10% chance per week of signing a free agent (if roster
+        # 2. 10% chance per week of signing a free agent (if roster
         # < 50 — defensive cap against roster bloat).
         roster_size = _roster_size(conn, promo_id)
         if roster_size < MAX_ROSTER_SIZE and rng.random() < FREE_AGENT_SIGN_CHANCE:
@@ -421,8 +535,8 @@ def register_subscribers():
     isolation, call reset_bus() first to clear any prior registrations.
 
     Subscribes to:
-      TICK_ADVANCED → _process_rival_promotions (weekly tick —
-                      current_day % 7 == 0)
+      TICK_ADVANCED → _process_rival_promotions (every tick: daily
+                      event resolution; weekly: scheduling + signing)
     """
     from event_bus import get_bus, Events
     bus = get_bus()

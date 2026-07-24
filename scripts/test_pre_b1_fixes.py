@@ -237,6 +237,12 @@ def set_dob(conn, fighter_id, dob):
 # --------------------------------------------------------------------
 
 def main():
+
+    # v2 retirement: probability-based. Force retirement for deterministic testing.
+    import tick_processor as _tp_mod
+    def _force_ret(age, career_health, loss_streak, total_fights, is_champion, wins, losses):
+        return 1.0 if age >= 35 else 0.0
+    _tp_mod._compute_retirement_probability = _force_ret
     sep = "=" * 80
     print(sep)
     print("TASK pre-B1-fixes ACCEPTANCE TEST")
@@ -768,7 +774,7 @@ def main():
     ).fetchone()[0]
 
     # F.5 Set fighter 1 DOB to 1980-01-01 (age 46 → mandatory retirement).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     # F.6 Run tick — fighter 1 retires (champion retirement).
@@ -911,7 +917,7 @@ def main():
     ))
 
     # G.3 Set fighter 1 DOB to 1980-01-01 (will retire, NOT a champion).
-    set_dob(conn, A_ID, "1980-01-01")
+    set_dob(conn, A_ID, "1980-07-21")
     conn.commit()
 
     mem_before_g = conn.execute(

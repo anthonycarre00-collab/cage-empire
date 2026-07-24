@@ -4017,7 +4017,8 @@ def _build_prelim(fighters_by_wc, booked_ids):
 
 
 # ----------------------------------------------------------------
-# Event naming (FIX-VoiceRep — event naming variety).
+# Event naming (FIX-VoiceRep — event naming variety;
+# FIX-Critical — expanded to 200+ themes + player setting).
 #
 # Per the brief, schedule_next_event should produce varied event
 # names instead of always using "{Promo} {N}: {FighterA} vs
@@ -4029,46 +4030,136 @@ def _build_prelim(fighters_by_wc, booked_ids):
 # list of MMA-appropriate theme words (single-word evocative nouns
 # that read like a PPV subtitle). The themes are digit-free per
 # CONVENTIONS §14.
+#
+# FIX-Critical (Issue 5): the OLD list had 25 themes — too thin
+# (the same theme would repeat within a few sim weeks). Expanded
+# to 200+ themes grouped by tone (Aggressive, Epic, Dark, Combat,
+# Drama, Elements, Mythic). Also added the `event_naming_style`
+# player setting ('numbered' / 'themed' / 'mixed') so the player
+# can pick their preferred format. Default 'mixed' preserves the
+# OLD 70/30 split behavior for backward compatibility.
 # ----------------------------------------------------------------
 
 # Themed event name prefixes (per the brief). 70/30 split — the
 # default recognizable format dominates so the player can always
 # identify the main event at a glance, with occasional themed
 # shows for variety. The two default variants are functionally
-# identical (same "{promo} {N}: {a} vs {b}" output) but listed
-# twice to weight the default at ~70%.
+# identical (same "{promo} {num}: {a} vs {b}" output) but listed
+# twice to weight the default at ~70%. Used ONLY when the player's
+# event_naming_style setting is 'mixed' (the default).
 EVENT_NAME_THEMES = [
     "{promo} {num}: {a} vs {b}",   # default (70% — listed twice)
     "{promo} {num}: {a} vs {b}",   # default
     "{promo} {num}: {theme}",      # themed (30%)
 ]
 
-# Curated theme words (per the brief). Single-word evocative nouns
-# that read like a PPV subtitle. None contain digit characters.
+# Curated theme words (FIX-Critical, expanded from 25 → 200+).
+# Grouped by tone per the brief — the groups are documentation
+# only (the picker treats them as one flat list). All single-word
+# (or short-phrase) nouns, no digits. Used by _build_event_name
+# when the player's event_naming_style is 'themed' or 'mixed'.
 EVENT_THEMES = [
-    "Unforgiven", "Redemption", "Genesis", "Revolution", "Reckoning",
-    "Uprising", "Cataclysm", "Ignition", "Apocalypse", "Resurrection",
-    "Confrontation", "Judgment Day", "No Escape", "Final Bell",
-    "Bad Blood", "Crushing Blow", "Iron Fist", "Last Stand",
-    "Breaking Point", "Fallout", "Ground Zero", "Heavy Hitters",
-    "Fight Night", "Battle Ground", "Collision Course", "Warpath",
+    # ---- Aggressive (13) --------------------------------------
+    "Annihilation", "Bloodbath", "Carnage", "Decimation", "Destruction",
+    "Domination", "Extermination", "Obliteration", "Onslaught", "Rampage",
+    "Retribution", "Vengeance", "Wrath",
+    # ---- Epic (11) --------------------------------------------
+    "Ascension", "Conquest", "Crown", "Dynasty", "Empire",
+    "Genesis", "Legacy", "Legend", "Throne", "Triumph", "Victory",
+    # ---- Dark (12) --------------------------------------------
+    "Abyss", "Blackout", "Catacombs", "Darkness", "Eclipse",
+    "Fallout", "Haunted", "Inferno", "Nightmare", "Shadows",
+    "Underworld", "Void",
+    # ---- Combat (19) ------------------------------------------
+    "Battlefield", "Beatdown", "Brawl", "Clash", "Collision",
+    "Combat", "Crossfire", "Fight Night", "Ground War", "Heavy Hitters",
+    "Melee", "No Quarter", "Rumble", "Showdown", "Slugfest",
+    "Stranglehold", "Uprising", "Warpath", "Warfare",
+    # ---- Drama (19) -------------------------------------------
+    "Betrayal", "Breaking Point", "Crossroads", "Curtain Call", "Defiance",
+    "Desperation", "Divide", "Fracture", "Judgment", "Last Stand",
+    "No Escape", "Pressure Point", "Reckoning", "Redemption",
+    "Resurrection", "Revolution", "Ruin", "Turmoil", "Unforgiven",
+    # ---- Elements (13) ----------------------------------------
+    "Avalanche", "Blizzard", "Cyclone", "Earthquake", "Firestorm",
+    "Hurricane", "Lightning", "Monsoon", "Thunder", "Tornado",
+    "Tsunami", "Volcano", "Wildfire",
+    # ---- Mythic (13) ------------------------------------------
+    "Apocalypse", "Armageddon", "Cerberus", "Colossus", "Doomsday",
+    "Goliath", "Hydra", "Leviathan", "Odin", "Phoenix",
+    "Ragnarok", "Titan", "Valkyrie",
+    # ---- Additional curated (extras to exceed the 200+ target) ----
+    # Aggressive-adjacent.
+    "Aggression", "Backlash", "Berserk", "Brutality", "Crusher",
+    "Fury", "Hammer", "Havoc", "Hostile", "Malice",
+    "Menace", "Outrage", "Punishment", "Riot", "Savage",
+    "Slaughter", "Storm", "Tempest", "Tyranny",
+    # Combat-adjacent.
+    "Battleground", "Bell", "Blockbuster", "Bravado", "Cage",
+    "Championship", "Combat Zone", "Contender", "Duel", "Eliminator",
+    "Final Bell", "Fighters Edge", "Fighters Path", "Final Round",
+    "First Blood", "Grand Prix", "Heavyweight", "Knockout", "Main Event",
+    "Marquee", "Matchup", "Maul", "No Mercy",
+    "Pit", "Prize Fight", "Quake", "Riot Act",
+    "Smash", "Title Bout", "Title Shot", "Takedown", "Tournament",
+    "Turf War", "Unleashed", "Vendetta", "War Zone", "Whirlwind",
+    # Drama / storyline-adjacent.
+    "Betrayed", "Brink", "Challenger", "Champions Path", "Climax",
+    "Confrontation", "Crisis", "Crucible", "Culmination",
+    "Curtain", "Decider", "Destiny", "Doubt", "Endgame",
+    "Final Verdict", "Fork In The Road", "Fury Road",
+    "Heartbreak", "Honor", "Heart", "Last Rites", "Last Word",
+    "Limit", "Line In The Sand", "Moment Of Truth", "Nemesis", "New Beginning",
+    "Overture", "Pinnacle", "Point Of No Return", "Reckoning Day",
+    "Rematch", "Retaliation", "Rivalry", "Rough Justice", "Roundtable",
+    "Showtime", "Sin", "Standoff", "Standpoint", "Summit",
+    "Survival", "Tide", "Toll", "Trial",
+    "Tribulation", "Truth", "Ultimatum", "Vow", "Zero Hour",
+    # Original 25 themes (kept for continuity — they're fan favorites).
+    "Unforgiven", "Cataclysm", "Ignition",
+    "Bad Blood", "Crushing Blow", "Iron Fist",
+    "Ground Zero", "Battle Ground", "Collision Course",
 ]
 
 
+def _get_event_naming_style(conn):
+    """Read the player's event_naming_style setting (FIX-Critical Issue 5).
+
+    Returns one of: 'numbered', 'themed', 'mixed'. Defaults to 'mixed'
+    (preserves the OLD 70/30 split behavior for backward compatibility).
+    Lazy-imports player_settings to avoid a module-load circular
+    dependency. Defensive — any error (missing table, missing module,
+    invalid value) falls back to 'mixed'.
+    """
+    try:
+        from player_settings import get_setting
+        style = get_setting(conn, 'event_naming_style', default='mixed')
+        if style in ('numbered', 'themed', 'mixed'):
+            return style
+    except Exception:
+        pass  # defensive — missing table / module, fall back to default
+    return 'mixed'
+
+
 def _build_event_name(promo_name, event_num, me_a_name, me_b_name,
-                      rng=None):
-    """Pick an event name with 70/30 variety (FIX-VoiceRep).
+                      rng=None, conn=None):
+    """Pick an event name with player-controlled variety (FIX-Critical).
 
-    70% chance: "{promo} {num}: {a} vs {b}" — the recognizable
-    default so the player can always identify the main event at a
-    glance. 30% chance: "{promo} {num}: {theme}" — a themed name
-    using a curated theme word for variety (like real promotions
-    mixing numbered shows with themed names).
+    The player's event_naming_style setting (in player_settings)
+    controls the template selection:
+      'numbered' → "{promo} {num}: {a} vs {b}" (always — the recognizable
+                   default so the player can always identify the main
+                   event at a glance).
+      'themed'   → "{promo} {num}: {theme}" (always — every event gets
+                   a themed subtitle from the 200+ EVENT_THEMES list).
+      'mixed'    → 70% numbered, 30% themed (the default — preserves
+                   the OLD behavior for backward compatibility with
+                   existing tests + the established look-and-feel).
 
-    Special case: a promotion's FIRST event (event_num == 1) always
-    uses the default format. Real promotions always use the
+    Special case: a promotion's FIRST event (event_num == 1) ALWAYS
+    uses the numbered format. Real promotions always use the
     "{Promo} 1: {a} vs {b}" format for their debut — themed names
-    don't appear until later events. This also makes the test suite
+    don't appear until later events. This also keeps the test suite
     deterministic: tests that schedule the first event for a new
     promotion (e.g., test_card_system.py case J with seed=42) get
     the default format without RNG flakiness.
@@ -4078,11 +4169,15 @@ def _build_event_name(promo_name, event_num, me_a_name, me_b_name,
         event_num: 1-based event count for this promotion (next event
             after the debut is event 2).
         me_a_name, me_b_name: main event fighter names (used by the
-            default format; ignored by the themed format).
+            numbered format; ignored by the themed format).
         rng: optional random.Random. If None, uses the GLOBAL random
             module (so callers who set random.seed() — including
             existing tests — get a deterministic result that respects
             their seed).
+        conn: optional sqlite3 connection. If provided, the function
+            reads the player's event_naming_style setting. If None or
+            the setting is missing, falls back to 'mixed' (the
+            backward-compatible default).
 
     Returns:
         The event name string (e.g., "Alpha Combat 3: Vale vs Reed"
@@ -4097,25 +4192,34 @@ def _build_event_name(promo_name, event_num, me_a_name, me_b_name,
             promo=promo_name, num=event_num,
             a=me_a_name, b=me_b_name,
         )
-    if rng is None:
-        # Use the global random module so callers who set random.seed()
-        # (tests, deterministic seeds) get reproducible picks.
-        import random as _rng
-        template = _rng.choice(EVENT_NAME_THEMES)
-        if "{theme}" in template:
-            theme = _rng.choice(EVENT_THEMES)
-            return template.format(
-                promo=promo_name, num=event_num, theme=theme,
-            )
-        return template.format(
-            promo=promo_name, num=event_num,
-            a=me_a_name, b=me_b_name,
-        )
-    # Explicit rng provided — use it (for test isolation / future
-    # callers that want their own RNG stream).
-    template = rng.choice(EVENT_NAME_THEMES)
+
+    # Read the player's preferred naming style (FIX-Critical Issue 5).
+    naming_style = 'mixed'
+    if conn is not None:
+        naming_style = _get_event_naming_style(conn)
+
+    # Pick the template based on the style.
+    # 'mixed' preserves the OLD behavior (70% numbered / 30% themed)
+    # by using the EVENT_NAME_THEMES list (2 numbered + 1 themed →
+    # 67%/33%, close enough to the brief's 70/30 — and matches every
+    # existing test's expected behavior).
+    if naming_style == 'numbered':
+        template = "{promo} {num}: {a} vs {b}"
+    elif naming_style == 'themed':
+        template = "{promo} {num}: {theme}"
+    else:  # 'mixed' (the default + fallback)
+        if rng is None:
+            import random as _rng
+            template = _rng.choice(EVENT_NAME_THEMES)
+        else:
+            template = rng.choice(EVENT_NAME_THEMES)
+
     if "{theme}" in template:
-        theme = rng.choice(EVENT_THEMES)
+        if rng is None:
+            import random as _rng
+            theme = _rng.choice(EVENT_THEMES)
+        else:
+            theme = rng.choice(EVENT_THEMES)
         return template.format(
             promo=promo_name, num=event_num, theme=theme,
         )
@@ -4367,8 +4471,12 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
     ).fetchone()[0]
     me_a_name = fighter_name(conn, main_event['fighter_a'])
     me_b_name = fighter_name(conn, main_event['fighter_b'])
+    # FIX-Critical (Issue 5): pass `conn` so _build_event_name can
+    # read the player's event_naming_style setting ('numbered' /
+    # 'themed' / 'mixed'). Defaults to 'mixed' (the OLD 70/30 split)
+    # for backward compatibility.
     event_name = _build_event_name(
-        promo_name, event_count + 1, me_a_name, me_b_name,
+        promo_name, event_count + 1, me_a_name, me_b_name, conn=conn,
     )
 
     # 10. Insert the new event (status='scheduled', event_type='fight_night').

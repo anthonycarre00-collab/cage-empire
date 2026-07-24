@@ -406,7 +406,7 @@ def case_tick_retirement():
     # so by 2026-08-15 he's 32 — too young. Set his DOB back to
     # 1975 (makes him ~51) and career_health=30 to force retirement.
     conn.execute(
-        "UPDATE fighters SET date_of_birth='1975-05-11' WHERE fighter_id=1"
+        "UPDATE fighters SET date_of_birth='1975-07-21' WHERE fighter_id=1"
     )
     conn.execute(
         "UPDATE fighter_career SET career_health=30, "
@@ -708,6 +708,12 @@ def case_a6_news_pruning():
 
 
 def main():
+
+    # v2 retirement: probability-based. Force retirement for deterministic testing.
+    import tick_processor as _tp_mod
+    def _force_ret(age, career_health, loss_streak, total_fights, is_champion, wins, losses):
+        return 1.0 if age >= 35 else 0.0
+    _tp_mod._compute_retirement_probability = _force_ret
     print("=" * 80)
     print(f"Task 23 — News Engine acceptance test "
           f"(schema {EXPECTED_VERSION}, no schema change)")

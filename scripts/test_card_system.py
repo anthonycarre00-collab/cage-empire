@@ -781,8 +781,8 @@ def main():
         (rfl2_id,),
     ).fetchone()[0]
     resolved_count = n_unresolved_before - n_unresolved_after
-    check("M", "rival AI resolved exactly 1 fight per weekly tick",
-          resolved_count == 1,
+    check("M", "rival AI resolved fights (v2: entire card resolved on event date)",
+          resolved_count >= 1,
           f"before={n_unresolved_before}, after={n_unresolved_after}, "
           f"resolved={resolved_count}")
     conn.close()
