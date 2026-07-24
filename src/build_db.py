@@ -505,8 +505,24 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.5.0"
+CODE_SCHEMA_VERSION = "3.6.0"
 
+
+# v3.6.0 (Stage 5 — Task 26 Show rating engine) — MINOR bump. Adds
+# the new `show_ratings` table. Per CONVENTIONS §1.1, adding a new
+# table is a MINOR bump. Per §5 (one table-group per task), this task
+# adds ONLY the `show_ratings` table — it is a single logical group
+# (Stories + Investment pillars of the Design Law §13) that captures
+# the post-event fan / commercial / excitement / quality / overall
+# ratings. Computed by src/show_rating.py (event-bus subscriber on
+# EVENT_COMPLETED) — entirely event-bus-driven per CONVENTIONS §15.4
+# (no inline side effects added to resolve_next_fight). The
+# rating_description column stores a voice-layer descriptor (e.g.
+# "an instant classic that fans will talk about for years") — NO raw
+# rating numbers appear in player-facing text per CONVENTIONS §14.
+#
+# See docs/STAGES.md Task ID 26 for the brief and acceptance checklist.
+# See docs/CONVENTIONS.md §14 (voice layer) + §15.4 (event bus).
 
 # v3.5.0 (Phase C — Agent offers) — MINOR bump. Adds the new
 # `agent_offers` table. Per CONVENTIONS §1.1, adding a new table is
@@ -2243,6 +2259,56 @@ CREATE TABLE IF NOT EXISTS agent_offers (
     expires_date       TEXT NOT NULL,
     created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
+
+-- ----------------------------------------------------------------
+-- show_ratings (added v3.6.0, Stage 5 — Task 26 Show rating engine).
+--
+-- One row per COMPLETED event (UNIQUE event_id — exactly one rating
+-- per show). Computed by src/show_rating.py (event-bus subscriber
+-- on EVENT_COMPLETED) — entirely event-bus-driven per CONVENTIONS
+-- §15.4 (no inline side effects added to resolve_next_fight).
+--
+-- 5 rating axes (each 0-100, CHECK BETWEEN 0 AND 100):
+--   fan_rating        — how much fans enjoyed the show (finishes,
+--                       excitement, title fights, rivalries).
+--   commercial_rating — how well the show did commercially
+--                       (marketability, broadcast tier, attendance).
+--   excitement_rating — how action-packed the show was (beats,
+--                       damage, knockdowns, near-finishes).
+--   quality_rating    — how technically skilled the fights were
+--                       (avg fighter attributes, fight_iq, clean
+--                       techniques landed).
+--   overall_rating    — weighted average (fan 30%, commercial 20%,
+--                       excitement 25%, quality 25%).
+--
+-- rating_description is a voice-layer descriptor (NO raw numbers
+-- per CONVENTIONS §14):
+--   90+ "an instant classic that fans will talk about for years"
+--   75-89 "a highly entertaining show that delivered on expectations"
+--   60-74 "a solid night of fights with some memorable moments"
+--   40-59 "a decent show that failed to produce many highlights"
+--   <40   "a lackluster card that left fans wanting more"
+--
+-- The src/venues.py module (Task 27) reads fan_rating from this
+-- table to adjust market heat after each event (high fan rating →
+-- +2 heat, poor events → -1 heat).
+--
+-- See docs/STAGES.md Task ID 26 for the brief.
+-- See docs/CONVENTIONS.md §14 (voice layer) + §15.4 (event bus).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS show_ratings (
+    rating_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id            INTEGER NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+    promotion_id        INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    fan_rating          INTEGER NOT NULL DEFAULT 50 CHECK (fan_rating BETWEEN 0 AND 100),
+    commercial_rating   INTEGER NOT NULL DEFAULT 50 CHECK (commercial_rating BETWEEN 0 AND 100),
+    excitement_rating   INTEGER NOT NULL DEFAULT 50 CHECK (excitement_rating BETWEEN 0 AND 100),
+    quality_rating      INTEGER NOT NULL DEFAULT 50 CHECK (quality_rating BETWEEN 0 AND 100),
+    overall_rating      INTEGER NOT NULL DEFAULT 50 CHECK (overall_rating BETWEEN 0 AND 100),
+    rating_description  TEXT,
+    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (event_id)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2895,6 +2961,44 @@ def _migrate_v3_5_0_add_agent_offers(conn):
         )
 
 
+def _migrate_v3_6_0_add_show_ratings(conn):
+    """Stage 5 — Task 26 Show rating engine.
+
+    Adds the show_ratings table. Per CONVENTIONS §5 (one table-group
+    per task — `show_ratings` is the single group this task adds).
+    The src/show_rating.py module writes ratings (event-bus subscriber
+    on EVENT_COMPLETED — computes fan/commercial/excitement/quality/
+    overall ratings after each event completes) and writes a
+    topic='show_rating' news item with the voice-layer descriptor
+    (rating_description column — NO raw numbers per CONVENTIONS §14).
+    The src/venues.py module (Task 27) reads fan_rating to adjust
+    market heat after each event. No reader is wired into the UI in
+    this task — a future task will add a post-event summary panel
+    that reads show_ratings. Per §5.3, every new table must ship with
+    a writer (src/show_rating.py) AND a reader (src/venues.py reads
+    fan_rating; future UI panel reads all 5 ratings).
+
+    Migration name: v3_6_0_add_show_ratings. Idempotent — checks for
+    the table's existence before creating.
+    """
+    if not _has_table(conn, "show_ratings"):
+        conn.execute(
+            "CREATE TABLE show_ratings (\n"
+            "    rating_id           INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    event_id            INTEGER NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,\n"
+            "    promotion_id        INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    fan_rating          INTEGER NOT NULL DEFAULT 50 CHECK (fan_rating BETWEEN 0 AND 100),\n"
+            "    commercial_rating   INTEGER NOT NULL DEFAULT 50 CHECK (commercial_rating BETWEEN 0 AND 100),\n"
+            "    excitement_rating   INTEGER NOT NULL DEFAULT 50 CHECK (excitement_rating BETWEEN 0 AND 100),\n"
+            "    quality_rating      INTEGER NOT NULL DEFAULT 50 CHECK (quality_rating BETWEEN 0 AND 100),\n"
+            "    overall_rating      INTEGER NOT NULL DEFAULT 50 CHECK (overall_rating BETWEEN 0 AND 100),\n"
+            "    rating_description  TEXT,\n"
+            "    created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (event_id)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -2910,6 +3014,7 @@ MIGRATIONS = [
     ("v3_3_0_add_matchup_analyses","3.3.0", _migrate_v3_3_0_add_matchup_analyses),
     ("v3_4_0_add_suspensions",     "3.4.0", _migrate_v3_4_0_add_suspensions),
     ("v3_5_0_add_agent_offers",    "3.5.0", _migrate_v3_5_0_add_agent_offers),
+    ("v3_6_0_add_show_ratings",    "3.6.0", _migrate_v3_6_0_add_show_ratings),
 ]
 
 

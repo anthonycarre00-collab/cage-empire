@@ -3,8 +3,8 @@
 > **Status:** Living document. Every schema change must update this
 > file. The purpose is to prevent the 37 → 24 table drift that
 > already happened twice from happening again.
-> **Last revised:** 2026-07-25 — Task 24 (punditry / matchup analysis).
-> **Current schema version:** 3.3.0 (49 tables, +1 new table this task).
+> **Last revised:** 2026-07-26 — Task 26 (show rating engine).
+> **Current schema version:** 3.6.0 (52 tables, +1 new table this task).
 
 This document is a table-by-table comparison of:
 - **Designed** — what the v1.6 spec (509-page chat transcript) calls
@@ -175,6 +175,7 @@ historical fights have no round data.
 | `news_items` | yes (rich: + region_id) | yes (thin: missing region_id) | yes (thin) | `THIN` — missing region_id column. News items now written by: fight resolution (Task 3), title changes (Task 11), retirement (Task 12), title vacation (Task 12), contract expiry (Task 13), free agent signing (Task 13), new prospect (Task 14). |
 | `commentary_segments` | yes | yes | yes | `OK` — enriched with title-change suffix (Task 11) |
 | `pundit_segments` | yes | no | no | `MISSING` — reserved for a follow-up to Task ID 24 (Stage 4). Task 24 added `matchup_analyses` only (one table-group per CONVENTIONS §5); the analysis_text column carries the pundit's voice. A future task can add pundit_segments for round-by-round in-fight commentary. |
+| `show_ratings` | yes (event_id, promotion_id, fan_rating, commercial_rating, excitement_rating, quality_rating, overall_rating, rating_description) | no | yes (Task 26 / v3.6.0) | `OK` — v3.6.0 added 10-column show_ratings table (5 rating axes 0-100 CHECK, rating_description TEXT voice descriptor, UNIQUE event_id). Written by src/show_rating.py event-bus subscriber (EVENT_COMPLETED → _compute_show_ratings computes fan/commercial/excitement/quality/overall ratings + writes a topic='show_rating' news item). Read by src/venues.py (Task 27 — reads fan_rating to adjust market heat). NO raw rating numbers in player-facing text per §14 — rating_description uses voice descriptors ("an instant classic", "a lackluster card", etc.). Per docs/STAGES.md Task ID 26. |
 
 ---
 
@@ -420,7 +421,7 @@ This is a minor convention deviation. The tests are:
 | Events & fights | 5 | 4 | 4 | 1 table (fight_rounds still missing) |
 | Career & medical | 2 | 0 | 6 (injuries Task 15, training_camps Task 16, weight_cut_log Task 17, fighter_descriptors Task 19, scouting_reports Task 18, suspensions Phase B) | 0 tables |
 | Scouting & analysis | 3 | 0 | 1 (matchup_analyses Task 24) | 2 tables (scouting_reports → Task 18, betting_odds → follow-up) |
-| News & commentary | 4 | 3 | 3 | 1 table (pundit_segments, follow-up to Task 24) |
+| News & commentary | 4 | 3 | 4 (show_ratings Task 26) | 1 table (pundit_segments, follow-up to Task 24) |
 | Rankings & titles | 2 | 0 | 2 | 0 |
 | Social & rivalries | 3 | 0 | 2 (social_posts Task 21, rivalries Task 22) | 1 table (social_accounts deliberately skipped) |
 | Regen & name pools | 10 | 0 | 3 (consolidated) | 0 tables (7 consolidated/dropped by design — see §M) |
@@ -429,7 +430,7 @@ This is a minor convention deviation. The tests are:
 | Portraits & art | 2 | 0 | 0 | 2 tables (Task 29) |
 | Finances | 1 | 0 | 0 | 1 table (Task 20) |
 | Modding | 1 | 0 | 0 | 1 table (Task 29) |
-| **TOTAL TABLES** | **~60** | **24** | **50** (49 user + 1 sqlite_sequence) | **~10 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, fighter_bios variants, hall_of_fame polish, etc.) |
+| **TOTAL TABLES** | **~60** | **24** | **52** (51 user + 1 sqlite_sequence) | **~9 tables** (down from ~34 because 7 regen tables were consolidated into 3; social_accounts deliberately skipped; remaining gaps are Stage 4+ pundit_segments, betting_odds, fighter_bios variants, hall_of_fame polish, etc.) |
 | **TOTAL THIN COLUMNS** | — | — | — | **~67 columns** (geography 20 + promotions/gyms 16 + fighters 14 + staff 17) |
 | **WRONG (critical)** | — | — | — | **fighter_attributes (4/24) + fighter_personality (3/17)** — 34 columns missing |
 
@@ -448,7 +449,12 @@ This is a minor convention deviation. The tests are:
   +1 from Task 24: matchup_analyses (punditry / matchup analysis).
 - Built v3.4.0 (Phase B — B1+B2): 50 tables (49 user + 1 sqlite_sequence).
   +1 from Phase B: suspensions (fighter drug test / behavior bans).
-- 31 acceptance tests, 1900+ sub-checks, all passing.
+- Built v3.5.0 (Phase C — agent offers): 51 tables (50 user + 1 sqlite_sequence).
+  +1 from Phase C: agent_offers (unknown talent / gamble signing system).
+- Built v3.6.0 (Stage 5 — Task 26 show rating): 52 tables (51 user + 1 sqlite_sequence).
+  +1 from Task 26: show_ratings (per-event fan / commercial / excitement /
+  quality / overall ratings + voice-layer rating_description).
+- 34 acceptance tests, 2200+ sub-checks, all passing.
 
 **Most critical gaps (priority order):**
 1. **fighter_attributes + fighter_personality extension** (Z.1) —

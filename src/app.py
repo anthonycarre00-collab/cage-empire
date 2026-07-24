@@ -6334,6 +6334,35 @@ class App(tk.Tk):
             _register_rival_ai()
         except ImportError:
             pass  # rival_ai.py not available — legacy behavior
+        # v3.6.0 (Stage 5 — Task 26 + 27 Show rating + Venues deeper
+        # simulation): register the show rating + venues subscribers
+        # on the global event bus. The show rating system computes
+        # fan / commercial / excitement / quality / overall ratings
+        # after each event completes (EVENT_COMPLETED subscriber) and
+        # writes a show_ratings row + a topic='show_rating' news item
+        # with a voice-layer descriptor (CONVENTIONS §14 — no raw
+        # numbers). The venues system reads fan_rating to adjust
+        # market heat (successful events +2, poor events -1) and
+        # drifts market heat on monthly ticks (hot markets cool
+        # toward 70, cold markets warm toward 40). Both systems are
+        # entirely event-bus-driven (CONVENTIONS §15.4 — no new
+        # inline side effects added to resolve_next_fight or run_tick).
+        # REGISTRATION ORDER MATTERS: show_rating must register
+        # BEFORE venues so that on each EVENT_COMPLETED, the
+        # show_ratings row is written before venues tries to read it.
+        # Lazy import for the same reasons as news.py / social.py /
+        # rivalries.py / punditry.py / morale.py / suspensions.py /
+        # agent_offers.py / career_arc.py / rival_ai.py above.
+        try:
+            from show_rating import register_subscribers as _register_show_rating
+            _register_show_rating()
+        except ImportError:
+            pass  # show_rating.py not available — legacy behavior
+        try:
+            from venues import register_subscribers as _register_venues
+            _register_venues()
+        except ImportError:
+            pass  # venues.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.

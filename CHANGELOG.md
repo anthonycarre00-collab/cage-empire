@@ -8,6 +8,79 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Stage 5 — Show rating engine + Venues/markets deeper simulation, schema 3.5.0 → 3.6.0 MINOR)
+- New `show_ratings` table — one row per completed event (UNIQUE
+  event_id). 10 columns: rating_id PK, event_id FK (NOT NULL ON
+  DELETE CASCADE), promotion_id FK (NOT NULL ON DELETE CASCADE),
+  fan_rating (INTEGER NOT NULL DEFAULT 50 CHECK BETWEEN 0 AND 100),
+  commercial_rating (INTEGER NOT NULL DEFAULT 50 CHECK 0-100),
+  excitement_rating (INTEGER NOT NULL DEFAULT 50 CHECK 0-100),
+  quality_rating (INTEGER NOT NULL DEFAULT 50 CHECK 0-100),
+  overall_rating (INTEGER NOT NULL DEFAULT 50 CHECK 0-100),
+  rating_description (TEXT — voice-layer descriptor, NO raw numbers
+  per CONVENTIONS §14), created_at. Migration `v3_6_0_add_show_
+  ratings`. Per CONVENTIONS §5 (one table-group per task), this
+  task adds ONLY the `show_ratings` table. Per docs/STAGES.md Task
+  ID 26 + 27.
+- New `src/show_rating.py` — entirely event-bus-driven (subscribes
+  to EVENT_COMPLETED per CONVENTIONS §15.4):
+  * `_compute_show_ratings(conn, event)` — EVENT_COMPLETED
+    subscriber. Computes 5 rating axes (fan / commercial /
+    excitement / quality / overall) for the just-completed event
+    and writes a show_ratings row + a topic='show_rating' news
+    item. The fan_rating is based on finishes (KO/sub/doctor
+    stoppage/corner stoppage/DQ = +30 max), title fights (+10 per,
+    cap +20), rivalry fights with heat > 50 (+5 per, cap +15), and
+    avg beats per fight (+1 per beat, cap +15). The commercial_
+    rating is based on total fighter marketability on the card
+    (cap +30), broadcast tier (ppv_global +20 / streaming +10 /
+    tv_regional +5 / local_stream +0), and attendance (computed
+    on-the-fly using finance.py's fill_rate formula, cap +20 —
+    self-contained, doesn't depend on finance being registered
+    first). The excitement_rating is based on avg beats per fight
+    (cap +25), avg damage per fight (cap +25), knockdowns (cap
+    +15), and near-finishes (cap +10). The quality_rating is
+    based on avg fighter attributes (cap +40), avg fight_iq (cap
+    +20), and clean techniques landed (cap +15). The overall_
+    rating is a weighted average (fan 30% + commercial 20% +
+    excitement 25% + quality 25%). The rating_description uses
+    5 voice-layer descriptors (90+ "an instant classic that fans
+    will talk about for years" / 75-89 "a highly entertaining show
+    that delivered on expectations" / 60-74 "a solid night of
+    fights with some memorable moments" / 40-59 "a decent show
+    that failed to produce many highlights" / <40 "a lackluster
+    card that left fans wanting more"). NO raw rating numbers in
+    the rating_description column or the news item per §14.
+  * `register_subscribers()` — registers on the global event bus.
+    Wired into app.py App.__init__ (registration order matters:
+    show_rating MUST register before venues so the show_ratings
+    row is written before venues reads fan_rating on the same
+    EVENT_COMPLETED fire).
+- New `src/venues.py` — entirely event-bus-driven (subscribes to
+  EVENT_COMPLETED + TICK_ADVANCED per CONVENTIONS §15.4). Code-
+  only — NO schema change (uses existing markets + venues tables):
+  * `_adjust_market_heat(conn, event)` — EVENT_COMPLETED
+    subscriber. Reads fan_rating from show_ratings (written by
+    show_rating on the same event) and adjusts the event's market
+    heat_level: successful events (fan_rating >= 70) → +2 heat;
+    poor events (fan_rating < 40) → -1 heat; middling events
+    (40-69) → no change. Heat is clamped to [0, 100].
+  * `_drift_market_heat(conn, event)` — TICK_ADVANCED subscriber
+    (monthly only — current_day % 30 == 0). Hot markets (heat
+    >= 80) cool by 1 (toward 70, floor 70). Cold markets (heat
+    < 30) warm by 1 (toward 40, ceiling 40). Middling markets
+    (30-79) — no drift. Drift is SLOW (±1 per month, not ±10) —
+    takes many events to shift a market significantly. This
+    creates dynamic-world feel: a market that hosts a series of
+    great shows becomes a hotter MMA market (higher ticket prices
+    + fill rates via finance._compute_fill_rate), while a market
+    that hosts poor shows cools down.
+  * `register_subscribers()` — registers both subscribers on the
+    global event bus. Wired into app.py App.__init__.
+- Schema version bumped 3.5.0 → 3.6.0 (MINOR per CONVENTIONS §1.1
+  — adding a new table). 15 migrations total.
+- 34 acceptance tests, 2200+ sub-checks, all passing.
+
 ### Added (Phase C — Agent offers + event hype + cross-promo + betting odds, schema 3.4.0 → 3.5.0 MINOR)
 - New `agent_offers` table — one row per agent offer to the player
   (the "Talent Hunter" gamble per CAGE_EMPIRE_SOUL Fantasy 1). 12
