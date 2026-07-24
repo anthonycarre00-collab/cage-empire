@@ -8,6 +8,199 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Stage 5 — Task Stage5-Final: Player settings + stale personality fixes + Mod tools skeleton, schema 3.6.0 → 3.7.0 MINOR)
+- New `player_settings` table — simple key-value store for player
+  preferences (PRIMARY KEY setting_key, TEXT setting_value, TEXT
+  updated_at). 3 columns, 6 default settings seeded by both the
+  migration function AND `_build_fresh` (idempotent via INSERT OR
+  IGNORE — preserves user-modified values on re-runs). Per
+  CONVENTIONS §5, `player_settings` is the single table-group this
+  task adds. Per §5.3, every new table ships with both a writer
+  (src/player_settings.py) AND a reader (src/player_settings.py —
+  dual role; future UI panels will also read it).
+  * `news_filter_topics` = `'all'` (comma-separated topics or
+    `'all'` to show all).
+  * `news_filter_min_importance` = `'0'` (0=show all, 1=only
+    important, 2=only major).
+  * `news_volume` = `'normal'` (verbose/normal/summary).
+  * `auto_save_frequency` = `'30'` (days between auto-saves).
+  * `difficulty` = `'normal'` (easy/normal/hard — affects starting
+    cash, AI aggression, injury rates in future tasks).
+  * `display_descriptors` = `'true'` (show voice descriptors
+    instead of raw numbers — should always be `true` per §14;
+    `false` is allowed for debugging / future accessibility modes).
+- New `src/player_settings.py` module — the reader/writer for the
+  `player_settings` table. NOT event-bus-driven (settings are read
+  by other systems at their own cadence — news feed filter, auto-
+  save cadence, difficulty, voice descriptors toggle).
+  `register_subscribers` is a no-op for parity with the other 12
+  system modules (so App.__init__ has a uniform register pattern).
+  * `get_setting(conn, key, default=None)` — reader. Returns the
+    setting_value (str) or `default` if the row doesn't exist.
+    Defensive — returns `default` if the table doesn't exist (pre-
+    migration DB) or any DB error occurs.
+  * `set_setting(conn, key, value)` — writer (upsert via INSERT OR
+    REPLACE). Defensive — refuses to write unknown keys (keys not
+    in `DEFAULT_SETTINGS`) to prevent typos like `'difficulyt'`
+    instead of `'difficulty'` from silently corrupting the DB.
+    Coerces bool → lowercase `'true'`/`'false'` and int → str.
+  * `get_all_settings(conn)` — returns a dict of all settings.
+    Missing settings fall back to their `DEFAULT_SETTINGS` value
+    (callers always see the full set of known settings even on a
+    partially-seeded DB).
+  * `register_subscribers()` — no-op (settings are not event-driven).
+- New `src/mods.py` module — skeleton for the modding UI (Task 29,
+  code-only, no schema change). Per docs/STAGES.md Task ID 29:
+  "New `src/mods.py` module. Fighter / promotion / venue / contract
+  editors. CSV + JSON import/export. Portrait pack folder support.
+  Full database backup/restore." This task ships the SKELETON
+  (functions + defensive validation, no UI). A future task wires
+  these functions into a ttk.Toplevel mod tools dialog.
+  * `export_fighters_csv(conn, filepath)` — exports all fighters +
+    attributes + personality + career to CSV. Uses Python's csv
+    module (standard library). Header has table-qualified column
+    names (`'fighters.fighter_id'`, `'fighter_personality.grit'`,
+    etc.) to disambiguate the JOINed columns.
+  * `import_fighters_csv(conn, filepath)` — imports fighters from
+    CSV (upsert by fighter_id). Uses SQLite's UPSERT syntax
+    (`INSERT ... ON CONFLICT(fighter_id) DO UPDATE SET ...`,
+    available since SQLite 3.24+). Avoids the DELETE-then-INSERT
+    pattern of `INSERT OR REPLACE`, which would trigger ON DELETE
+    RESTRICT FK violations from `fight_participants` (FK to
+    fighters with ON DELETE RESTRICT) and `fight_rounds` (FK with
+    NO ACTION — the default).
+  * `export_promotions_json(conn, filepath)` — exports all
+    promotions to JSON (list of dicts, indent=2).
+  * `backup_database(filepath=None)` — wraps `save_load.save_game`
+    (reuses the existing save/load infrastructure — shutil.copy2 +
+    metadata JSON). The mod-tools backup is interchangeable with a
+    manual save (the player can restore a mod-tools backup via the
+    regular Load Game UI).
+  * `restore_database(filepath)` — wraps `save_load.load_game`.
+    Returns a NEW sqlite3.Connection to the restored DB.
+  * `edit_fighter(conn, fighter_id, **kwargs)` — updates any
+    fighter field. Defensive — validates column names against the
+    `fighters` table schema (via `PRAGMA table_info`); invalid
+    keys are silently dropped (prevents typos from corrupting the
+    DB). Refreshes the fighter's descriptor snapshot after the
+    update so the UI sees the new tier immediately.
+  * `edit_promotion(conn, promotion_id, **kwargs)` — same pattern
+    as `edit_fighter`, for the `promotions` table.
+- New `scripts/test_final_fixes.py` — 11 cases (A-K), 69 sub-checks.
+  Case A: grit +1 on decision loss, grit +2 on KO loss, resilience
+  +1 on decision loss, resilience -1 on KO loss (the chin cracks
+  confidence). Case B: ambition -1 on title win (satiated), ambition
+  +2 on 3+ loss streak (desperate), ambition -1 on 5+ win streak
+  (comfortable). Case C: resilience +2 + grit +1 on injury comeback
+  (weekly tick — detected via `actual_return_date` check). Case D:
+  fatigue_tolerance -1 per month after age 33 (career_arc monthly
+  tick — verified age 35 declines, age 25 doesn't). Case E:
+  travel_comfort +0.5 per month for fighters under 30 (career_arc
+  monthly tick — stored as REAL, verified the type is float). Case
+  F: player_settings table exists with 6 defaults + schema version
+  + migration recorded. Case G: get_setting / set_setting (incl.
+  bool coercion, int coercion, unknown-key rejection, get_all_
+  settings reflects user-modified values). Case H: export_fighters_
+  csv creates a file (5 fighters, 6 rows = 1 header + 5 data,
+  table-qualified columns). Case I: edit_fighter (1 field updated,
+  nickname updated, invalid column rejected, non-existent fighter
+  returns 0, edit_promotion works). Case J: backup_database (creates
+  .db + .json, modded data preserved, schema_version in metadata =
+  3.7.0) + export_promotions_json (2 promotions, JSON list) +
+  import_fighters_csv round-trip. Case K: Design Law (§13) — Puppet
+  Master (edit_fighter authors the world), Conflict + Growth (3 KO
+  losses compound grit +6 total), Anticipation (difficulty='hard'
+  shapes future sim), Investment (settings persist in the DB),
+  Voice (§14 — no news items written by Stage5-Final systems), Event
+  bus (TICK_ADVANCED + FIGHT_RESOLVED subscribers registered,
+  player_settings.register_subscribers is a no-op), §5 (player_
+  settings is the one new table, 54 total tables). All 69 checks
+  pass.
+- Modified `src/morale.py` — extended `_process_fight` (FIGHT_
+  RESOLVED) with a new `_update_fight_personality_fields` helper
+  that updates 4 stale personality fields per the brief:
+  * Winner: ambition -1 if was champion (satiated — both new title
+    win AND title defense qualify), +1 if underdog win (detected via
+    `winner.marketability < loser.marketability` — D1). The two are
+    mutually exclusive.
+  * Loser: grit +1 (adversity builds grit), resilience +1 (bouncing
+    back). KO loss overrides: grit +2 (real adversity), resilience
+    -1 (the chin cracks confidence).
+  * Both fighters: travel_comfort +0.5 per fight (stored as REAL —
+    SQLite INTEGER affinity accepts REAL values via NUMERIC
+    affinity, same pattern as `fighters.consistency` in the existing
+    `_update_fight_dynamic_fields`).
+  Added a new `_weekly_personality_drift` helper called from
+  `_process_tick` inside the existing `_is_weekly_tick(conn)` block
+  (day % 7 == 0):
+  * Fighter on 3+ loss streak: grit +1, ambition +2 (desperate to
+    prove themselves).
+  * Fighter on 5+ win streak: ambition -1 (comfortable).
+  * Fighter who just returned from injury (detected via `injuries
+    .actual_return_date == current_date`): resilience +2, grit +1.
+  Added `_clamp_personality` (clamps to [10, 95] — tighter than the
+  schema's 0-100 CHECK, matches the morale [10, 95] clamp pattern)
+  + `_set_personality_field` (whitelisted to the 6 personality
+  fields owned by this task — prevents accidental writes to morale
+  / aggression / composure which have their own writers). After
+  every personality update, the existing `_refresh_snapshot` (in
+  the caller's batched pass) picks up the new tier.
+- Modified `src/career_arc.py` — extended `_process_career_arc`
+  (monthly tick — current_day % 30 == 0) with 2 new personality
+  field updates per the brief:
+  * fatigue_tolerance: -1 per month after age 33 (body wears down
+    — fighters can't push through 5-round wars like they used to).
+  * travel_comfort: +0.5 per month for fighters UNDER 30 (young
+    fighters adapt to travel — first long flight is rough, the
+    tenth is routine). Stored as REAL.
+  All changes capped at [PERSONALITY_FLOOR=10, PERSONALITY_CEIL=95]
+  per the brief — tighter than the schema's 0-100 CHECK. The
+  `_refresh_snapshot` is called if any personality field changed
+  (added `pers_changed` flag to the existing refresh check).
+- Modified `src/build_db.py` — bumped `CODE_SCHEMA_VERSION` from
+  `"3.6.0"` to `"3.7.0"` (MINOR per §1.1 — adding a new table).
+  Added `player_settings` table to `SCHEMA_SQL`. Added migration
+  `_migrate_v3_7_0_add_player_settings` (idempotent — `CREATE TABLE
+  IF NOT EXISTS` + `INSERT OR IGNORE` for the 6 default settings).
+  Added the migration to the `MIGRATIONS` list. Added default-
+  settings seeding to `_build_fresh` (mirrors the existing news_
+  sources seeding pattern — D5: the `--fresh` path doesn't call
+  migration functions per CONVENTIONS §16.4, so the seeding must
+  be duplicated in `_build_fresh` for fresh-built DBs to have the
+  defaults from the very first run).
+- Modified `src/app.py` — `App.__init__` wires `player_settings.
+  register_subscribers` (lazy import, defensive `except ImportError`,
+  same pattern as the 12 other register_subscribers calls). The
+  register call is a no-op (settings are not event-driven) but
+  keeps App.__init__'s "register every module" pattern uniform.
+
+### Fixed (Stage 5 — Task Stage5-Final: stale personality fields)
+- 6 fighter_personality fields that were NEVER updated by any game
+  system (set at seed time, frozen forever):
+  * `grit` — now grows through adversity (decision loss +1, KO loss
+    +2, 3+ loss streak +1 per week, injury comeback +1).
+  * `ambition` — now shifts based on career state (title win -1
+    satiated, underdog win +1 hungry, 3+ loss streak +2 desperate,
+    5+ win streak -1 comfortable).
+  * `loyalty` — NOT touched in this task (the brief listed it as
+    "should shift based on contract renewals, gym changes, promotion
+    changes" but those events don't have event-bus subscribers yet;
+    deferred to a future task that adds contract/gym/promotion
+    change events). Flagged as D-number for the worklog.
+  * `resilience` — now grows through injury comebacks (+2) and
+    decision losses (+1 bouncing back); degrades on KO losses (-1
+    the chin cracks confidence).
+  * `travel_comfort` — now improves with fight experience (+0.5
+    per fight) AND with age for young fighters (+0.5 per month
+    under age 30, career_arc monthly tick). Stored as REAL.
+  * `fatigue_tolerance` — now degrades with age (-1 per month
+    after age 33, career_arc monthly tick — mirrors the cardio
+    decline onset of 32).
+  All changes are SUBTLE (±1 per event) — over a career these
+  compound. A 20-fight veteran who's been knocked out 5 times has
+  meaningfully higher grit + lower resilience than a fresh
+  prospect, even if no single fight produced a dramatic shift.
+
 ### Added (Stage 5 — Save/Load System, Task ID Stage5-SaveLoad, no schema change)
 - New `src/save_load.py` — save/load functionality. The game previously
   had NO save/load — the DB IS the game state, so saving = backing up

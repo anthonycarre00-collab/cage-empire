@@ -125,6 +125,20 @@ CLUTCH_FACTOR_FLOOR = 20
 # Promo_boost viral-post engagement threshold.
 PROMO_BOOST_ENGAGEMENT_THRESHOLD = 50
 
+# Personality field bounds (Stage5-Final). The schema CHECK is
+# BETWEEN 0 AND 100, but we clamp tighter to [10, 95] per the brief
+# — a 0-grit fighter would be a wreck, a 100-ambition fighter would
+# be insatiable. Matches the morale [10, 95] clamp pattern.
+PERSONALITY_FLOOR = 10
+PERSONALITY_CEIL = 95
+
+# Losing-streak / winning-streak thresholds for the weekly
+# personality drift (Stage5-Final). Fighters on 3+ loss streaks get
+# the "desperate to prove themselves" grit + ambition bumps; fighters
+# on 5+ win streaks get the "comfortable" ambition drop.
+LOSS_STREAK_GRIT_ONSET = 3
+WIN_STREAK_COMFORT_ONSET = 5
+
 
 # ----------------------------------------------------------------
 # Internal helpers
@@ -133,6 +147,53 @@ PROMO_BOOST_ENGAGEMENT_THRESHOLD = 50
 def _clamp_morale(v):
     """Clamp a morale value to [MORALE_FLOOR, MORALE_CEIL]."""
     return max(MORALE_FLOOR, min(MORALE_CEIL, int(v)))
+
+
+def _clamp_personality(v):
+    """Clamp a personality field value to [PERSONALITY_FLOOR, PERSONALITY_CEIL].
+
+    Stage5-Final — the 6 stale personality fields (grit, ambition,
+    loyalty, resilience, travel_comfort, fatigue_tolerance) are clamped
+    tighter than the schema's 0-100 CHECK. Preserves REAL values
+    (travel_comfort is stored as REAL for 0.5 increments) by skipping
+    the int() conversion when the input is a float.
+    """
+    if isinstance(v, float):
+        return float(max(PERSONALITY_FLOOR, min(PERSONALITY_CEIL, v)))
+    return max(PERSONALITY_FLOOR, min(PERSONALITY_CEIL, int(v)))
+
+
+def _set_personality_field(conn, fighter_id, field, new_value,
+                            update_snapshot=True):
+    """Update a single fighter_personality field (Stage5-Final).
+
+    Defensive — only allows the 6 personality fields owned by this
+    task (grit, ambition, loyalty, resilience, travel_comfort,
+    fatigue_tolerance). The whitelist prevents accidental writes to
+    morale / aggression / composure (which have their own writers).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        fighter_id: the fighter to update.
+        field: one of the 6 personality field names.
+        new_value: the target value (will be clamped to [10, 95]).
+        update_snapshot: if True (default), refresh the fighter's
+            descriptor snapshot so the UI sees the new tier.
+    """
+    _ALLOWED = {
+        "grit", "ambition", "loyalty", "resilience",
+        "travel_comfort", "fatigue_tolerance",
+    }
+    if field not in _ALLOWED:
+        return  # defensive — caller bug, refuse to write
+    clamped = _clamp_personality(new_value)
+    conn.execute(
+        f"UPDATE fighter_personality SET {field}=? "
+        f"WHERE fighter_id=?",
+        (clamped, fighter_id),
+    )
+    if update_snapshot:
+        _refresh_snapshot(conn, fighter_id)
 
 
 def _get_morale(conn, fighter_id):
@@ -308,6 +369,13 @@ def _process_fight(conn, event):
 
     # --- A10 — dynamic meta-fields on the fighters table ---
     _update_fight_dynamic_fields(
+        conn, fight_id, winner_id, loser_id, a_id, b_id,
+        result_type, is_title_fight, title_changed,
+    )
+
+    # --- Stage5-Final — stale personality fields (grit, ambition,
+    # resilience, travel_comfort) on FIGHT_RESOLVED ---
+    _update_fight_personality_fields(
         conn, fight_id, winner_id, loser_id, a_id, b_id,
         result_type, is_title_fight, title_changed,
     )
@@ -519,6 +587,157 @@ def _update_fight_dynamic_fields(conn, fight_id, winner_id, loser_id,
 
 
 # ----------------------------------------------------------------
+# Stage5-Final — stale personality field updates (FIGHT_RESOLVED)
+# ----------------------------------------------------------------
+
+def _update_fight_personality_fields(conn, fight_id, winner_id, loser_id,
+                                      a_id, b_id, result_type,
+                                      is_title_fight, title_changed):
+    """Update fighter_personality stale fields on FIGHT_RESOLVED.
+
+    Per the brief (Stage5-Final):
+      - Winner: ambition -1 if was champion (satiated), +1 if underdog
+        win (hungry for more). The two are mutually exclusive — a
+        champion defending is never the underdog, and an underdog
+        winning the belt is satiated (just achieved the dream).
+      - Loser: grit +1 (adversity builds grit), resilience +1
+        (bouncing back).
+      - Loser by KO/TKO: grit +2 (real adversity), resilience -1
+        (the chin cracks confidence — the fighter questions whether
+        they can take a shot anymore). Overrides the standard +1/+1
+        for grit; net effect: grit +2, resilience -1.
+      - Both fighters: travel_comfort +0.5 (more experience traveling
+        to events). Stored as REAL (SQLite INTEGER column accepts
+        REAL values via NUMERIC affinity — same pattern as
+        fighters.consistency in _update_fight_dynamic_fields).
+
+    All changes are SUBTLE (±1 per event) — over a career these
+    compound. A 20-fight veteran who's been knocked out 5 times has
+    meaningfully higher grit + lower resilience than a fresh
+    prospect, even if no single fight produced a dramatic shift.
+
+    After every personality field update, the caller's snapshot
+    refresh (already in _process_fight) picks up the new tier.
+    """
+    is_ko_loss = result_type in ('ko_tko', 'ko', 'tko')
+
+    # ---- travel_comfort: +0.5 for both fighters ----
+    # Every fight involves travel (to the venue, to the host city).
+    # Over a career, fighters become more comfortable on the road.
+    # Stored as REAL (0.5 increments).
+    for fid in (a_id, b_id):
+        if fid is None:
+            continue
+        row = conn.execute(
+            "SELECT travel_comfort FROM fighter_personality "
+            "WHERE fighter_id=?",
+            (fid,),
+        ).fetchone()
+        if not row:
+            continue
+        cur_tc = row[0] if row[0] is not None else 50
+        # Preserve REAL if the current value is REAL (e.g., 50.5).
+        if isinstance(cur_tc, float):
+            new_tc = float(_clamp_personality(cur_tc + 0.5))
+        else:
+            # Even if current is INTEGER, +0.5 makes it REAL.
+            new_tc = float(_clamp_personality(float(cur_tc) + 0.5))
+        conn.execute(
+            "UPDATE fighter_personality SET travel_comfort=? "
+            "WHERE fighter_id=?",
+            (new_tc, fid),
+        )
+
+    # ---- winner: ambition shift (satiated OR hungry) ----
+    if winner_id is not None and result_type != 'draw':
+        # Detect "was champion" — did the winner hold a title before
+        # this fight? After the fight, the title state has been
+        # updated by _resolve_title_after_fight (runs before publish).
+        # The cleanest post-fight signal: is_title_fight AND
+        # title_changed → just won the belt (newly satiated).
+        # is_title_fight AND NOT title_changed → defended (was
+        # champion). Both → satiated → ambition -1.
+        was_champion = bool(is_title_fight)
+        if was_champion:
+            row = conn.execute(
+                "SELECT ambition FROM fighter_personality "
+                "WHERE fighter_id=?",
+                (winner_id,),
+            ).fetchone()
+            if row:
+                cur = row[0] if row[0] is not None else 50
+                _set_personality_field(
+                    conn, winner_id, "ambition", cur - 1,
+                    update_snapshot=False,
+                )
+        else:
+            # Underdog check — winner has lower marketability than
+            # loser. The lower-marketed fighter pulling off the win
+            # is the canonical "underdog" storyline. If they were
+            # evenly matched, no ambition bump (neither underdog nor
+            # favorite). (D1.)
+            if loser_id is not None:
+                w_mkt = conn.execute(
+                    "SELECT marketability FROM fighters "
+                    "WHERE fighter_id=?",
+                    (winner_id,),
+                ).fetchone()
+                l_mkt = conn.execute(
+                    "SELECT marketability FROM fighters "
+                    "WHERE fighter_id=?",
+                    (loser_id,),
+                ).fetchone()
+                if (w_mkt and l_mkt
+                        and w_mkt[0] is not None
+                        and l_mkt[0] is not None
+                        and w_mkt[0] < l_mkt[0]):
+                    row = conn.execute(
+                        "SELECT ambition FROM fighter_personality "
+                        "WHERE fighter_id=?",
+                        (winner_id,),
+                    ).fetchone()
+                    if row:
+                        cur = row[0] if row[0] is not None else 50
+                        _set_personality_field(
+                            conn, winner_id, "ambition", cur + 1,
+                            update_snapshot=False,
+                        )
+
+    # ---- loser: grit + resilience shifts ----
+    if loser_id is not None and result_type != 'draw':
+        if is_ko_loss:
+            # KO loss: grit +2 (real adversity), resilience -1
+            # (the chin cracks confidence).
+            for field, delta in (("grit", +2), ("resilience", -1)):
+                row = conn.execute(
+                    f"SELECT {field} FROM fighter_personality "
+                    "WHERE fighter_id=?",
+                    (loser_id,),
+                ).fetchone()
+                if row:
+                    cur = row[0] if row[0] is not None else 50
+                    _set_personality_field(
+                        conn, loser_id, field, cur + delta,
+                        update_snapshot=False,
+                    )
+        else:
+            # Decision/submission loss: grit +1, resilience +1
+            # (bouncing back).
+            for field, delta in (("grit", +1), ("resilience", +1)):
+                row = conn.execute(
+                    f"SELECT {field} FROM fighter_personality "
+                    "WHERE fighter_id=?",
+                    (loser_id,),
+                ).fetchone()
+                if row:
+                    cur = row[0] if row[0] is not None else 50
+                    _set_personality_field(
+                        conn, loser_id, field, cur + delta,
+                        update_snapshot=False,
+                    )
+
+
+# ----------------------------------------------------------------
 # A1 — TITLE_CHANGED subscriber
 # ----------------------------------------------------------------
 
@@ -581,6 +800,8 @@ def _process_tick(conn, event):
       - Ring rust: -2 if fighter hasn't fought in 90+ days.
       - Win-streak bonus: +1 if fighter on 5+ win streak.
       - Injury recovery scan: +5 for each injury that recovered today.
+      - Stage5-Final: personality field drift (grit, ambition,
+        resilience) for streaks + injury comebacks.
 
     BIRTHDAY actions (current_date matches a fighter's DOB month/day):
       - injury_proneness: +1 per year of age over 30.
@@ -592,6 +813,7 @@ def _process_tick(conn, event):
 
     if _is_weekly_tick(conn):
         _weekly_morale_drift(conn, current_date)
+        _weekly_personality_drift(conn, current_date)
         _weekly_snapshot_refresh(conn)
 
     # Birthday aging — checked on every tick (cheap).
@@ -666,6 +888,91 @@ def _weekly_snapshot_refresh(conn):
     ).fetchall()
     for (fid,) in rows:
         _refresh_snapshot(conn, fid)
+
+
+def _weekly_personality_drift(conn, current_date):
+    """Stage5-Final — weekly personality field drift.
+
+    Per the brief:
+      - Fighter on 3+ loss streak: grit +1, ambition +2 (desperate
+        to prove themselves).
+      - Fighter on 5+ win streak: ambition -1 (comfortable).
+      - Fighter who just returned from injury (detected via
+        actual_return_date check): resilience +2, grit +1.
+
+    Mutually exclusive per fighter per tick:
+      - A 3+ loss streak + injury recovery in the same week is
+        possible — both fire (the fighter is doubly tested). The
+        resilience +2 (comeback) and grit +1 (loss streak) compound.
+      - A 5+ win streak + injury recovery is rare (winning fighters
+        don't usually get injured) but if it happens, the win streak
+        comfort (-1 ambition) and the comeback resilience (+2) both
+        fire — the fighter is "comfortably on top, just got healthy".
+
+    All updates use _set_personality_field with update_snapshot=False
+    (the caller's _weekly_snapshot_refresh handles the snapshot write
+    in one batched pass).
+    """
+    # ---- streak-based grit + ambition shifts ----
+    rows = conn.execute(
+        "SELECT f.fighter_id, fc.win_streak, fc.loss_streak, "
+        "fp.grit, fp.ambition "
+        "FROM fighters f "
+        "JOIN fighter_personality fp ON fp.fighter_id=f.fighter_id "
+        "LEFT JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
+        "WHERE f.is_active=1 AND f.is_retired=0"
+    ).fetchall()
+    for fighter_id, ws, ls, cur_grit, cur_amb in rows:
+        ws = ws or 0
+        ls = ls or 0
+        cur_grit = cur_grit if cur_grit is not None else 50
+        cur_amb = cur_amb if cur_amb is not None else 50
+        if ls >= LOSS_STREAK_GRIT_ONSET:
+            # Desperate to prove themselves.
+            _set_personality_field(
+                conn, fighter_id, "grit", cur_grit + 1,
+                update_snapshot=False,
+            )
+            _set_personality_field(
+                conn, fighter_id, "ambition", cur_amb + 2,
+                update_snapshot=False,
+            )
+        elif ws >= WIN_STREAK_COMFORT_ONSET:
+            # Comfortable — riding high.
+            _set_personality_field(
+                conn, fighter_id, "ambition", cur_amb - 1,
+                update_snapshot=False,
+            )
+
+    # ---- injury comeback: resilience +2, grit +1 ----
+    # Same detection pattern as _weekly_morale_drift's injury scan
+    # — injuries with is_active=0 AND actual_return_date == current_
+    # date were just recovered by tick_processor._check_injury_
+    # recovery (which runs BEFORE TICK_ADVANCED is published).
+    rec_rows = conn.execute(
+        "SELECT DISTINCT fighter_id FROM injuries "
+        "WHERE is_active=0 AND actual_return_date=?",
+        (current_date,),
+    ).fetchall()
+    for (rec_fid,) in rec_rows:
+        row = conn.execute(
+            "SELECT grit, resilience FROM fighter_personality "
+            "WHERE fighter_id=?",
+            (rec_fid,),
+        ).fetchone()
+        if not row:
+            continue
+        cur_grit, cur_res = row
+        cur_grit = cur_grit if cur_grit is not None else 50
+        cur_res = cur_res if cur_res is not None else 50
+        _set_personality_field(
+            conn, rec_fid, "resilience", cur_res + 2,
+            update_snapshot=False,
+        )
+        _set_personality_field(
+            conn, rec_fid, "grit", cur_grit + 1,
+            update_snapshot=False,
+        )
 
 
 def _birthday_aging(conn, current_date):

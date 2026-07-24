@@ -153,6 +153,21 @@ DECLINE_NEWS_THRESHOLD = 5
 ATTR_FLOOR = 0
 ATTR_CEIL = 100  # upper bound — only used for growth ceiling calc
 
+# Stage5-Final — personality field bounds for the monthly drift
+# (fatigue_tolerance + travel_comfort). Matches the [10, 95] clamp
+# used in morale.py for the same fields.
+PERSONALITY_FLOOR = 10
+PERSONALITY_CEIL = 95
+
+# Age thresholds for the Stage5-Final personality drift.
+#   fatigue_tolerance: -1/month after age 33 (body wears down —
+#     fighters can't push through 5-round wars like they used to).
+#   travel_comfort: +0.5/month for fighters UNDER 30 (young fighters
+#     adapt to travel — first long flight is rough, the tenth is
+#     routine). Stored as REAL for the 0.5 increments.
+FATIGUE_TOLERANCE_DECLINE_AGE = 33
+TRAVEL_COMFORT_GROWTH_AGE_MAX = 29  # under 30 → 0..29 inclusive
+
 
 # ----------------------------------------------------------------
 # Effective ceiling — replicates the formula in tick_processor.
@@ -437,11 +452,54 @@ def _process_career_arc(conn, event):
                         )
                         total_decline += (cur - new_val)
 
+        # ---- Stage5-Final — personality field monthly drift ----
+        # fatigue_tolerance: -1/month after age 33 (body wears down).
+        # travel_comfort: +0.5/month for fighters under 30 (young
+        #   fighters adapt to travel). Stored as REAL.
+        # All changes capped at [PERSONALITY_FLOOR=10, PERSONALITY_CEIL=95]
+        # per the brief — tighter than the schema's 0-100 CHECK.
+        pers_changed = False
+        if age >= FATIGUE_TOLERANCE_DECLINE_AGE:
+            row = conn.execute(
+                "SELECT fatigue_tolerance FROM fighter_personality "
+                "WHERE fighter_id=?",
+                (fighter_id,),
+            ).fetchone()
+            if row:
+                cur_ft = row[0] if row[0] is not None else 50
+                new_ft = max(PERSONALITY_FLOOR, int(cur_ft) - 1)
+                if new_ft != cur_ft:
+                    conn.execute(
+                        "UPDATE fighter_personality "
+                        "SET fatigue_tolerance=? WHERE fighter_id=?",
+                        (new_ft, fighter_id),
+                    )
+                    pers_changed = True
+        if age <= TRAVEL_COMFORT_GROWTH_AGE_MAX:
+            row = conn.execute(
+                "SELECT travel_comfort FROM fighter_personality "
+                "WHERE fighter_id=?",
+                (fighter_id,),
+            ).fetchone()
+            if row:
+                cur_tc = row[0] if row[0] is not None else 50
+                # Preserve REAL type if the current value is REAL
+                # (e.g., 50.5 + 0.5 = 51.0 — keep as float).
+                base_tc = float(cur_tc) if not isinstance(cur_tc, float) else cur_tc
+                new_tc = min(float(PERSONALITY_CEIL), base_tc + 0.5)
+                if new_tc != cur_tc:
+                    conn.execute(
+                        "UPDATE fighter_personality "
+                        "SET travel_comfort=? WHERE fighter_id=?",
+                        (new_tc, fighter_id),
+                    )
+                    pers_changed = True
+
         # ---- Refresh the descriptor snapshot (one pass per fighter
         # that actually changed). Skip the refresh if no attributes
         # changed this month — saves work on the 80%+ of monthly
         # ticks where the RNG didn't fire for this fighter.
-        if total_growth > 0 or total_decline > 0:
+        if total_growth > 0 or total_decline > 0 or pers_changed:
             _refresh_snapshot(conn, fighter_id)
 
         # ---- NEWS: "father time catches up" for cliff declines ----

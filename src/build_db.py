@@ -505,9 +505,37 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.6.0"
+CODE_SCHEMA_VERSION = "3.7.0"
 
 
+# v3.7.0 (Stage 5 — Task Stage5-Final: Player settings) — MINOR bump.
+# Adds the new `player_settings` table. Per CONVENTIONS §1.1, adding a
+# new table is a MINOR bump. Per §5 (one table-group per task), this
+# task adds ONLY the `player_settings` table — it is a single logical
+# group (player preferences for the UI / sim — news feed filtering,
+# auto-save cadence, difficulty, voice descriptors toggle). The
+# player_settings table is a simple key-value store: one row per
+# setting (PRIMARY KEY setting_key), with a TEXT setting_value + a
+# timestamp. The migration seeds 6 default settings on first apply
+# (idempotent via INSERT OR IGNORE). The src/player_settings.py module
+# is the reader/writer (get_setting, set_setting, get_all_settings).
+# This task also ships code-only changes that fix 6 stale personality
+# fields (grit, ambition, loyalty, resilience, travel_comfort,
+# fatigue_tolerance) in src/morale.py + src/career_arc.py — those are
+# NOT schema changes (the columns already exist from v2.0.0); they're
+# system extensions. And it ships the src/mods.py skeleton (Task 29 —
+# code-only, no schema).
+#
+# Default settings seeded by the migration:
+#   news_filter_topics          = 'all'
+#   news_filter_min_importance  = '0'
+#   news_volume                 = 'normal'
+#   auto_save_frequency         = '30'
+#   difficulty                  = 'normal'
+#   display_descriptors         = 'true'
+#
+# Migration name: v3_7_0_add_player_settings.
+#
 # v3.6.0 (Stage 5 — Task 26 Show rating engine) — MINOR bump. Adds
 # the new `show_ratings` table. Per CONVENTIONS §1.1, adding a new
 # table is a MINOR bump. Per §5 (one table-group per task), this task
@@ -2309,6 +2337,52 @@ CREATE TABLE IF NOT EXISTS show_ratings (
     created_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (event_id)
 );
+
+-- ----------------------------------------------------------------
+-- player_settings (added v3.7.0, Stage 5 — Task Stage5-Final).
+--
+-- Simple key-value store for player preferences. One row per setting
+-- (PRIMARY KEY setting_key). setting_value is TEXT — callers parse
+-- (int, bool, comma-separated list, etc.) per the setting's contract.
+-- updated_at is auto-stamped on every write.
+--
+-- 6 default settings seeded by _migrate_v3_7_0_add_player_settings:
+--   news_filter_topics          = 'all'       (comma-separated topics
+--                                              or 'all' to show all)
+--   news_filter_min_importance  = '0'         (0=show all, 1=only
+--                                              important, 2=only major)
+--   news_volume                 = 'normal'    (verbose/normal/summary)
+--   auto_save_frequency         = '30'        (days between auto-saves)
+--   difficulty                  = 'normal'    (easy/normal/hard —
+--                                              affects starting cash,
+--                                              AI aggression, injury
+--                                              rates)
+--   display_descriptors         = 'true'      (show voice descriptors
+--                                              instead of raw numbers —
+--                                              should always be true
+--                                              per CONVENTIONS §14)
+--
+-- The src/player_settings.py module is the reader/writer:
+--   get_setting(conn, key, default=None) — reader
+--   set_setting(conn, key, value)        — writer (upsert)
+--   get_all_settings(conn)               — returns dict of all settings
+--
+-- The module is NOT event-bus-driven — settings are read by other
+-- systems (news feed filter, auto-save cadence, etc.) at their own
+-- cadence. register_subscribers is provided as a no-op for parity
+-- with the other system modules (called from App.__init__ alongside
+-- the 12 other register_subscribers calls).
+--
+-- See docs/STAGES.md Task Stage5-Final for the brief.
+-- See docs/CONVENTIONS.md §5 (one table-group per task), §14 (voice
+-- layer — display_descriptors='false' would violate §14, but the
+-- setting exists for debugging / future accessibility modes).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS player_settings (
+    setting_key        TEXT PRIMARY KEY,
+    setting_value      TEXT NOT NULL,
+    updated_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
 """
 
 def _has_column(conn, table, column):
@@ -2999,6 +3073,49 @@ def _migrate_v3_6_0_add_show_ratings(conn):
         )
 
 
+def _migrate_v3_7_0_add_player_settings(conn):
+    """Stage 5 — Task Stage5-Final: Player settings table.
+
+    Adds the player_settings table — a simple key-value store for
+    player preferences (news feed filtering, auto-save cadence,
+    difficulty, voice descriptors toggle). Per CONVENTIONS §5 (one
+    table-group per task — `player_settings` is the single group this
+    task adds). The src/player_settings.py module is the reader/
+    writer (get_setting, set_setting, get_all_settings). The module
+    is NOT event-bus-driven — settings are read by other systems at
+    their own cadence. Per §5.3, every new table must ship with a
+    writer (src/player_settings.py) AND a reader (src/player_settings.
+    py — same module, dual role; future UI panel will also read it).
+
+    Migration name: v3_7_0_add_player_settings. Idempotent — checks
+    for the table's existence before creating. Seeds 6 default
+    settings on first apply (idempotent via INSERT OR IGNORE — a
+    re-run preserves any user-modified values).
+    """
+    if not _has_table(conn, "player_settings"):
+        conn.execute(
+            "CREATE TABLE player_settings (\n"
+            "    setting_key        TEXT PRIMARY KEY,\n"
+            "    setting_value      TEXT NOT NULL,\n"
+            "    updated_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+    # Seed default settings (idempotent — preserves user-modified values).
+    defaults = [
+        ("news_filter_topics",         "all"),
+        ("news_filter_min_importance", "0"),
+        ("news_volume",                "normal"),
+        ("auto_save_frequency",        "30"),
+        ("difficulty",                 "normal"),
+        ("display_descriptors",        "true"),
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO player_settings "
+        "(setting_key, setting_value) VALUES (?, ?)",
+        defaults,
+    )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3015,6 +3132,7 @@ MIGRATIONS = [
     ("v3_4_0_add_suspensions",     "3.4.0", _migrate_v3_4_0_add_suspensions),
     ("v3_5_0_add_agent_offers",    "3.5.0", _migrate_v3_5_0_add_agent_offers),
     ("v3_6_0_add_show_ratings",    "3.6.0", _migrate_v3_6_0_add_show_ratings),
+    ("v3_7_0_add_player_settings", "3.7.0", _migrate_v3_7_0_add_player_settings),
 ]
 
 
@@ -3111,6 +3229,27 @@ def _build_fresh(conn):
             ("MMA Analytica", 90, 20, 30, 80, 95, 50),
             ("Social Sphere", 50, 60, 50, 70, 60, 60),
             ("The Pundit's Desk", 60, 50, 40, 60, 70, 40),
+        ],
+    )
+    # v3.7.0 (Stage5-Final) — seed the 6 default player_settings.
+    # Same INSERT OR IGNORE pattern as the news_sources seeding above
+    # (idempotent — preserves any user-modified values on a re-run).
+    # The migration function _migrate_v3_7_0_add_player_settings also
+    # seeds these defaults (for the --migrate path on an existing
+    # world DB); mirroring here ensures the fresh-build path has the
+    # defaults from the very first run (the migration functions are
+    # NOT called on the --fresh path per CONVENTIONS §16.4 — only
+    # recorded in schema_migrations).
+    conn.executemany(
+        "INSERT OR IGNORE INTO player_settings "
+        "(setting_key, setting_value) VALUES (?, ?)",
+        [
+            ("news_filter_topics",         "all"),
+            ("news_filter_min_importance", "0"),
+            ("news_volume",                "normal"),
+            ("auto_save_frequency",        "30"),
+            ("difficulty",                 "normal"),
+            ("display_descriptors",        "true"),
         ],
     )
     conn.execute(

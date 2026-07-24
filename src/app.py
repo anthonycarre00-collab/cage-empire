@@ -6388,6 +6388,24 @@ class App(tk.Tk):
             _register_save_load()
         except ImportError:
             pass  # save_load.py not available — legacy behavior
+        # v3.7.0 (Stage 5 — Task Stage5-Final): register the player
+        # settings module. The player_settings module is NOT event-
+        # bus-driven — settings are read by other systems (news feed
+        # filter, auto-save cadence, difficulty, voice descriptors
+        # toggle) at their own cadence. register_subscribers is a
+        # NO-OP, but we call it for parity with the 12 other
+        # register_subscribers calls above (so App.__init__ has a
+        # uniform "register every module" pattern). The player_
+        # settings table is created by build_db.py's _migrate_v3_7_0
+        # _add_player_settings + seeded with 6 defaults. CONVENTIONS
+        # §15.4 — additive, no inline side effects added to run_tick
+        # or resolve_next_fight. Lazy import for the same reasons as
+        # the 12 modules above.
+        try:
+            from player_settings import register_subscribers as _register_player_settings
+            _register_player_settings()
+        except ImportError:
+            pass  # player_settings.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.
