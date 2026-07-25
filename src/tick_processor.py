@@ -1352,6 +1352,17 @@ def _check_retirements(conn, current_date):
                         current_date,
                     ),
                 )
+            # v3.8.0 (Task 6.0 — D-GUI-4): populate style_echo memory
+            # link if the regen replacement inherited the retiring
+            # champion's style archetype. Idempotent. Per CONVENTIONS
+            # §15.4, this is an additive inline side effect (matches
+            # how this function already publishes FIGHTER_RETIRED
+            # inline) — NOT a behavioral change.
+            try:
+                from services.memory_svc import populate_style_echo
+                populate_style_echo(conn, replacement_id, fighter_id)
+            except ImportError:
+                pass
             # Non-champion retirement: no memory link, no extra news.
             # The standard "new prospect emerges" news from
             # generate_fighter is the only prospect news — keeps the
