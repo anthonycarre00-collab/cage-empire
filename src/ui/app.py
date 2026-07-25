@@ -249,6 +249,22 @@ class CageEmpireApp(ctk.CTk):
         self._build_bottom_bar()
 
         # ============================================================
+        # Phase 1 — Fix 1.3: Register the Save/Load screen.
+        # The screen is created with self.screen_container as its
+        # parent (so it packs into the main content area). It is NOT
+        # packed yet — _navigate("save_load") packs it when the
+        # player clicks the sidebar entry. The screen's refresh
+        # callback is _refresh (re-queries list_saves() + re-renders
+        # the list). Registered with GameState so set_active_screen
+        # works + so refresh_all() picks it up after Save/Load.
+        # ============================================================
+        from ui.screens.save_load import SaveLoadScreen
+        self.save_load_screen = SaveLoadScreen(self.screen_container)
+        self.state.register_screen(
+            "save_load", self.save_load_screen, self.save_load_screen._refresh
+        )
+
+        # ============================================================
         # START ON DASHBOARD
         # ============================================================
         self._navigate("dashboard")
@@ -411,27 +427,56 @@ class CageEmpireApp(ctk.CTk):
     def _navigate(self, screen_name):
         """Navigate to a screen.
 
-        For now (Task 6.2), we just show a placeholder with the
-        screen name. Actual screens land in Tasks 6.3-6.12.
+        For "save_load" (Phase 1 — Fix 1.3): pack the registered
+        SaveLoadScreen into the screen container + call its refresh
+        callback (set_active_screen triggers this — see GameState).
+        The SaveLoadScreen instance is preserved across navigations
+        (pack_forget on navigate-away, pack on navigate-to) so its
+        state (cached save rows, entry value) survives.
+
+        For other screens (placeholder until Tasks 6.3-6.14): show
+        a placeholder label with the screen name.
         """
         theme = get_theme()
 
-        # Clear current content
+        # Clear current content. The SaveLoadScreen is special —
+        # pack_forget it (don't destroy) so its state survives
+        # across navigations. Everything else (placeholders, future
+        # screens) is destroyed.
+        save_load_screen = getattr(self, "save_load_screen", None)
         for widget in self.screen_container.winfo_children():
-            widget.destroy()
+            if widget is save_load_screen:
+                widget.pack_forget()
+            else:
+                widget.destroy()
 
-        # Show placeholder with screen name
-        label = ctk.CTkLabel(self.screen_container,
-                             text=f"[ {screen_name.replace('_', ' ').title()} ]\n\n"
-                                  f"This screen will be implemented in a future task.\n"
-                                  f"Theme: {theme.name}  ·  DB: {self.db_path.name}",
-                             font=theme.fonts.h1,
-                             text_color=theme.colors.text_secondary,
-                             justify="center")
-        label.pack(expand=True)
+        if screen_name == "save_load" and save_load_screen is not None:
+            # Pack the SaveLoadScreen into the container. The refresh
+            # callback fires via state.set_active_screen below.
+            save_load_screen.pack(fill="both", expand=True)
+        else:
+            # Show placeholder with screen name
+            label = ctk.CTkLabel(self.screen_container,
+                                 text=f"[ {screen_name.replace('_', ' ').title()} ]\n\n"
+                                      f"This screen will be implemented in a future task.\n"
+                                      f"Theme: {theme.name}  ·  DB: {self.db_path.name}",
+                                 font=theme.fonts.h1,
+                                 text_color=theme.colors.text_secondary,
+                                 justify="center")
+            label.pack(expand=True)
 
-        # Update state
-        self.state.set_active_screen(screen_name)
+        # Update state — this calls set_active_screen which calls
+        # the screen's refresh callback (SaveLoadScreen._refresh
+        # for "save_load"). For unregistered screens (every screen
+        # OTHER than save_load + dashboard-as-placeholder), this
+        # raises ValueError. We catch + ignore for the placeholder
+        # screens — they have no refresh callback anyway.
+        try:
+            self.state.set_active_screen(screen_name)
+        except ValueError:
+            # Screen not registered (placeholder). Update active
+            # screen name directly so the sidebar highlight works.
+            self.state._active_screen = screen_name
         self._update_sidebar()
         self._update_top_bar()
 
@@ -490,12 +535,32 @@ class CageEmpireApp(ctk.CTk):
     # ============================================================
 
     def destroy(self):
-        """Clean up on window close."""
+        """Clean up on window close — auto-save first (Phase 1, Fix 1.3).
+
+        Saves the current game as 'exit_save' BEFORE closing the
+        conn. This is a safety net — accidental closes (window X
+        button, Alt+F4, system shutdown) won't lose progress. The
+        player can load 'exit_save' from the Save/Load screen on
+        next launch.
+
+        Defensive — if the save fails (disk full, permission denied,
+        broken conn), the failure is logged to stdout but the close
+        still proceeds. We never block the window close on a save
+        failure.
+        """
         try:
             if self.conn:
+                from save_load import save_game
+                try:
+                    save_game(self.conn, save_name="exit_save")
+                except Exception as e:
+                    # Save failure is non-fatal — log + continue so
+                    # the window close isn't blocked.
+                    print(f"Warning: exit auto-save failed: {e}",
+                          flush=True)
                 self.conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: destroy cleanup failed: {e}", flush=True)
         super().destroy()
 
 
