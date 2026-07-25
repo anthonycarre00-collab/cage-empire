@@ -1319,3 +1319,50 @@ These run in parallel with the stages above, not gated:
 - **Pre-existing bug fixes.** The `current_date` SQLite quirk (§Z.6)
   and stale comments in `test_fight_history.py` (§Z.7) should be
   fixed as housekeeping tasks before Stage 3.
+
+---
+
+## Stage 6 — GUI (CustomTkinter + Pillow + ttkbootstrap-Treeview)
+
+> **Status:** Planning complete (see `docs/GUI_PLAN.md` Rev 3 +
+> `docs/TASK_6_0_PLAN.md`). Schema bumped 3.7.0 → 3.8.0
+> (staff.pundit_bias). Logo locked (supervisor-designed, see
+> `docs/logo_concepts/supervisor_final/`). Ready to start Task 6.0.
+
+Stage 6 builds the player-facing GUI on top of the simulation
+engine built in Stages 1-5. The current `src/app.py` is a
+7700-line monolith mixing game logic + DB plumbing + a primitive
+tkinter UI the supervisor rejected as "ugly and not very
+flexible." Stage 6 splits that monolith and replaces the UI with
+a CustomTkinter-based dual-mode system (Office Mode + Fight Night
+Mode).
+
+### Stage 6 task list
+
+| Task | Description | Schema impact | Status |
+|---|---|---|---|
+| **6.0** | **Decouple UI from game logic** — extract 13 service modules from `app.py` into `src/services/`. ~4650 lines moved. All 38 tests must still pass. See `docs/TASK_6_0_PLAN.md` for full brief. | None | Ready to delegate |
+| 6.1 | Theme + asset pipeline + logo system — implement `ui/theme.py` with dual-mode (Office + Fight Night), install CTk + Pillow + ttkbootstrap, bundle fonts, integrate supervisor's logo, extend to full 5-variant brand system. | None | Pending 6.0 |
+| 6.1.5 | Extend primary logo into full brand system (Fight Night + Championship + Favicon variants) | None | Pending 6.1 |
+| 6.2 | App shell + navigation + mode switcher — top bar, sidebar, bottom bar, screen router, dark/light toggle, Office↔Fight Night transition animation. | None | Pending 6.1 |
+| 6.3 | Dashboard + News Feed | None | Pending 6.2 |
+| 6.4 | Roster + Fighter Profile | None | Pending 6.2 |
+| 6.5 | Scouting + Free Agents | None | Pending 6.2 |
+| 6.6 | Event Builder + Matchmaking | None | Pending 6.2 |
+| 6.7 ★ | **Fight Resolution Screen** — the Fight Night centrepiece. Pre-fight, live fight (4 zones: heatmap + damage silhouettes + commentary + pundit panel + memory bubble), post-fight recap. Schema bump 3.8.0 → 3.9.0 (fighter_memory_links gains context_note + last_surfaced_at columns). | Minor: +2 columns on fighter_memory_links | Pending 6.6 |
+| 6.8 | Past Events + Schedule | None | Pending 6.7 |
+| 6.9 | Rankings + Titles + Rivalries + Records | None | Pending 6.2 |
+| 6.10 | Finance + Contracts + Rival Promotions + Gyms | None | Pending 6.2 |
+| 6.11 | Hall of Fame | None | Pending 6.2 |
+| 6.12 | Settings + Save/Load + Mods | None | Pending 6.2 |
+| 6.13 | Polish pass — keyboard shortcuts, tooltips, empty states, error dialogs, accessibility, fight replay scrubbing | None | Pending all screens |
+| 6.14 | Smoke tests for GUI — headless CTk smoke test pattern | None | Pending 6.13 |
+| 6.15 | Player entity (deferred from Q8) — `player` table (player_id, name, current_promotion_id), migration to seed default player row, UI for resign/takeover flow, re-point every "player promotion" reference from hardcoded `1` to `player.current_promotion_id` lookup. | Minor: new `player` table | Pending 6.14 |
+
+### Stage 6 conventions (additions to CONVENTIONS.md, planned)
+
+- **§17 (new) — GUI architecture.** UI is a reader, not a writer. State changes go through `src/services/*`. Screens do NOT call `resolve_next_fight` or `advance_day` directly — they call services which call those, then publish events, then the GameState singleton triggers screen refreshes.
+- **§18 (new) — GameState singleton.** `src/ui/state.py` exposes a `GameState` class holding the conn, theme, active screen, and registered refresh callbacks. `refresh_all()` on user-initiated actions (Advance Day, Resolve Fight, Save/Load); `refresh(name)` on screen navigation. Screens that are not visible skip refresh.
+- **§19 (new) — Dual-mode theming.** `ui/theme.py` exposes `OFFICE` and `FIGHT_NIGHT` theme objects. Screens declare which mode they want. Transition is animated (300ms crossfade on background, 150ms on accent colours) when entering/leaving the Fight Resolution screen.
+
+These will be added to CONVENTIONS.md as part of Task 6.1.

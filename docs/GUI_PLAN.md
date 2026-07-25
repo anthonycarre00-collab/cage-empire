@@ -76,85 +76,124 @@ Before drafting this plan, the supervisor's machine was verified:
 
 ### 1.1 Inputs reviewed
 
-Two PNG concepts were supplied by the supervisor:
+The supervisor supplied two batches of concepts:
 
-- `/home/z/my-project/upload/pasted_image_1784933961307.png`
-  (Concept A — multi-variant grid)
-- `/home/z/my-project/upload/pasted_image_1784933971681.png`
-  (Concept B — multi-variant grid)
+- **Batch 1 (supervisor-supplied reference grids):**
+  - `/home/z/my-project/upload/pasted_image_1784933961307.png`
+    (Concept A — multi-variant grid)
+  - `/home/z/my-project/upload/pasted_image_1784933971681.png`
+    (Concept B — multi-variant grid)
+- **Batch 2 (AI-generated via image-generation skill):**
+  - `docs/logo_concepts/concept_1_the_strike.png`
+  - `docs/logo_concepts/concept_2_crowned_cage.png`
+  - `docs/logo_concepts/concept_3_impact_monogram.png`
+  - `docs/logo_concepts/concept_4_punch_crown.png`
+  - `docs/logo_concepts/concept_5_cage_door.png`
+  - `docs/logo_concepts/concept_6_lineage.png`
+  - `docs/logo_concepts/concept_7_data_cage.png`
 
-Both were analysed with the vision model. Full transcripts saved
-to `/home/z/my-project/tool-results/logo{1,2}_analysis.json`.
+The supervisor rejected all 7 AI-generated concepts as "cheap
+looking" and **designed their own logo**. The supervisor's
+design is now the official CAGE EMPIRE brand.
 
-### 1.2 Three fresh concepts generated
+### 1.2 The official logo (supervisor-designed, locked)
 
-Based on the supervisor's revised brief ("violence IS a part of
-this game and should be in the logo"), three new concepts were
-generated via the image-generation skill and analysed by the VLM.
-Files saved to `docs/logo_concepts/`:
+| File | Size | Use |
+|---|---|---|
+| `docs/logo_concepts/supervisor_final/cage_empire_primary_1536x1024.png` | 1536×1024 | Primary lockup — splash screen, marketing, title bar |
+| `docs/logo_concepts/supervisor_final/cage_empire_compact_450x300.png` | 450×300 | Compact variant — taskbar, Steam library, in-app corner badge |
 
-| # | Concept | File | VLM fit score |
+VLM analysis: `/home/z/my-project/tool-results/supervisor_logo_analysis.json`.
+
+### 1.3 VLM verdict on the supervisor's logo
+
+The vision model scored the supervisor's design highly:
+
+| Dimension | Score |
+|---|---|
+| Dual messaging (institutional empire + violent cage) | **9/10** |
+| Overall fit for a "Football Manager of MMA" premium desktop software product | **8.5/10** |
+| Small-size legibility | Good (with caveats — see §1.5) |
+
+VLM summary, verbatim:
+
+> "The logo projects a 'Brutalist Luxury' or 'Industrial
+> Sovereignty' aesthetic. It successfully bridges the gap
+> between the boardroom (symmetry, gold/silver palette, crown =
+> institutional power, financial strategy, empire-building) and
+> the arena (chain-link texture, octagonal shape, floodlights,
+> distressed metal = visceral combat, sweat, blood, high-impact
+> entertainment). It feels premium, masculine, and
+> authoritative. It avoids the 'cartoonish' trap common in
+> sports games and instead leans into a cinematic, almost
+> HBO/ESPN broadcast quality."
+
+### 1.4 Visual elements (per VLM analysis)
+
+- **Primary container:** Octagonal shield mimicking the MMA
+  cage geometry. Heavy industrial metal frame with visible
+  corner bolts. Chain-link fence texture fills the interior.
+- **Crown:** Large 3D-rendered gold crown at the apex. Sharp
+  aggressive points, hammered/worn gold texture suggesting
+  both royalty and battle-worn status.
+- **Championship belt:** Small detailed belt icon at the
+  bottom centre, reinforcing "Empire" + prize-fighting.
+- **Stadium floodlights:** Two floodlight arrays flank the
+  upper corners — "fight night" atmosphere + volumetric depth.
+- **Wordmark:** "CAGE" in heavy slab-serif with distressed
+  cold-rolled steel texture; "EMPIRE" in same font but rich
+  textured gold. Creates clear hierarchy: CAGE = gritty
+  reality, EMPIRE = aspirational value.
+- **Tagline:** "BUILD THE PROMOTION. CREATE THE LEGENDS." in
+  clean bold grotesque, white + gold, on a black banner plate.
+- **Palette:** Deep black `#0A0A0A` background, industrial
+  silver/grey for CAGE + frame, championship gold for EMPIRE
+  + crown + belt, warm white/yellow for floodlights.
+
+### 1.5 Small-size legibility (the 450×300 compact variant)
+
+VLM analysis of the compact variant:
+
+- **Survives perfectly:** The "CAGE EMPIRE" wordmark remains
+  highly legible. Silver-vs-gold contrast holds. Octagonal
+  silhouette unmistakable.
+- **Degraded at thumbnail size:** chain-link texture becomes
+  moiré noise; distressed scratches on letters disappear;
+  tagline becomes illegible below ~100px wide; championship
+  belt becomes a gold smudge; floodlights survive as small
+  white dots.
+
+**Implication:** the compact variant is good for taskbar /
+Steam library use (where the silhouette + wordmark carry the
+brand). For favicon (16×16) we still need a separate
+monogram-only mark (see §1.6).
+
+### 1.6 The brand system (5 variants, all derived from the supervisor's design)
+
+The supervisor's logo is the **primary lockup**. The brand
+system extends it into 5 variants, each for a specific UI
+context. Per the VLM's recommendations:
+
+| Variant | Source | Use case | Required sizes |
 |---|---|---|---|
-| 1 | **The Strike** — gloved fist impact + crown + octagon | `concept_1_the_strike.png` | 4/10 (too generic-MMA) |
-| 2 | **The Crowned Cage** — chain-link morphs into crown points | `concept_2_crowned_cage.png` | 8/10 (best "empire" feel) |
-| 3 | **The Impact Monogram** — CE monogram + impact slashes + octagon | `concept_3_impact_monogram.png` | 9.5/10 (best overall fit) |
+| **Primary lockup** | supervisor's design as-is | Splash screen (Office Mode), title bar, marketing, docs | 1536, 1024, 512, 256 |
+| **Compact lockup** | supervisor's design, smaller | Taskbar, Steam library, in-app corner badge | 450, 256, 128 |
+| **Fight Night variant** | derived — flatten to 2D vector, drop the 3D bevel, add subtle motion-blur glow on the gold + a hairline crack through the octagon border | Pre-fight splash, Fight Resolution screen header, fight-night marketing | 1024, 512, 256 |
+| **Championship variant** | derived — primary lockup + replace the small belt icon with weight-class-specific championship icons (8 male + 8 female = 16 belt variants) | Title fight screens, champion profile, hall of fame | 1024, 512, 256 |
+| **Favicon / compact mark** | derived — crown + octagon silhouette only (no text, no texture), single-colour gold on transparent | Favicon (16×16), mobile app icon (32×32, 64×64) | 64, 32, 16 |
 
-VLM transcripts saved to
-`/home/z/my-project/tool-results/logo_concept{1,2,3}_analysis.json`.
+The Fight Night, Championship, and Favicon variants will be
+commissioned as a **post-Task-6.1 design task** (likely
+Task 6.1.5 — "extend primary logo into full brand system").
+Task 6.1 ships with just the primary + compact variants; the
+derived variants land before Task 6.7 (Fight Resolution
+screen) needs them.
 
-### 1.3 VLM verdict summary
+All variants must work in: full colour, monochrome (white on
+transparent), monochrome (black on transparent). Total asset
+count for the full brand system: **~30 PNG/SVG files**.
 
-- **Concept 1 (The Strike)** scored lowest. VLM: "nearly
-  indistinguishable from thousands of local MMA gym logos." The
-  literal gloved fist is too arcade-fighter, too generic. Reject.
-- **Concept 2 (The Crowned Cage)** scored well on "empire /
-  institutional" but lost points for small-size legibility (the
-  chain-link mesh turns to moiré noise below 100px). The
-  crown-over-cage symbolism is the strongest single idea.
-- **Concept 3 (The Impact Monogram)** is the VLM's clear winner
-  for a deep simulation. The three gold slashes read
-  simultaneously as: (a) motion / impact lines, (b) scratch /
-  claw marks, (c) cage bars, (d) data tick marks. This
-  multi-read ambiguity is exactly what a dual-mode game needs.
-
-### 1.4 The recommended direction: **Concept 3 as primary, with
-Concept 2's crown integrated as a secondary championship mark**
-
-The VLM's strongest single insight, quoted verbatim:
-
-> "Since you have two modes, consider how this logo **transforms**
-> contextually. **Office Mode:** keep it exactly as is — flat,
-> clean vectors, matte gold, institutional. **Fight Night Mode:**
-> add a subtle 'grunge' overlay to the red areas, make the gold
-> slashes glow with motion blur, and perhaps add a hairline crack
-> running through the octagon border. This allows one logo asset
-> to serve both identities dynamically, reinforcing the duality
-> in-game without needing two separate logos."
-
-This is the recommendation, refined:
-
-- **Primary mark** (Concept 3 refined): CE monogram inside a
-  gold-trimmed octagon, three gold impact-slashes on the left.
-  Crimson C, white E, gold accents, charcoal background. Used
-  in Office Mode (the default 90% of the time).
-- **Fight Night variant**: same mark, but the octagon border has
-  a single hairline crack running through it, the gold slashes
-  have a subtle motion-blur glow, and the crimson C has a faint
-  texture suggesting dried blood / scuffed leather. Used only
-  on the Fight Resolution screen, the splash before a fight
-  card, and marketing materials promoting a specific event.
-- **Championship variant** (Concept 2's crown, integrated): a
-  small gold crown element that *sits above* the primary mark
-  only when displaying a championship context (title fight screen,
-  champion's fighter profile, hall of fame). This is not a
-  separate logo — it's an earned overlay that the UI adds when
-  the data context warrants it.
-- **Compact mark** (favicon / 16×16): the CE monogram alone,
-  no octagon border, no slashes. Just crimson C + white E.
-- **Wordmark** ("CAGE EMPIRE"): Eurostile Bold Extended. CAGE in
-  crimson, EMPIRE in gold. Used on splash, marketing, footer.
-
-### 1.5 The supervisor's correction (recorded per CONVENTIONS §9)
+### 1.7 The supervisor's earlier correction (recorded per CONVENTIONS §9, retained for history)
 
 > "We haven't designed the fight resolution play-by-play / fight
 > commentary screens yet but these are a BIG part of the game —
@@ -169,25 +208,11 @@ This is the recommendation, refined:
 > design strategy — also means big images and heatmaps and stats
 > and stuff."
 
-This correction invalidates the original plan's "calm-only"
-aesthetic. The revised design system (§3) is a **dual-mode**
-system: Office Mode (calm, data-dense) for 90% of gameplay, and
-Fight Night Mode (visceral, dramatic) for the 10% that produces
-90% of the dopamine and the stories.
-
-### 1.6 The three logo variants we will commission (final)
-
-| Variant | Use case | Required sizes |
-|---|---|---|
-| **Primary lockup** — CE mark + "CAGE EMPIRE" wordmark | Splash screen (Office Mode), title bar, marketing | 1024, 512, 256 |
-| **Fight Night lockup** — same mark + crack + glow overlay | Pre-fight splash, Fight Resolution screen header, fight-night marketing | 1024, 512, 256 |
-| **Championship lockup** — primary mark + crown overlay above | Title fight screens, champion profile, hall of fame | 1024, 512, 256 |
-| **Compact mark** — CE monogram only (no octagon, no slashes) | Favicon, taskbar icon, in-app corner badge | 64, 32, 16 |
-| **Wordmark only** — "CAGE EMPIRE" with no mark | Footer, loading bar overlay, social cards | 512 wide |
-
-All five must work in: full colour, monochrome (white on
-transparent), monochrome (black on transparent). Total asset
-count for the logo system: **~24 PNG/SVG files**.
+This correction drove Rev 2 of the plan (dual-mode design
+system). The supervisor's logo design delivers on this
+correction directly — the chain-link + floodlights + steel
+texture telegraph the violence, while the crown + gold +
+symmetry telegraph the empire.
 
 ---
 
