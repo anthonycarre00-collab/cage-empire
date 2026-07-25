@@ -194,6 +194,80 @@ def _gen_reach_from_height(height_cm, rng):
     return height_cm + rng.randint(-5, 10)
 
 
+def _derive_bio_tone(wins, losses, draws, age, potential,
+                     win_streak=0, loss_streak=0,
+                     fan_friendliness=50, aggression=50,
+                     is_champion=False, title_reigns=0):
+    """Derive bio_tone from a fighter's OBSERVABLE career state.
+
+    Replicates the logic of seed_world_phase5._pick_bio_tone (Fix 1.1).
+    Duplicated here (rather than imported) to avoid a circular import
+    — phase5 imports nothing from phase3, but keeping the tone logic
+    local to each writer is simpler and matches CONVENTIONS §5 (each
+    script owns its own narrative helpers).
+
+    CRITICAL DESIGN RULE (mirrors _pick_bio_tone): the tone must NOT
+    reveal the fighter's hidden `potential`. A limited-potential
+    prospect and an elite-potential prospect get the SAME tone
+    ('unproven_prospect'). The `potential` arg is accepted for API
+    symmetry but is NOT used in any branch.
+
+    At world-seed time (phase3), no fighter is a current champion yet
+    — titles are assigned in phase4 — so is_champion defaults to False
+    and title_reigns defaults to 0. Both are accepted for forward
+    compatibility if this helper is ever reused.
+
+    Returns one of the 10 bio_tone values allowed by the fighter_bios
+    CHECK constraint: neutral, unproven_prospect, grizzled_veteran,
+    champion_reign, fallen_contender, journeyman, cult_hero,
+    mid_carder, late_bloomer, enforcer.
+    """
+    total_fights = wins + losses + draws
+
+    # Current champion — always champion_reign
+    if is_champion:
+        return "champion_reign"
+
+    # Young fighter with few fights — unproven_prospect REGARDLESS of
+    # potential. An elite 20-year-old and a limited 20-year-old both
+    # get 'unproven_prospect'.
+    if age <= 24 and total_fights <= 8:
+        return "unproven_prospect"
+
+    # Old fighter with many fights — grizzled_veteran
+    if age >= 36 and total_fights >= 30:
+        return "grizzled_veteran"
+
+    # Fallen contender — good record but on a losing streak
+    if loss_streak >= 3 and wins >= 10:
+        return "fallen_contender"
+
+    # Late bloomer — older fighter on a win streak
+    if age >= 33 and win_streak >= 3:
+        return "late_bloomer"
+
+    # Cult hero — high fan_friendliness
+    if fan_friendliness >= 75:
+        return "cult_hero"
+
+    # Enforcer — high aggression
+    if aggression >= 75:
+        return "enforcer"
+
+    # Mid-carder — mid-career, .500-ish record, not on a streak
+    if 25 <= age <= 35 and total_fights >= 10:
+        win_rate = wins / max(1, total_fights)
+        if 0.35 <= win_rate <= 0.65:
+            return "mid_carder"
+
+    # Journeyman — veteran with many fights, mediocre record
+    if total_fights >= 15:
+        return "journeyman"
+
+    # Default
+    return "neutral"
+
+
 def main():
     print("=" * 72)
     print("CAGE EMPIRE — World Seed Phase 3 (FROM PROFILES)")
@@ -256,6 +330,8 @@ def main():
     n_no_wc = 0
     n_no_style = 0
     n_no_pers = 0
+    n_bios = 0          # Fix 1.1: count supervisor-original bios saved
+    n_no_bio = 0        # Fix 1.1: count fighters with no bio in source
     batch_count = 0
 
     print(f"\nCreating {len(fighters)} fighters from profiles...")
@@ -383,6 +459,39 @@ def main():
         )
         new_fighter_id = cur.lastrowid
 
+        # ------------------------------------------------------------
+        # Fix 1.1: Save the supervisor's original bio (from
+        # parsed_fighters.json) to fighter_bios. This is the
+        # FOUNDATION bio — seed_world_phase5.py will skip fighters
+        # that already have a bio, so the supervisor's 4000 original
+        # per-fighter voices are preserved verbatim (no template
+        # substitution).
+        #
+        # The bio_text is inserted EXACTLY as the supervisor wrote it
+        # — no trimming, no rephrasing, no edits.
+        # bio_tone is derived from the fighter's observable career
+        # state via _derive_bio_tone (mirrors seed_world_phase5's
+        # _pick_bio_tone logic).
+        # ------------------------------------------------------------
+        bio_text = fighter.get("bio", "")
+        if bio_text:
+            _pers_for_tone = attrs_data.get("_personality", {}) or {}
+            bio_tone = _derive_bio_tone(
+                wins, losses, draws, age, potential,
+                win_streak=max(0, win_streak),
+                loss_streak=max(0, loss_streak),
+                fan_friendliness=_pers_for_tone.get("fan_friendliness", 50),
+                aggression=_pers_for_tone.get("aggression", 50),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO fighter_bios "
+                "(fighter_id, bio_text, bio_tone) VALUES (?, ?, ?)",
+                (new_fighter_id, bio_text, bio_tone),
+            )
+            n_bios += 1
+        else:
+            n_no_bio += 1
+
         # Insert fighter_attributes (26 columns from assigned_attributes.json)
         attr_cols = [c for c in attrs_data.keys()
                      if c not in ("fighter_id", "_personality", "potential")]
@@ -440,6 +549,8 @@ def main():
     print(f"  No weight class found (fell back to LW): {n_no_wc}")
     print(f"  No style archetype found (fell back to Balanced): {n_no_style}")
     print(f"  No personality archetype found (fell back to Calm): {n_no_pers}")
+    print(f"  Supervisor-original bios saved (Fix 1.1): {n_bios}")
+    print(f"  Fighters with no bio in source: {n_no_bio}")
 
     # Verify
     total = conn.execute("SELECT COUNT(*) FROM fighters").fetchone()[0]

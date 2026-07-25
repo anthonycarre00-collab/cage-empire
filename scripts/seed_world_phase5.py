@@ -394,11 +394,30 @@ def main():
     ).fetchall()
 
     n_bios = 0
+    n_bios_skipped = 0  # Fix 1.1: fighters that already have a bio (supervisor's originals)
     BATCH = 500
     for row in all_fighters:
         (fid, first, last, nick, gender, dob, sa_id, gym_id, promo_id, wc_id,
          market, fan_friend, w, l, d, ws, ls, pot, reigns, rating,
          sa_name, wc_name, promo_name, gym_name, aggression) = row
+
+        # ------------------------------------------------------------
+        # Fix 1.1: Only generate a bio for fighters that don't already
+        # have one. The supervisor's 4000 original bios were saved in
+        # seed_world_phase3_from_profiles.py (from parsed_fighters.json).
+        # Skipping them here preserves the supervisor's per-fighter
+        # voice verbatim — no template substitution overwrites them.
+        # Fighters without a bio row (regen replacements, etc.) still
+        # get a template-generated one below.
+        # ------------------------------------------------------------
+        existing_bio = conn.execute(
+            "SELECT bio_text FROM fighter_bios WHERE fighter_id=?",
+            (fid,),
+        ).fetchone()
+        if existing_bio and existing_bio[0]:
+            n_bios_skipped += 1
+            continue
+
         # Compute age
         try:
             dob_dt = datetime.strptime(dob, "%Y-%m-%d")
@@ -443,7 +462,7 @@ def main():
             conn.commit()
             print(f"  ...{n_bios} bios generated")
     conn.commit()
-    print(f"  Fighter bios: {n_bios} (all active fighters)")
+    print(f"  Fighter bios: {n_bios} generated (+{n_bios_skipped} skipped — supervisor originals preserved per Fix 1.1)")
 
     # ----------------------------------------------------------------
     # 2. Retired legends in the Hall of Fame (~60).
