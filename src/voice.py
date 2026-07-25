@@ -255,12 +255,16 @@ ATTRIBUTE_DESCRIPTORS = {
 
     # ---- Physical (6) ----
     "cardio": {
-        "elite":    ["endless gas tank", "never tires", "fights at the same pace for 25 minutes"],
+        # v3.8.1 (Task 6.0.6, D2): replaced digit-containing variants
+        # "fights at the same pace for 25 minutes" → "...for five rounds"
+        # and "gasses by round 2" → "gasses by round two" — CONVENTIONS §14
+        # forbids raw digit characters in player-facing descriptors.
+        "elite":    ["endless gas tank", "never tires", "fights at the same pace for five rounds"],
         "strong":   ["excellent cardio", "strong late in fights", "rarely fades"],
         "capable":  ["respectable cardio", "above-average stamina", "can go the distance"],
         "average":  ["average cardio", "serviceable stamina", "fades in deep waters"],
         "limited":  ["limited cardio", "below-average stamina", "gasses in the championship rounds"],
-        "poor":     ["poor cardio", "fades early", "gasses by round 2"],
+        "poor":     ["poor cardio", "fades early", "gasses by round two"],
         "abysmal":  ["no gas tank", "exhausted after one round", "cardio is a liability"],
     },
     "recovery_rate": {
@@ -519,13 +523,16 @@ PERSONALITY_DESCRIPTORS = {
         "abysmal":  ["completely scattered", "can't concentrate on anything"],
     },
     "fatigue_tolerance": {
+        # v3.8.1 (Task 6.0.6, D3): replaced digit-containing variant
+        # "useless after round 1" → "useless after the first round" —
+        # CONVENTIONS §14 forbids raw digit characters.
         "elite":    ["thrives when tired", "elite fatigue tolerance", "fights better the deeper it goes"],
         "strong":   ["very fatigue-tolerant", "above-average stamina", "doesn't slow down when tired"],
         "capable":  ["respectable fatigue tolerance", "above-average stamina", "can fight through fatigue"],
         "average":  ["average fatigue tolerance", "serviceable stamina", "slows when tired"],
         "limited":  ["limited fatigue tolerance", "below-average stamina", "folds when tired"],
         "poor":     ["no fatigue tolerance", "falls apart when tired", "can't fight through fatigue"],
-        "abysmal":  ["completely collapses when tired", "useless after round 1"],
+        "abysmal":  ["completely collapses when tired", "useless after the first round"],
     },
 }
 
@@ -533,9 +540,23 @@ PERSONALITY_DESCRIPTORS = {
 # ----------------------------------------------------------------
 # POTENTIAL DESCRIPTORS
 #
-# Potential is HIDDEN from the player until scouted (Task 18).
-# When scouted, the descriptor reflects the scout's estimate
-# (with noise). When unscouted, the player sees nothing.
+# Two descriptor sets, selected by the `scouted` flag:
+#
+#   * POTENTIAL_DESCRIPTORS (scouted=True) — the scout's estimate of
+#     ANOTHER promotion's fighter. Phrasing is uncertain / hedged
+#     ("can develop into a contender", "future champion potential").
+#     The scouting system (Task 18) requests this with scouted=True.
+#
+#   * POTENTIAL_DESCRIPTORS_UNSCOUTED (scouted=False) — the player's
+#     OWN fighter. The player knows their own fighter's ceiling, so
+#     phrasing is confident ("elite ceiling", "high-end potential",
+#     "limited ceiling"). v3.8.1 (Task 6.0.6): previously this case
+#     returned None, which was a §14 violation — the player would
+#     either see a raw number leak through or no descriptor at all.
+#     Now returns a confident descriptor.
+#
+# Both sets follow the 7-tier banding (CONVENTIONS §14.3) and contain
+# only digit-free phrases (CONVENTIONS §14).
 # ----------------------------------------------------------------
 
 POTENTIAL_DESCRIPTORS = {
@@ -548,24 +569,58 @@ POTENTIAL_DESCRIPTORS = {
     "abysmal":  ["no potential", "declining", "past his prime"],
 }
 
+# Confident descriptors for the player's OWN fighter (scouted=False).
+# Added in Task 6.0.6 (D1) — fixes the bug where describe_potential(85)
+# returned None when called without scouted=True. The player knows
+# their own fighter's ceiling; only scouted fighters (scouting system,
+# Task 18) get the uncertain "could develop into..." phrasing in
+# POTENTIAL_DESCRIPTORS above.
+POTENTIAL_DESCRIPTORS_UNSCOUTED = {
+    "elite":    ["elite ceiling", "generational ceiling", "future-great potential"],
+    "strong":   ["high-end potential", "contender's ceiling", "above-average ceiling"],
+    "capable":  ["solid ceiling", "respectable potential", "serviceable ceiling"],
+    "average":  ["middling ceiling", "average potential", "middle-of-the-road ceiling"],
+    "limited":  ["limited ceiling", "capped potential", "modest upside"],
+    "poor":     ["low ceiling", "minimal potential", "narrow upside"],
+    "abysmal":  ["negligible ceiling", "near-zero potential", "barely any upside"],
+}
+
 
 def describe_potential(potential, scouted=False, rng=None):
     """Describe a fighter's potential.
 
     Args:
         potential: 0-100 integer. The fighter's growth ceiling.
-        scouted: if False, returns None (potential is hidden from
-            the player until scouted via Task 18). If True, returns
-            the descriptor (the scout's estimate).
+        scouted: if False (default), returns a CONFIDENT descriptor
+            for the player's OWN fighter (the player knows the
+            ceiling — "elite ceiling", "high-end potential", etc.).
+            If True, returns the SCOUT'S uncertain estimate
+            ("can develop into a contender", etc.) for fighters
+            the player has scouted via Task 18.
         rng: optional random.Random for variant selection.
 
     Returns:
-        A descriptor string, or None if not scouted.
+        A descriptor string. NEVER returns None for valid 0-100
+        potential values (CONVENTIONS §14 — every number must be
+        translated to a descriptor). Returns None only if `potential`
+        is itself None (caller passing missing data).
+
+    v3.8.1 (Task 6.0.6, D1): previously returned None when
+    scouted=False, which was a §14 violation (raw potential would
+    leak to the UI). Now returns a confident descriptor.
     """
-    if not scouted:
+    if potential is None:
         return None
     tier = _tier_for(potential)
-    variants = POTENTIAL_DESCRIPTORS.get(tier, POTENTIAL_DESCRIPTORS["average"])
+    if scouted:
+        # Scout's report — uncertain phrasing (scouting system, Task 18)
+        variants = POTENTIAL_DESCRIPTORS.get(tier, POTENTIAL_DESCRIPTORS["average"])
+    else:
+        # Player's own fighter — confident phrasing (player knows the
+        # ceiling). v3.8.1 (Task 6.0.6): previously returned None.
+        variants = POTENTIAL_DESCRIPTORS_UNSCOUTED.get(
+            tier, POTENTIAL_DESCRIPTORS_UNSCOUTED["average"]
+        )
     return _pick(variants, rng)
 
 

@@ -118,8 +118,41 @@ def case_a_voice_functions():
     pot_hidden = voice.describe_potential(72, scouted=False, rng=rng)
     check("A", "describe_potential(72, scouted=True) returns non-empty str",
           isinstance(pot_scouted, str) and len(pot_scouted) > 0, f"got={pot_scouted!r}")
-    check("A", "describe_potential(72, scouted=False) returns None (hidden)",
-          pot_hidden is None, f"got={pot_hidden!r}")
+    # v3.8.1 (Task 6.0.6, D4): scouted=False now returns a CONFIDENT
+    # descriptor (was None — supervisor-reported bug). The player knows
+    # their own fighter's ceiling; only scouted fighters get the
+    # uncertain "could develop into..." phrasing.
+    check("A", "describe_potential(72, scouted=False) returns non-empty confident descriptor (Task 6.0.6 fix)",
+          isinstance(pot_hidden, str) and len(pot_hidden) > 0
+          and pot_hidden in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED["capable"],
+          f"got={pot_hidden!r}")
+
+    # Task 6.0.6 G: explicit test that describe_potential(85) without
+    # scouted=True returns a non-None descriptor. This was the exact
+    # supervisor-reported bug — describe_potential(85) returned None
+    # when called without scouted=True. After the fix, it returns a
+    # confident descriptor from POTENTIAL_DESCRIPTORS_UNSCOUTED["strong"].
+    pot85 = voice.describe_potential(85, scouted=False, rng=rng)
+    check("A", "describe_potential(85, scouted=False) returns non-None (Task 6.0.6 G — supervisor-reported bug)",
+          isinstance(pot85, str) and len(pot85) > 0, f"got={pot85!r}")
+    check("A", "describe_potential(85, scouted=False) returns strong-tier confident descriptor",
+          pot85 in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED["strong"], f"got={pot85!r}")
+    # Verify edge tiers (0 and 100) don't return None either
+    pot0 = voice.describe_potential(0, scouted=False, rng=rng)
+    pot100 = voice.describe_potential(100, scouted=False, rng=rng)
+    check("A", "describe_potential(0, scouted=False) returns non-None (abysmal tier)",
+          isinstance(pot0, str) and len(pot0) > 0
+          and pot0 in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED["abysmal"],
+          f"got={pot0!r}")
+    check("A", "describe_potential(100, scouted=False) returns non-None (elite tier)",
+          isinstance(pot100, str) and len(pot100) > 0
+          and pot100 in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED["elite"],
+          f"got={pot100!r}")
+    # And scouted=True still works (regression check)
+    pot85s = voice.describe_potential(85, scouted=True, rng=rng)
+    check("A", "describe_potential(85, scouted=True) returns non-empty uncertain descriptor (regression)",
+          isinstance(pot85s, str) and len(pot85s) > 0
+          and pot85s in voice.POTENTIAL_DESCRIPTORS["strong"], f"got={pot85s!r}")
 
     # describe_career_stage
     champ = voice.describe_career_stage(30, 25, 3, 0, is_champion=True, title_reigns=2, rng=rng)
@@ -301,26 +334,65 @@ def case_f_no_raw_numbers():
     """Test that descriptors contain no raw numbers (CONVENTIONS §14)."""
     print("\n--- Case F: no raw numbers ---")
     rng = random.Random(42)
-
-    # Check 10 random attribute descriptors for digit characters
     import re
+
+    # v3.8.1 (Task 6.0.6, D5): expanded from "first 10 attrs × 5 values"
+    # to ALL variants in ALL descriptor dicts (ATTRIBUTE, PERSONALITY,
+    # POTENTIAL_SCOUTED, POTENTIAL_UNSCOUTED). The original test only
+    # checked the rng-picked variant per (attr, value), so a digit in a
+    # non-picked variant would slip through (Task 6.0.6 audit found 3
+    # such violations in cardio elite/poor + fatigue_tolerance
+    # abysmal — now fixed in voice.py).
     has_digits = False
-    for attr in ATTR_NAMES[:10]:
-        for value in [10, 30, 50, 70, 90]:
-            desc = voice.describe_attribute(attr, value, rng)
-            if re.search(r'\d', desc):
+
+    # All attribute variants (26 attrs × 7 tiers × 2-3 variants)
+    for attr, tiers in voice.ATTRIBUTE_DESCRIPTORS.items():
+        for tier, variants in tiers.items():
+            for v in variants:
+                if re.search(r'\d', v):
+                    has_digits = True
+                    check("F", f"ATTRIBUTE[{attr}][{tier}] variant contains no digits",
+                          False, f"got={v!r}")
+
+    # All personality variants (20 traits × 7 tiers × 2-3 variants)
+    for trait, tiers in voice.PERSONALITY_DESCRIPTORS.items():
+        for tier, variants in tiers.items():
+            for v in variants:
+                if re.search(r'\d', v):
+                    has_digits = True
+                    check("F", f"PERSONALITY[{trait}][{tier}] variant contains no digits",
+                          False, f"got={v!r}")
+
+    # All potential variants — scouted (uncertain phrasing)
+    for tier, variants in voice.POTENTIAL_DESCRIPTORS.items():
+        for v in variants:
+            if re.search(r'\d', v):
                 has_digits = True
-                check("F", f"describe_attribute({attr}, {value}) contains no digits",
-                      False, f"got={desc!r}")
-                break
+                check("F", f"POTENTIAL_SCOUTED[{tier}] variant contains no digits",
+                      False, f"got={v!r}")
+
+    # All potential variants — unscouted (confident phrasing, Task 6.0.6 D1)
+    for tier, variants in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED.items():
+        for v in variants:
+            if re.search(r'\d', v):
+                has_digits = True
+                check("F", f"POTENTIAL_UNSCOUTED[{tier}] variant contains no digits",
+                      False, f"got={v!r}")
+
     if not has_digits:
-        check("F", "no attribute descriptors contain digits (10 attrs × 5 values checked)",
+        check("F", "no descriptor variant contains digits (all 26 attrs + 20 traits + 2 potential sets)",
               True, "")
 
-    # Potential is None when not scouted
-    pot = voice.describe_potential(85, scouted=False)
-    check("F", "potential descriptor is None when not scouted (hidden)",
-          pot is None, f"got={pot!r}")
+    # v3.8.1 (Task 6.0.6, D5): potential descriptor is NO LONGER None
+    # when not scouted — the player knows their own fighter's ceiling.
+    # Verify it returns a non-empty, digit-free, confident descriptor
+    # from the UNSCOUTED set (not the SCOUTED set).
+    pot = voice.describe_potential(85, scouted=False, rng=rng)
+    check("F", "describe_potential(85, scouted=False) returns non-empty confident descriptor (Task 6.0.6 fix)",
+          isinstance(pot, str) and len(pot) > 0
+          and pot in voice.POTENTIAL_DESCRIPTORS_UNSCOUTED["strong"]
+          and not re.search(r'\d', pot),
+          f"got={pot!r}")
 
 
 def case_g_variety():

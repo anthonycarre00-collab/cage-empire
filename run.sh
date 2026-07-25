@@ -28,25 +28,31 @@ case "$mode" in
     build-world)
         echo "[CAGE EMPIRE] Full world rebuild (DESTROYS existing DB)..."
         echo ""
-        echo "Step 1/7: Fresh build (schema only)..."
+        echo "Step 1/8: Fresh build (schema only)..."
         "$PYTHON" src/build_db.py --fresh
         echo ""
-        echo "Step 2/7: World seed phase 1 (nations, regions, cities, venues, weight classes, names)..."
+        echo "Step 2/8: World seed phase 1 (nations, regions, cities, venues, weight classes, names)..."
         "$PYTHON" scripts/seed_world_phase1.py
         echo ""
-        echo "Step 3/7: World seed phase 2 (gyms, promotions, staff)..."
+        echo "Step 3/8: World seed phase 2 (gyms, promotions, staff)..."
         "$PYTHON" scripts/seed_world_phase2.py
         echo ""
-        echo "Step 4/7: World seed phase 3 (4900 fighters)..."
-        "$PYTHON" scripts/seed_world_phase3.py
+        echo "Step 4/8: Parse fighter profiles from download/fighter_image_prompts.txt..."
+        "$PYTHON" scripts/parse_fighter_profiles.py
         echo ""
-        echo "Step 5/7: World seed phase 4 (career histories, fights, titles, contracts)..."
+        echo "Step 5/8: Assign attributes from bio keywords..."
+        "$PYTHON" scripts/assign_attributes_from_bios.py
+        echo ""
+        echo "Step 6/8: World seed phase 3 (4000 fighters FROM PROFILES)..."
+        "$PYTHON" scripts/seed_world_phase3_from_profiles.py
+        echo ""
+        echo "Step 7/8: World seed phase 4 (career histories, fights, titles, contracts)..."
         "$PYTHON" scripts/seed_world_phase4.py
         echo ""
-        echo "Step 6/7: World seed phase 5 (bios, gym histories, retired legends, news)..."
+        echo "Step 7.5/8: World seed phase 5 (bios, gym histories, retired legends, news)..."
         "$PYTHON" scripts/seed_world_phase5.py
         echo ""
-        echo "Step 7/7: Backfill retired legends' attributes..."
+        echo "Step 8/8: Backfill retired legends' attributes..."
         "$PYTHON" scripts/backfill_legends.py
         echo ""
         echo "[CAGE EMPIRE] World rebuild complete."
