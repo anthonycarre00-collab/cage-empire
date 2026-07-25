@@ -43,6 +43,7 @@ goto end
 :build-world
 echo [CAGE EMPIRE] Full world rebuild (DESTROYS existing DB)...
 echo.
+set CAGE_EMPIRE_ALLOW_FRESH=1
 echo Step 1/8: Fresh build (schema only)...
 %PYTHON% src\build_db.py --fresh
 if errorlevel 1 goto error
@@ -85,6 +86,7 @@ goto end
 
 :build-dev
 echo [CAGE EMPIRE] Minimal dev rebuild (5 fighters)...
+set CAGE_EMPIRE_ALLOW_FRESH=1
 %PYTHON% src\build_db.py --fresh
 if errorlevel 1 goto error
 %PYTHON% src\seed_data.py
@@ -111,6 +113,7 @@ goto end
 
 :test
 echo [CAGE EMPIRE] Running all acceptance tests...
+set CAGE_EMPIRE_ALLOW_FRESH=1
 set PASS=0
 set FAIL=0
 for %%f in (scripts\test_*.py) do (

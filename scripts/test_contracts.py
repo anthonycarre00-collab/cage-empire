@@ -64,11 +64,13 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 # Backup path used to preserve case A/B/C's DB state across case E's
 # independent DB rebuild (case E rebuilds the DB from scratch).
 DB_BACKUP_PATH = PROJECT_DIR / "data" / "cage_empire.case_abc_backup.db"

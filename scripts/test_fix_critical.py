@@ -34,7 +34,8 @@ from pathlib import Path
 # Make src/ importable.
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 sys.path.insert(0, str(SRC_DIR))
 
 import build_db  # noqa: E402

@@ -28,6 +28,7 @@ case "$mode" in
     build-world)
         echo "[CAGE EMPIRE] Full world rebuild (DESTROYS existing DB)..."
         echo ""
+        export CAGE_EMPIRE_ALLOW_FRESH=1
         echo "Step 1/8: Fresh build (schema only)..."
         "$PYTHON" src/build_db.py --fresh
         echo ""
@@ -60,6 +61,7 @@ case "$mode" in
         ;;
     build-dev)
         echo "[CAGE EMPIRE] Minimal dev rebuild (5 fighters)..."
+        export CAGE_EMPIRE_ALLOW_FRESH=1
         "$PYTHON" src/build_db.py --fresh
         "$PYTHON" src/seed_data.py
         echo "[CAGE EMPIRE] Dev rebuild complete."
@@ -78,6 +80,8 @@ case "$mode" in
         ;;
     test)
         echo "[CAGE EMPIRE] Running all acceptance tests..."
+        echo "  (CAGE_EMPIRE_ALLOW_FRESH=1 — tests build their own fresh DBs)"
+        export CAGE_EMPIRE_ALLOW_FRESH=1
         PASS=0; FAIL=0; FAILED=""
         for f in scripts/test_*.py; do
             out=$("$PYTHON" "$f" 2>&1)

@@ -78,11 +78,13 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 DB_BACKUP_PATH = PROJECT_DIR / "data" / "cage_empire.case_abc_backup.db"
 
 # Make src/ importable so we can call get_rankings_for_display(),

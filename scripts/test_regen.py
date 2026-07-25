@@ -120,12 +120,14 @@ import random
 import sqlite3
 import subprocess
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 
 # Make src/ importable so we can call generate_fighter(),
 # get_free_agents_for_display(), resolve_next_fight(),

@@ -58,11 +58,13 @@ import random
 import sqlite3
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 
 # Make src/ importable so we can call resolve_next_fight() and
 # _update_event_status_after_resolution() directly without going

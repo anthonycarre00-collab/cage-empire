@@ -38,12 +38,14 @@ modify any source files.
 import sqlite3
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
 DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "cage_empire.db"
+DB_PATH = DATA_DIR / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 
 EXPECTED_CODE_VERSION = None  # set after build_db import below
 

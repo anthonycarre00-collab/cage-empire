@@ -45,6 +45,7 @@ Tests the weight cut system added in Task ID 17 (Stage 3a task 3):
 Exit code: 0 = all PASS, 1 = any FAIL.
 """
 import sys
+import os
 import sqlite3
 import subprocess
 import random
@@ -52,7 +53,8 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 sys.path.insert(0, str(SRC_DIR))
 
 import app  # noqa: E402

@@ -68,13 +68,15 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_DIR / "src"
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = PROJECT_DIR / "data" / "cage_empire_test.db"
+os.environ["CAGE_EMPIRE_DB_PATH"] = str(DB_PATH)
 SAVES_DIR = PROJECT_DIR / "data" / "saves"
 sys.path.insert(0, str(SRC_DIR))
 

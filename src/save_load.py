@@ -148,6 +148,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -159,7 +160,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "cage_empire.db"
+# DB_PATH can be overridden via CAGE_EMPIRE_DB_PATH env var.
+# Tests use data/cage_empire_test.db to avoid destroying the world DB.
+_DEFAULT_DB_PATH = DATA_DIR / "cage_empire.db"
+DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 SAVES_DIR = DATA_DIR / "saves"
 
 # Auto-save configuration.

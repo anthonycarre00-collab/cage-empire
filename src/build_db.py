@@ -1,10 +1,15 @@
 from pathlib import Path
 import sqlite3
+import os
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "cage_empire.db"
+# DB_PATH can be overridden via CAGE_EMPIRE_DB_PATH env var or --db-path
+# argument. Default: data/cage_empire.db (the world DB).
+# Tests use data/cage_empire_test.db to avoid destroying the world DB.
+_DEFAULT_DB_PATH = DATA_DIR / "cage_empire.db"
+DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 
 # Schema version — see docs/CONVENTIONS.md for the versioning rules.
 # Bump this on every schema change. Format: MAJOR.MINOR.PATCH.
@@ -3366,7 +3371,17 @@ def main(argv=None):
         "--migrate", action="store_true",
         help="Apply pending migrations to the existing DB. Preserves all data.",
     )
+    parser.add_argument(
+        "--db-path", default=None,
+        help="Path to the DB file (overrides CAGE_EMPIRE_DB_PATH env var "
+             "and the default data/cage_empire.db).",
+    )
     args = parser.parse_args(argv)
+
+    # Override DB_PATH if --db-path is specified
+    global DB_PATH
+    if args.db_path:
+        DB_PATH = Path(args.db_path)
 
     # Default mode: --fresh. If both flags, --fresh wins (defensive).
     if args.migrate and not args.fresh:
@@ -3396,6 +3411,47 @@ def main(argv=None):
                 print(f"Rebuilding schema: {on_disk} -> {CODE_SCHEMA_VERSION}.")
             else:
                 print(f"Rebuilding same schema version {CODE_SCHEMA_VERSION}.")
+
+        # ---- WORLD DB PROTECTION GUARD (Phase 1.5) -------------
+        # Prevents --fresh from destroying the world DB (4000+
+        # fighters, 80000+ fight_history rows, 60 HoF legends).
+        # The world DB is the FOUNDATION of the game — re-seeding
+        # takes 10 seconds but destroys any save-game progress and
+        # any fighter development the player has done.
+        #
+        # Tests that need a fresh DB must set CAGE_EMPIRE_ALLOW_FRESH=1
+        # in their environment. run.sh test mode sets this automatically.
+        # Individual test runs: CAGE_EMPIRE_ALLOW_FRESH=1 python3 scripts/test_foo.py
+        #
+        # The threshold is 100 fighters — a minimal seed has 5, the
+        # world has 4000+. This catches accidental --fresh on the
+        # world DB while allowing test DBs (which start empty).
+        import os
+        if DB_PATH.exists() and not os.environ.get("CAGE_EMPIRE_ALLOW_FRESH"):
+            try:
+                _guard_conn = sqlite3.connect(DB_PATH)
+                _guard_fighters = _guard_conn.execute(
+                    "SELECT COUNT(*) FROM fighters"
+                ).fetchone()[0]
+                _guard_conn.close()
+            except Exception:
+                _guard_fighters = 0
+            if _guard_fighters > 100:
+                raise RuntimeError(
+                    f"REFUSING to --fresh: {DB_PATH} has {_guard_fighters} "
+                    f"fighters — this is the WORLD DB, not a test DB.\n"
+                    f"--fresh would DESTROY the world (4000+ fighters, "
+                    f"80000+ fight history rows, 60 HoF legends, all "
+                    f"player progress).\n\n"
+                    f"To rebuild the world intentionally: ./run.sh build-world\n"
+                    f"To run tests (which need fresh DBs): ./run.sh test\n"
+                    f"  (run.sh test sets CAGE_EMPIRE_ALLOW_FRESH=1 automatically)\n"
+                    f"To override manually: CAGE_EMPIRE_ALLOW_FRESH=1 python3 src/build_db.py --fresh\n\n"
+                    f"To apply schema changes WITHOUT destroying data: "
+                    f"python3 src/build_db.py --migrate"
+                )
+        # ---- END WORLD DB PROTECTION GUARD ----------------------
+
         if DB_PATH.exists():
             DB_PATH.unlink()
         with sqlite3.connect(DB_PATH) as conn:

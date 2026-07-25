@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+import os
+DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(PROJECT_DIR / "data" / "cage_empire.db")))
 
 # Make src/ importable so we can call _vacate_title_on_retirement and
 # generate_fighter from app.py. app.py imports tkinter, but importing

@@ -1,12 +1,16 @@
 import json
 import random
 import sqlite3
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+# DB_PATH can be overridden via CAGE_EMPIRE_DB_PATH env var.
+# Tests use data/cage_empire_test.db to avoid destroying the world DB.
+_DEFAULT_DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
+DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 
 # Make src/ importable so we can call fighter_gen's generation
 # primitives for the archetype-biased backfill of the 5 existing
