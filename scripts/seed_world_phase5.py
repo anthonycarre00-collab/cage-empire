@@ -697,7 +697,11 @@ def main():
         )
         n_news += 1
 
-    # d) Milestone win news — 100 fighters' 20th win
+    # d) Milestone win news — 100 fighters' "20th" win.
+    # v2.10.0 (FIX-VoiceRep, §14): the OLD headline/body used raw
+    # "20th" / "20" digit characters — a §14 violation (no raw
+    # numbers in player-facing text). Replaced with the word form
+    # "twentieth" so the seed-time news is digit-free.
     milestones = conn.execute(
         "SELECT f.first_name, f.last_name, f.nickname, fh.event_date, fh.fight_id, "
         "fh.fighter_id, fc.record_wins "
@@ -715,15 +719,18 @@ def main():
             "sentiment, topic, fighter_id, fight_id, published_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (src_id,
-             f"{first} {last} notches 20th career win",
+             f"{first} {last} notches twentieth career win",
              f"{first} {last} {f'\"{nick}\" ' if nick else ''}reached a career "
-             f"milestone with 'his' 20th professional victory. The veteran continues "
+             f"milestone with 'his' twentieth professional victory. The veteran continues "
              f"to add to an impressive resume.".replace("'his'", "his"),
              "positive", "milestone", fid, fight_id, edate),
         )
         n_news += 1
 
     # e) Retirement news — 50 random veteran fighters (35+) marked as "considering retirement"
+    # v2.10.0 (FIX-VoiceRep, §14): the OLD body used raw age digit
+    # characters ("At 42 years old..."). Replaced with the word-form
+    # age phrase so the seed-time news is digit-free.
     veterans = conn.execute(
         "SELECT fighter_id, first_name, last_name, nickname, date_of_birth "
         "FROM fighters WHERE is_active=1 AND date_of_birth <= '1989-01-01' "
@@ -732,13 +739,29 @@ def main():
     for v in veterans:
         fid, first, last, nick, dob = v
         edate = (SIM_DATE - timedelta(days=rng.randint(1, 30))).strftime("%Y-%m-%d")
+        # v2.10.0 (FIX-VoiceRep, §14): OLD body used raw age digit
+        # ("At 42 years old..."). Replaced with an age-band phrase
+        # ("nearing forty" / "past forty" / "in his late thirties")
+        # so the seed-time news is digit-free. The bands map roughly
+        # to the same retirement-eligibility thresholds used by
+        # tick_processor._check_retirements (40 + declining health,
+        # 45 mandatory).
+        _age_num = 2026 - int(dob[:4])
+        if _age_num >= 43:
+            _age_phrase = "past forty"
+        elif _age_num >= 40:
+            _age_phrase = "nearing forty"
+        elif _age_num >= 35:
+            _age_phrase = "in his late thirties"
+        else:
+            _age_phrase = "a veteran fighter"
         conn.execute(
             "INSERT INTO news_items (news_source_id, headline, body, "
             "sentiment, topic, fighter_id, published_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (src_id,
              f"Veteran {first} {last} reportedly considering retirement",
-             f"At {2026 - int(dob[:4])} years old, {first} {last} "
+             f"At {_age_phrase}, {first} {last} "
              f"{f'\"{nick}\" ' if nick else ''}is said to be weighing 'his' "
              f"future in the sport. The veteran has had a long, decorated career "
              f"and may be nearing the end.".replace("'his'", "his"),

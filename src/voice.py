@@ -659,8 +659,18 @@ def describe_overall(fighter_data, rng=None):
 
     Returns:
         A one-sentence description like:
-        "John Vale is a 28-year-old striker with elite power and a
-        solid chin, riding a 3-fight win streak."
+        "John Vale is a striker with one-punch knockout threat and an
+        excellent chin, riding a three-fight win streak, currently a
+        seasoned competitor."
+
+    v2.10.0 (FIX-VoiceRep, §14): the OLD output embedded raw age
+    ("28-year-old") and raw streak counts ("3-fight win streak") —
+    both §14 violations (no raw numbers in player-facing text). The
+    age is dropped entirely (the career_stage descriptor at the end
+    already encodes age + record + streaks as a human-readable
+    phrase), and the streak counts are converted to word form via
+    the new _num_word helper. The result is fully digit-free while
+    preserving the original semantic content.
     """
     name = fighter_data.get("first_name", "") + " " + fighter_data.get("last_name", "")
     if fighter_data.get("nickname"):
@@ -680,8 +690,11 @@ def describe_overall(fighter_data, rng=None):
     )
     sa_name = fighter_data.get("style_archetype_name", "Balanced")
     sa_noun = _ARCHETYPE_NOUN.get(sa_name, "fighter")
-    # Build the summary
-    parts = [f"{name} is a {age}-year-old {sa_noun}"]
+    # Build the summary. v2.10.0: no raw age digit — the career_stage
+    # descriptor (appended at the end) already conveys age + record +
+    # streaks as a human phrase like "grizzled veteran" or "top
+    # prospect".
+    parts = [f"{name} is a {sa_noun}"]
     # Add 1-2 key attribute descriptors if available
     key_attrs = fighter_data.get("key_attributes", {})
     if key_attrs:
@@ -692,16 +705,40 @@ def describe_overall(fighter_data, rng=None):
                 attr_descs.append(desc)
         if attr_descs:
             parts.append("with " + " and ".join(attr_descs))
-    # Add streak if notable
+    # Add streak if notable — word-form (no raw digits per §14).
     ws = fighter_data.get("win_streak", 0)
     ls = fighter_data.get("loss_streak", 0)
     if ws >= 3:
-        parts.append(f"riding a {ws}-fight win streak")
+        parts.append(f"riding a {_num_word(ws)}-fight win streak")
     elif ls >= 3:
-        parts.append(f"on a {ls}-fight skid")
+        parts.append(f"on a {_num_word(ls)}-fight skid")
     # Add career stage at the end
-    parts.append(f"currently a {stage}")
+    parts.append(f"currently {stage}")
     return ", ".join(parts) + "."
+
+
+# Small word-form helper for streak counts in describe_overall.
+# Covers the realistic streak range (1-12); larger streaks get a
+# generic "long" phrase. Kept private — voice.py exposes the rich
+# ATTRIBUTE/PERSONALITY/CAREER descriptors as the public API; this
+# helper is internal to describe_overall's sentence builder.
+_NUM_WORDS = {
+    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four",
+    5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+    10: "ten", 11: "eleven", 12: "twelve",
+}
+
+
+def _num_word(n):
+    """Convert a small int to its word form for digit-free text.
+
+    For numbers > 12, returns 'a long' so the text stays readable
+    without using digit characters (e.g., 'riding a long win streak'
+    instead of 'riding a 17-fight win streak').
+    """
+    if n in _NUM_WORDS:
+        return _NUM_WORDS[n]
+    return "a long"
 
 
 # ----------------------------------------------------------------
