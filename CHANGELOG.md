@@ -8,6 +8,72 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Stage 6 — Task 6.2: CTk app shell + GameState singleton, no schema change)
+- New `src/ui/state.py` — GameState singleton holding the sqlite3
+  Connection, player_promotion_id, registered screens, active screen,
+  and theme. Methods: register_screen(), set_active_screen(),
+  refresh(name), refresh_all(), set_theme(), get_theme(). The
+  on_theme_change callback fires refresh_all on mode switch.
+- New `src/ui/app.py` — CageEmpireApp(ctk.CTk), the main application
+  window with: top bar (60px — logo + sim date + cash + Advance Day
+  button), sidebar (180px — 6 nav groups, 22 screen destinations),
+  main content (scrollable screen container), bottom bar (32px —
+  news ticker from latest 3 headlines). Advance Day button calls
+  services.clock.advance_day + refresh_all.
+- New `get_latest_news_summary(conn, limit)` in
+  `src/services/news_svc.py` — 10-line query helper for the bottom
+  bar news ticker. Full news feed API (filter/sort/paginate) defers
+  to Task 6.3.
+- Updated `src/app.py` `__main__` block: launches new CTk app by
+  default (`python src/app.py`), old tkinter App available via
+  `--legacy` flag. Old App class retained for backwards-compat with
+  5 tests that instantiate `app.App()`.
+
+### Added (Stage 6 — Task 6.1a: theme system + fonts + logo, no schema change)
+- New `src/ui/theme.py` — dual-mode visual design system per
+  `docs/GUI_PLAN.md §3`. OfficeColors + FightNightColors (crimson +
+  gold as co-primary, heatmap colours reserved for Fight Night cage
+  widget). 12 font size constants. OfficeFonts + FightNightFonts
+  CTk tuples (key difference: commentary switches Inter→Source Serif
+  Pro in Fight Night). Theme class with OFFICE/FIGHT_NIGHT instances.
+  set_theme()/get_theme()/on_theme_change() for live mode switching.
+  _register_fonts() auto-registration with graceful fallback.
+- 9 bundled font files in `src/ui/assets/fonts/`: 4 Inter (Regular/
+  Medium/SemiBold/Bold), 1 JetBrains Mono (Medium), 4 Source Serif
+  Pro (Regular/SemiBold/Italic/SemiBoldItalic). Downloaded from
+  Google Fonts, ~2MB total.
+- Supervisor's logo integrated: primary (1536x1024) + compact
+  (450x300) copied to `src/ui/assets/logo/`. 5 derived brand
+  variants (Fight Night, Championship, Favicon) deferred to
+  Task 6.1.5.
+- `src/ui/` directory structure created: __init__.py, theme.py,
+  state.py, app.py, widgets/, screens/, assets/{fonts,logo,icons,
+  backgrounds,fight_night,portraits/default}.
+
+### Added (Stage 6 prep — Task 6.0.5: DB recovery + forensic check + run scripts)
+- New `scripts/forensic_db_check.py` — comprehensive 140-check DB
+  integrity audit across 7 categories: schema integrity, data
+  integrity, attribute sanity, stale data, v3.8.0 column checks,
+  reference data, consistency. Run via `./run.sh check` or
+  `python3 scripts/forensic_db_check.py --verbose`.
+- New `scripts/backfill_legends.py` — generates plausible attributes
+  (based on career record + style archetype) + personality (20 traits)
+  for the 60 retired Hall of Fame legends who were missing
+  fighter_attributes + fighter_personality rows. Run via
+  `./run.sh backfill` or `python3 scripts/backfill_legends.py`.
+- Updated `run.sh` + `run.bat` to support 7 modes: run, build-world
+  (full phase 1-5 + backfill, ~10s), build-dev (minimal 5-fighter
+  seed), migrate (apply schema migrations with auto-backup), check
+  (forensic DB integrity check), test (run all 38 acceptance tests),
+  backfill (backfill retired legends' attributes).
+- Updated `requirements.txt`: uncommented + pinned GUI dependencies
+  (customtkinter>=5.2.0, pillow>=10.0.0, ttkbootstrap>=1.10).
+- World DB re-seeded after accidental destruction during Task 6.0
+  testing (ran build_db.py --fresh on a seeded DB, which CONVENTIONS
+  §16.2 explicitly forbids). World now has 4965 fighters (4905
+  active + 60 retired legends with full attributes), 80802 fight
+  history rows, 60 HoF, 11 promotions, 300 gyms, 466 news.
+
 ### Added (Stage 6 prep — D-GUI-4 Fight Resolution screen, schema 3.7.0 → 3.8.0 MINOR)
 - New `staff.pundit_bias` JSON column (TEXT, nullable). Stores a
   broadcast pundit's per-attribute bias so the upcoming Fight

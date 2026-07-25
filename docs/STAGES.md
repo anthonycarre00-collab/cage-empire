@@ -1341,10 +1341,12 @@ Mode).
 
 | Task | Description | Schema impact | Status |
 |---|---|---|---|
-| **6.0** | **Decouple UI from game logic** — extract 13 service modules from `app.py` into `src/services/`. ~4650 lines moved. All 38 tests must still pass. See `docs/TASK_6_0_PLAN.md` for full brief. | None | Ready to delegate |
-| 6.1 | Theme + asset pipeline + logo system — implement `ui/theme.py` with dual-mode (Office + Fight Night), install CTk + Pillow + ttkbootstrap, bundle fonts, integrate supervisor's logo, extend to full 5-variant brand system. | None | Pending 6.0 |
-| 6.1.5 | Extend primary logo into full brand system (Fight Night + Championship + Favicon variants) | None | Pending 6.1 |
-| 6.2 | App shell + navigation + mode switcher — top bar, sidebar, bottom bar, screen router, dark/light toggle, Office↔Fight Night transition animation. | None | Pending 6.1 |
+| **6.0** | **Decouple UI from game logic** — extract 13 service modules from `app.py` into `src/services/`. ~6919 lines moved. All 38 tests pass. See `docs/TASK_6_0_PLAN.md` for full brief. | None | ✅ COMPLETE (commit e5011f9) |
+| **6.0.5** | DB recovery + forensic check + run scripts — re-seeded world DB (accidentally destroyed during 6.0 testing), wrote `scripts/forensic_db_check.py` (140-check audit), wrote `scripts/backfill_legends.py` (60 retired legends backfilled with attributes), updated `run.sh`+`run.bat` with 7 modes (run/build-world/build-dev/migrate/check/test/backfill). | None | ✅ COMPLETE (commit d1f429c) |
+| 6.1a | Theme + fonts + logo integration — `src/ui/theme.py` (dual-mode Office+FightNight palette, 12 font sizes, CTk font tuples), 9 bundled fonts (Inter+JetBrains Mono+Source Serif Pro), supervisor's logo copied to `src/ui/assets/logo/`. | None | ✅ COMPLETE (commit b24e543) |
+| 6.1b | Derived logo variants (Fight Night + Championship + Favicon) — image-edit task | None | Pending 6.1a |
+| 6.1c | 32-icon set (20 status + 12 nav) — image-generation task | None | Pending 6.1a |
+| 6.2 | App shell + navigation + GameState singleton — `src/ui/app.py` (CageEmpireApp CTk window with top bar + sidebar + main content + bottom bar), `src/ui/state.py` (GameState singleton with refresh/refresh_all/theme switching). Screens are placeholders; actual screens land in 6.3-6.12. | None | ✅ COMPLETE (commit fe086ca) |
 | 6.3 | Dashboard + News Feed | None | Pending 6.2 |
 | 6.4 | Roster + Fighter Profile | None | Pending 6.2 |
 | 6.5 | Scouting + Free Agents | None | Pending 6.2 |
