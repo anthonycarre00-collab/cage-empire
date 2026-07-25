@@ -1343,23 +1343,29 @@ Mode).
 |---|---|---|---|
 | **6.0** | **Decouple UI from game logic** — extract 13 service modules from `app.py` into `src/services/`. ~6919 lines moved. All 38 tests pass. See `docs/TASK_6_0_PLAN.md` for full brief. | None | ✅ COMPLETE (commit e5011f9) |
 | **6.0.5** | DB recovery + forensic check + run scripts — re-seeded world DB (accidentally destroyed during 6.0 testing), wrote `scripts/forensic_db_check.py` (140-check audit), wrote `scripts/backfill_legends.py` (60 retired legends backfilled with attributes), updated `run.sh`+`run.bat` with 7 modes (run/build-world/build-dev/migrate/check/test/backfill). | None | ✅ COMPLETE (commit d1f429c) |
-| 6.1a | Theme + fonts + logo integration — `src/ui/theme.py` (dual-mode Office+FightNight palette, 12 font sizes, CTk font tuples), 9 bundled fonts (Inter+JetBrains Mono+Source Serif Pro), supervisor's logo copied to `src/ui/assets/logo/`. | None | ✅ COMPLETE (commit b24e543) |
+| **6.0.6** | World rebuild from supervisor's 4000 fighter profiles + voice audit + flaky test fix — `scripts/parse_fighter_profiles.py` + `scripts/assign_attributes_from_bios.py` + `scripts/seed_world_phase3_from_profiles.py` (intelligent attribute assignment from bio keywords). Voice audit fixed `describe_potential` bug + 3 digit violations. Flaky `test_punditry.py` A9(B) fixed (was exit 1 on 4/5 runs). | None | ✅ COMPLETE (commit edc0e85) |
+| **6.1a** | Theme + fonts + logo integration — `src/ui/theme.py` (dual-mode Office+FightNight palette, 12 font sizes, CTk font tuples), 9 bundled fonts (Inter+JetBrains Mono+Source Serif Pro), supervisor's logo copied to `src/ui/assets/logo/`. | None | ✅ COMPLETE (commit b24e543) |
+| **6.2** | App shell + navigation + GameState singleton — `src/ui/app.py` (CageEmpireApp CTk window with top bar + sidebar + main content + bottom bar), `src/ui/state.py` (GameState singleton with refresh/refresh_all/theme switching). Screens are placeholders; actual screens land in 6.3-6.12. | None | ✅ COMPLETE (commit fe086ca) |
+| **Phase 1.1** | Save supervisor's 4000 original bios — `seed_world_phase3_from_profiles.py` now writes bios to `fighter_bios` verbatim from `parsed_fighters.json`. `seed_world_phase5.py` skips fighters that already have a bio. All 4000 DB bios match supervisor originals. | None | ✅ COMPLETE (commit ec17f39) |
+| **Phase 1.2** | Wire up CTk App — `CageEmpireApp.__init__` now registers all 14 event-bus subscribers. `services.clock.advance_day` now delegates to `tick_processor.run_tick`. Simulation runs on Advance Day. | None | ✅ COMPLETE (commit e1aa187) |
+| **Phase 1.4** | Hall of Fame induction system — `src/services/hof_svc.py` subscribes to FIGHTER_RETIRED, inducts eligible fighters (title_reigns>=2 OR wins>=30 OR wins>=20+title_reigns>=1) with voice-layered career_summary + bullet highlights + induction news. New test `test_hof_induction.py` (42 sub-checks). | None | ✅ COMPLETE (commit ea7f757) |
+| **Phase 1.3** | Save/Load screen — `src/ui/screens/save_load.py` (484 lines) with save input, scrollable saves list, Load/Delete buttons, Refresh/Back. App quit auto-saves as 'exit_save'. | None | ✅ COMPLETE (commit fbe1428) |
 | 6.1b | Derived logo variants (Fight Night + Championship + Favicon) — image-edit task | None | Pending 6.1a |
 | 6.1c | 32-icon set (20 status + 12 nav) — image-generation task | None | Pending 6.1a |
-| 6.2 | App shell + navigation + GameState singleton — `src/ui/app.py` (CageEmpireApp CTk window with top bar + sidebar + main content + bottom bar), `src/ui/state.py` (GameState singleton with refresh/refresh_all/theme switching). Screens are placeholders; actual screens land in 6.3-6.12. | None | ✅ COMPLETE (commit fe086ca) |
-| 6.3 | Dashboard + News Feed | None | Pending 6.2 |
-| 6.4 | Roster + Fighter Profile | None | Pending 6.2 |
-| 6.5 | Scouting + Free Agents | None | Pending 6.2 |
-| 6.6 | Event Builder + Matchmaking | None | Pending 6.2 |
+| 6.3 | Dashboard + News Feed | None | Pending Phase 1 ✅ |
+| 6.4 | Roster + Fighter Profile | None | Pending Phase 1 ✅ |
+| 6.5 | Scouting + Free Agents | None | Pending Phase 1 ✅ |
+| 6.6 | Event Builder + Matchmaking | None | Pending Phase 1 ✅ |
 | 6.7 ★ | **Fight Resolution Screen** — the Fight Night centrepiece. Pre-fight, live fight (4 zones: heatmap + damage silhouettes + commentary + pundit panel + memory bubble), post-fight recap. Schema bump 3.8.0 → 3.9.0 (fighter_memory_links gains context_note + last_surfaced_at columns). | Minor: +2 columns on fighter_memory_links | Pending 6.6 |
 | 6.8 | Past Events + Schedule | None | Pending 6.7 |
-| 6.9 | Rankings + Titles + Rivalries + Records | None | Pending 6.2 |
-| 6.10 | Finance + Contracts + Rival Promotions + Gyms | None | Pending 6.2 |
-| 6.11 | Hall of Fame | None | Pending 6.2 |
-| 6.12 | Settings + Save/Load + Mods | None | Pending 6.2 |
+| 6.9 | Rankings + Titles + Rivalries + Records | None | Pending Phase 1 ✅ |
+| 6.10 | Finance + Contracts + Rival Promotions + Gyms | None | Pending Phase 1 ✅ |
+| 6.11 | Hall of Fame | None | Pending Phase 1 ✅ |
+| 6.12 | Settings + ~~Save/Load~~ + Mods (Save/Load done in Phase 1.3) | None | Pending Phase 1 ✅ |
 | 6.13 | Polish pass — keyboard shortcuts, tooltips, empty states, error dialogs, accessibility, fight replay scrubbing | None | Pending all screens |
 | 6.14 | Smoke tests for GUI — headless CTk smoke test pattern | None | Pending 6.13 |
 | 6.15 | Player entity (deferred from Q8) — `player` table (player_id, name, current_promotion_id), migration to seed default player row, UI for resign/takeover flow, re-point every "player promotion" reference from hardcoded `1` to `player.current_promotion_id` lookup. | Minor: new `player` table | Pending 6.14 |
+| **Phase 2** | Voice + personality fixes (per deep audit) — inject personality descriptors into news/scouting/bios, build CAGE Wire house style, wire up 13 unused personality traits, make personality_archetype_id a runtime signal | None | Pending — next priority after Phase 1 |
 
 ### Stage 6 conventions (additions to CONVENTIONS.md, planned)
 

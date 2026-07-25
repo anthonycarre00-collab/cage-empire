@@ -8,6 +8,75 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Phase 1 — Foundation Fixes: bios + save/load wiring + HoF + Save/Load screen)
+
+Four critical foundation fixes per `docs/PHASE_1_PLAN.md`. These fix
+the issues found in the deep audits (save/load, long-term world
+health, voice/memory/rivalries/personality/5-fantasies).
+
+**Phase 1.1 — Save supervisor's 4000 original bios** (commit ec17f39)
+- `scripts/seed_world_phase3_from_profiles.py` now writes the
+  supervisor's original bios (from `data/parsed_fighters.json`) to
+  `fighter_bios` verbatim. Previously the bios were discarded and
+  replaced with 6 template-generated variants.
+- `scripts/seed_world_phase5.py` now skips fighters that already
+  have a bio. Template bios only generated for fighters without one
+  (e.g., regen replacements).
+- Verified: all 4000 DB bios match `parsed_fighters.json` originals
+  exactly (0 mismatches, exhaustive check).
+
+**Phase 1.2 — Wire up CTk App + make advance_day run simulation**
+(commit e1aa187)
+- `src/ui/app.py:CageEmpireApp.__init__` now registers all 14
+  event-bus subscribers (news, social, rivalries, punditry, morale,
+  suspensions, agent_offers, career_arc, rival_ai, show_rating,
+  venues, save_load, player_settings, reputation). Previously the
+  CTk App registered ZERO subscribers — no simulation ran on
+  Advance Day.
+- `src/services/clock.py:advance_day` now delegates to
+  `tick_processor.run_tick(conn)`. Previously it only updated the
+  clock row — no retirements, injuries, camps, scouting, rival-AI,
+  contract expiry, news, or auto-save fired.
+- Verified: TICK_ADVANCED has 18 subscribers, FIGHT_RESOLVED has 10,
+  FIGHTER_RETIRED has 1. advance_day advances the clock + publishes
+  TICK_ADVANCED.
+
+**Phase 1.4 — Hall of Fame induction system** (commit ea7f757)
+- NEW `src/services/hof_svc.py` (404 lines) — subscribes to
+  FIGHTER_RETIRED, evaluates retiring fighters against 3 eligibility
+  criteria (title_reigns>=2 OR wins>=30 OR wins>=20+title_reigns>=1),
+  inducts qualifying fighters into `hall_of_fame` with voice-layered
+  career_summary (digit-free per §14) + bullet-listed career_highlights
+  + induction news item (topic='hall_of_fame'). Idempotent + defensive.
+- Registered as 15th subscriber in both CTk App + legacy App.
+- NEW `scripts/test_hof_induction.py` (488 lines, 9 cases, 42 sub-checks).
+- Verified: Jonathan Cardoso (3-time champion, 35-8) inducted on
+  FIGHTER_RETIRED with voice-layered summary + bullet highlights +
+  induction news. career_summary is digit-free.
+- Closes the Historian fantasy collapse: every champion the player
+  develops will now be remembered on retirement.
+
+**Phase 1.3 — Save/Load screen** (commit fbe1428)
+- NEW `src/ui/screens/save_load.py` (484 lines) — SaveLoadScreen
+  with save input, scrollable saves list (★ prefix for autosaves),
+  Load/Delete buttons with confirmation dialogs, Refresh/Back.
+- Load handler closes old conn, calls `load_game` (returns new conn),
+  updates BOTH `state.conn` AND `app.conn`, calls `state.refresh_all()`.
+- `CageEmpireApp.destroy()` now auto-saves as 'exit_save' before
+  closing — safety net for accidental closes.
+- Verified: save creates `data/saves/{name}.db` + `.json` metadata,
+  list_saves() returns dicts sorted by timestamp DESC, delete removes
+  files, load round-trip works.
+
+**Phase 1 verification (supervisor sign-off):**
+- 4000 active fighters + 4000 supervisor bios (verbatim) + 60 HoF
+- 39/39 acceptance tests pass (was 38, +1 new HoF induction test)
+- 140/140 forensic DB checks pass, 0 critical
+- Simulation runs on Advance Day (TICK_ADVANCED fires, subscribers react)
+- HoF induction fires on FIGHTER_RETIRED for eligible fighters
+- Save/Load screen renders + saves + loads + deletes
+- App quit auto-saves as 'exit_save'
+
 ### Added (Stage 6 — Task 6.2: CTk app shell + GameState singleton, no schema change)
 - New `src/ui/state.py` — GameState singleton holding the sqlite3
   Connection, player_promotion_id, registered screens, active screen,
