@@ -139,10 +139,13 @@ class CageEmpireApp(ctk.CTk):
         self.state = GameState(self.conn, player_promotion_id=1)
 
         # ============================================================
-        # Stage 6 (Phase 1, Fix 1.2): Register all 14 event-bus
-        # subscribers. Without this, no simulation runs on Advance Day
-        # — no retirements, injuries, camps, scouting, rival-AI, news,
-        # or auto-save. Copied from the old App.__init__ (src/app.py:328-574).
+        # Stage 6 (Phase 1, Fix 1.2 + Fix 1.4): Register all 15
+        # event-bus subscribers. Without this, no simulation runs on
+        # Advance Day — no retirements, injuries, camps, scouting,
+        # rival-AI, news, or auto-save. Copied from the old
+        # App.__init__ (src/app.py:328-574). Fix 1.4 added #15
+        # (hof_svc) so fighters who retire during gameplay are
+        # inducted into the Hall of Fame (Historian fantasy).
         # ============================================================
         try:
             from news import register_subscribers as _register_news
@@ -214,6 +217,18 @@ class CageEmpireApp(ctk.CTk):
             _register_reputation()
         except ImportError:
             pass  # reputation.py not available — legacy behavior
+        # Phase 1 — Fix 1.4: Hall of Fame induction subscriber.
+        # Subscribes to FIGHTER_RETIRED and inducts qualifying
+        # fighters into hall_of_fame. Without this, the 60 seeded
+        # legends are the only HoF inductees forever — every champion
+        # the player develops would be forgotten on retirement
+        # (Historian fantasy collapse). Lazy import for the same
+        # reasons as the 14 modules above.
+        try:
+            from services.hof_svc import register_subscribers as _register_hof
+            _register_hof()
+        except ImportError:
+            pass  # services/hof_svc.py not available — legacy behavior
 
         # ============================================================
         # WINDOW SETUP

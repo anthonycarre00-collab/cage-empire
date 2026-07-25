@@ -572,6 +572,18 @@ class App(tk.Tk):
             _register_reputation()
         except ImportError:
             pass  # reputation.py not available — legacy behavior
+        # Phase 1 — Fix 1.4: Hall of Fame induction subscriber.
+        # Subscribes to FIGHTER_RETIRED and inducts qualifying
+        # fighters into hall_of_fame. Without this, the 60 seeded
+        # legends are the only HoF inductees forever — every champion
+        # the player develops would be forgotten on retirement
+        # (Historian fantasy collapse). Lazy import for the same
+        # reasons as the 14 modules above.
+        try:
+            from services.hof_svc import register_subscribers as _register_hof_svc
+            _register_hof_svc()
+        except ImportError:
+            pass  # services/hof_svc.py not available — legacy behavior
         # Promotion filter state (Task ID 6). None = all promotions
         # (including free agents with current_promotion_id = NULL);
         # an int = restrict the Fighters tree to that promotion_id.
