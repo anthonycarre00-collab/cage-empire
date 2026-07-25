@@ -505,7 +505,7 @@ DB_PATH = DATA_DIR / "cage_empire.db"
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.7.0"
+CODE_SCHEMA_VERSION = "3.8.0"
 
 
 # v3.7.0 (Stage 5 — Task Stage5-Final: Player settings) — MINOR bump.
@@ -1143,6 +1143,17 @@ CREATE TABLE IF NOT EXISTS staff (
     role_type TEXT NOT NULL,
     specialty TEXT,
     promotion_id INTEGER REFERENCES promotions(promotion_id) ON DELETE SET NULL,
+    -- v3.8.0 (Stage 6 prep — D-GUI-4): pundit_bias JSON stores a
+    -- broadcast pundit's per-attribute bias so the Fight Resolution
+    -- screen can render named-pundit interjections that favour
+    -- strikers / grapplers / veterans / prospects / nations / gyms.
+    -- NULL for non-broadcast staff (scouts, refs, etc.). The JSON
+    -- schema is documented in src/punditry.py. NO CHECK constraint
+    -- because SQLite CHECK can't validate JSON shape. Per
+    -- CONVENTIONS §5.3, the writer is src/punditry.py (writes bias
+    -- when generating matchup_analyses) and the reader is the
+    -- upcoming ui/screens/event_resolution.py screen.
+    pundit_bias TEXT,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -3121,6 +3132,47 @@ def _migrate_v3_7_0_add_player_settings(conn):
     )
 
 
+def _migrate_v3_8_0_add_staff_pundit_bias(conn):
+    """Stage 6 prep — D-GUI-4 (Fight Resolution screen): add
+    `staff.pundit_bias` JSON column.
+
+    The Fight Resolution screen (planned in docs/GUI_PLAN.md §4) will
+    render named-pundit interjections during beat-by-beat playback.
+    Each broadcast pundit (staff row where role_type='broadcast' and
+    exists in broadcast_staff) has per-attribute biases that shape
+    their commentary voice: favour strikers vs grapplers, veterans vs
+    prospects, specific nations, specific gyms, etc.
+
+    The JSON schema is documented in src/punditry.py and looks like:
+        {
+          "style":          "striker" | "grappler" | "balanced",
+          "age":            "veteran" | "prospect" | "neutral",
+          "nation_ids":     [12, 47],          # favoured nations
+          "gym_ids":        [3, 8],            # favoured gyms
+          "aggression":     "high" | "low",    # commentary intensity
+          "skepticism":     0.0-1.0,           # how often they disagree
+          "catchphrases":   ["..."]            # voice texture (future)
+        }
+
+    Per CONVENTIONS §5, this is a single-group column add (one column
+    on one existing table). Per §1.1, adding a column is a MINOR
+    bump (3.7.0 → 3.8.0). Per §5.3, the writer is src/punditry.py
+    (writes bias when generating matchup_analyses if the staff row
+    doesn't yet have one — lazy initialization) and the reader is
+    the upcoming ui/screens/event_resolution.py screen.
+
+    Migration name: v3_8_0_add_staff_pundit_bias. Idempotent — uses
+    _has_column guard before ALTER TABLE. On --fresh builds, the
+    SCHEMA_SQL already includes the column (the migration function
+    is not called, but the migration_name is still recorded in
+    schema_migrations per §16.4).
+    """
+    if not _has_column(conn, "staff", "pundit_bias"):
+        conn.execute(
+            "ALTER TABLE staff ADD COLUMN pundit_bias TEXT"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3138,6 +3190,7 @@ MIGRATIONS = [
     ("v3_5_0_add_agent_offers",    "3.5.0", _migrate_v3_5_0_add_agent_offers),
     ("v3_6_0_add_show_ratings",    "3.6.0", _migrate_v3_6_0_add_show_ratings),
     ("v3_7_0_add_player_settings", "3.7.0", _migrate_v3_7_0_add_player_settings),
+    ("v3_8_0_add_staff_pundit_bias", "3.8.0", _migrate_v3_8_0_add_staff_pundit_bias),
 ]
 
 

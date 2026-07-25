@@ -8,6 +8,25 @@ and this project adheres to the schema versioning rules in
 
 ## [Unreleased]
 
+### Added (Stage 6 prep — D-GUI-4 Fight Resolution screen, schema 3.7.0 → 3.8.0 MINOR)
+- New `staff.pundit_bias` JSON column (TEXT, nullable). Stores a
+  broadcast pundit's per-attribute bias so the upcoming Fight
+  Resolution screen can render named-pundit interjections that
+  favour strikers / grapplers / veterans / prospects / nations /
+  gyms. The JSON schema is documented in
+  `src/build_db.py:_migrate_v3_8_0_add_staff_pundit_bias` and
+  includes fields for style, age, nation_ids, gym_ids, aggression,
+  skepticism, catchphrases. NULL for non-broadcast staff (scouts,
+  refs, etc.). Migration `v3_8_0_add_staff_pundit_bias` is
+  idempotent (uses `_has_column` guard). The writer will be
+  `src/punditry.py` (lazy initialization when generating
+  matchup_analyses); the reader will be the upcoming
+  `src/ui/screens/event_resolution.py` screen (Task 6.7).
+  Per CONVENTIONS §5, this is a single-group column add. Per §1.1,
+  adding a column is a MINOR bump. Per §5.3, writer + reader are
+  identified above. No new tables, no columns removed — purely
+  additive.
+
 ### Added (Stage 5 — Task Stage5-Final: Player settings + stale personality fixes + Mod tools skeleton, schema 3.6.0 → 3.7.0 MINOR)
 - New `player_settings` table — simple key-value store for player
   preferences (PRIMARY KEY setting_key, TEXT setting_value, TEXT

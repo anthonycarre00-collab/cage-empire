@@ -98,7 +98,7 @@ details.
 
 | Table | Designed | Built v1.2.0 | Built v1.9.0 | Status |
 |---|---|---|---|---|
-| `staff` | yes (rich: name, age, nationality, role_type, specialty, skill_level, reputation, loyalty, salary, contract_start/end, fatigue, retirement_status, death_flag, promotion_id) | yes (thin: name, age, role_type, specialty, promotion_id) | yes (thin) | `THIN` — missing ~9 columns |
+| `staff` | yes (rich: name, age, nationality, role_type, specialty, skill_level, reputation, loyalty, salary, contract_start/end, fatigue, retirement_status, death_flag, promotion_id) | yes (thin: name, age, role_type, specialty, promotion_id, **pundit_bias** added v3.8.0) | yes (thin) | `THIN` — missing ~8 columns (pundit_bias added v3.8.0 for D-GUI-4 Fight Resolution screen) |
 | `broadcast_staff` | yes (rich: staff_id, on_air_role, mic_skill, analysis_skill, chemistry_rating, bias, credibility, knowledge_depth, commentary_style, catchphrase_level) | yes (thin: staff_id, on_air_role) | yes (thin) | `THIN` — missing ~8 columns |
 
 **Notes.** UI does not show staff at all yet, even though the table
