@@ -43,11 +43,21 @@ def get_clock(conn):
 
 
 def advance_day(conn):
-    row = get_clock(conn)
-    dt = datetime.strptime(row[0], "%Y-%m-%d") + timedelta(days=1)
-    day = row[1] + 1
-    week = ((day - 1) // 7) + 1
-    conn.execute(
-        "UPDATE simulation_clock SET current_date=?, current_day=?, current_week=?, current_month=?, current_year=?, current_tick_type='day', tick_counter=tick_counter+1, updated_at=CURRENT_TIMESTAMP WHERE clock_id=1",
-        (dt.strftime("%Y-%m-%d"), day, week, dt.month, dt.year),
-    )
+    """Advance the simulation by one day.
+
+    Thin wrapper that delegates to tick_processor.run_tick(conn).
+    run_tick handles:
+      - Updating simulation_clock (current_date += 1 day, etc.)
+      - _check_retirements (birthday-gated, probability-based)
+      - _check_training_camps (progress + complete)
+      - _check_injury_recovery (clear is_active when recovered)
+      - _check_contract_expiry (free agents)
+      - Publishing Events.TICK_ADVANCED on the event bus
+      - conn.commit()
+
+    Per CONVENTIONS §15.4, the orchestration stays in run_tick —
+    advance_day is just a thin wrapper so the UI has a single
+    function to call. Per Phase 1 Fix 1.2.
+    """
+    from tick_processor import run_tick
+    return run_tick(conn)

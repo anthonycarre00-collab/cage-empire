@@ -139,6 +139,83 @@ class CageEmpireApp(ctk.CTk):
         self.state = GameState(self.conn, player_promotion_id=1)
 
         # ============================================================
+        # Stage 6 (Phase 1, Fix 1.2): Register all 14 event-bus
+        # subscribers. Without this, no simulation runs on Advance Day
+        # — no retirements, injuries, camps, scouting, rival-AI, news,
+        # or auto-save. Copied from the old App.__init__ (src/app.py:328-574).
+        # ============================================================
+        try:
+            from news import register_subscribers as _register_news
+            _register_news()
+        except ImportError:
+            pass  # news.py not available — legacy behavior
+        try:
+            from social import register_subscribers as _register_social
+            _register_social()
+        except ImportError:
+            pass  # social.py not available — legacy behavior
+        try:
+            from rivalries import register_subscribers as _register_rivalries
+            _register_rivalries()
+        except ImportError:
+            pass  # rivalries.py not available — legacy behavior
+        try:
+            from punditry import register_subscribers as _register_punditry
+            _register_punditry()
+        except ImportError:
+            pass  # punditry.py not available — legacy behavior
+        try:
+            from morale import register_subscribers as _register_morale
+            _register_morale()
+        except ImportError:
+            pass  # morale.py not available — legacy behavior
+        try:
+            from suspensions import register_subscribers as _register_suspensions
+            _register_suspensions()
+        except ImportError:
+            pass  # suspensions.py not available — legacy behavior
+        try:
+            from agent_offers import register_subscribers as _register_agent_offers
+            _register_agent_offers()
+        except ImportError:
+            pass  # agent_offers.py not available — legacy behavior
+        try:
+            from career_arc import register_subscribers as _register_career_arc
+            _register_career_arc()
+        except ImportError:
+            pass  # career_arc.py not available — legacy behavior
+        try:
+            from rival_ai import register_subscribers as _register_rival_ai
+            _register_rival_ai()
+        except ImportError:
+            pass  # rival_ai.py not available — legacy behavior
+        try:
+            from show_rating import register_subscribers as _register_show_rating
+            _register_show_rating()
+        except ImportError:
+            pass  # show_rating.py not available — legacy behavior
+        try:
+            from venues import register_subscribers as _register_venues
+            _register_venues()
+        except ImportError:
+            pass  # venues.py not available — legacy behavior
+        try:
+            from save_load import register_subscribers as _register_save_load
+            _register_save_load()
+        except ImportError:
+            pass  # save_load.py not available — legacy behavior
+        try:
+            from player_settings import register_subscribers as _register_player_settings
+            _register_player_settings()
+        except ImportError:
+            pass  # player_settings.py not available — legacy behavior
+        try:
+            from reputation import register_subscribers as _register_reputation
+            _register_reputation()
+        except ImportError:
+            pass  # reputation.py not available — legacy behavior
+
+        # ============================================================
         # WINDOW SETUP
         # ============================================================
         self.title("CAGE EMPIRE")
