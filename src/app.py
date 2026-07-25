@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import random
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 import tkinter as tk
@@ -1018,4 +1019,14 @@ class App(tk.Tk):
             messagebox.showerror("Error", str(e))
 
 if __name__ == "__main__":
-    App().mainloop()
+    # Stage 6 (Task 6.2): launch the new CustomTkinter app by default.
+    # The old tkinter App class is retained above for backwards-compat
+    # with acceptance tests that instantiate app.App(), but the user
+    # sees the new CTk dual-mode UI.
+    #
+    # To launch the OLD tkinter app (for debugging): python src/app.py --legacy
+    if "--legacy" in sys.argv:
+        App().mainloop()
+    else:
+        from ui.app import CageEmpireApp
+        CageEmpireApp().mainloop()
