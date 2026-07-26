@@ -510,9 +510,31 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.8.0"
+CODE_SCHEMA_VERSION = "3.9.0"
 
 
+# v3.9.0 (Phase 1.5 — Task 1.5C-seed-data Fix C6: add staff.gym_id
+# column for coach-gym linkage) — MINOR bump. Per CONVENTIONS §1.1,
+# adding a column to an existing table is a MINOR bump. Per §5 (one
+# table-group per task), this task adds ONLY the staff.gym_id column —
+# a single logical group (coach-gym linkage so each staff coach can be
+# affiliated with a gym, independent of staff_contracts which is empty).
+# The migration function _migrate_v3_9_0_add_staff_gym_id is idempotent
+# (uses _has_column guard before ALTER TABLE). On --fresh builds, the
+# SCHEMA_SQL already includes the column. The seed script
+# (scripts/group_c_seed.py) back-fills the gym_id for each existing
+# coach (match by nation_id if possible, else random gym). Future coach
+# generation in seed scripts should also set staff.gym_id.
+#
+# Default settings seeded by the migration: (none — schema-only change.)
+
+
+# v3.8.0 (Stage 6 prep — D-GUI-4 Fight Resolution screen) — MINOR bump.
+# Adds `staff.pundit_bias` JSON column. The 5 broadcast_staff (1 per
+# promotion) get a populated bias JSON when the seed scripts generate
+# them; non-broadcast staff (scouts, refs, etc.) have NULL bias. See
+# _migrate_v3_8_0_add_staff_pundit_bias below.
+#
 # v3.7.0 (Stage 5 — Task Stage5-Final: Player settings) — MINOR bump.
 # Adds the new `player_settings` table. Per CONVENTIONS §1.1, adding a
 # new table is a MINOR bump. Per §5 (one table-group per task), this
@@ -1148,6 +1170,17 @@ CREATE TABLE IF NOT EXISTS staff (
     role_type TEXT NOT NULL,
     specialty TEXT,
     promotion_id INTEGER REFERENCES promotions(promotion_id) ON DELETE SET NULL,
+    -- v3.9.0 (Phase 1.5 Fix C6): staff.gym_id is the coach-gym linkage.
+    -- For role_type='coach' rows, this points to the gym where the
+    -- coach is resident. NULL for non-coach staff (broadcast, scouts,
+    -- refs, cutmen, doctors, GMs) — those are promotion-affiliated
+    -- via promotion_id, not gym-affiliated. The seed script
+    -- (scripts/group_c_seed.py) back-fills gym_id for existing
+    -- coaches (match by nation_id). Per CONVENTIONS §5.3, the writer
+    -- is scripts/group_c_seed.py + future coach-generation seed
+    -- scripts; the reader is the upcoming training-camps UI screen
+    -- (which displays the coach alongside the fighter's gym).
+    gym_id INTEGER REFERENCES gyms(gym_id) ON DELETE SET NULL,
     -- v3.8.0 (Stage 6 prep — D-GUI-4): pundit_bias JSON stores a
     -- broadcast pundit's per-attribute bias so the Fight Resolution
     -- screen can render named-pundit interjections that favour
@@ -3178,6 +3211,44 @@ def _migrate_v3_8_0_add_staff_pundit_bias(conn):
         )
 
 
+def _migrate_v3_9_0_add_staff_gym_id(conn):
+    """Phase 1.5 — Task 1.5C-seed-data Fix C6: add staff.gym_id
+    column for coach-gym linkage.
+
+    Prior to v3.9.0, the staff table had no gym linkage. Coaches
+    (role_type='coach') existed as standalone rows with no
+    affiliation to a specific gym. staff_contracts is empty (and
+    even when populated, links staff to promotions, not gyms). The
+    training-camps system (Task 16) writes training_camps rows that
+    reference fighter_id + gym_id; linking the camp's coach to the
+    gym requires this staff.gym_id column.
+
+    Per CONVENTIONS §5, this is a single-group column add (one
+    column on one existing table — staff.gym_id). Per §1.1, adding
+    a column is a MINOR bump (3.8.0 → 3.9.0). Per §5.3, the writer
+    is scripts/group_c_seed.py (Phase 1.5 — back-fills gym_id for
+    existing coaches) + future coach-generation seed scripts; the
+    reader is the upcoming training-camps UI screen (which displays
+    the coach alongside the fighter's gym when viewing a camp).
+
+    The column is INTEGER, nullable (NULL for non-coach staff),
+    FK to gyms.gym_id with ON DELETE SET NULL (deleting a gym
+    NULLs the staff.gym_id rather than cascading — preserves the
+    coach row, just leaves it unaffiliated).
+
+    Migration name: v3_9_0_add_staff_gym_id. Idempotent — uses
+    _has_column guard before ALTER TABLE. On --fresh builds, the
+    SCHEMA_SQL already includes the column (the migration function
+    is not called, but the migration_name is still recorded in
+    schema_migrations per §16.4).
+    """
+    if not _has_column(conn, "staff", "gym_id"):
+        conn.execute(
+            "ALTER TABLE staff ADD COLUMN gym_id INTEGER "
+            "REFERENCES gyms(gym_id) ON DELETE SET NULL"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3196,6 +3267,7 @@ MIGRATIONS = [
     ("v3_6_0_add_show_ratings",    "3.6.0", _migrate_v3_6_0_add_show_ratings),
     ("v3_7_0_add_player_settings", "3.7.0", _migrate_v3_7_0_add_player_settings),
     ("v3_8_0_add_staff_pundit_bias", "3.8.0", _migrate_v3_8_0_add_staff_pundit_bias),
+    ("v3_9_0_add_staff_gym_id",      "3.9.0", _migrate_v3_9_0_add_staff_gym_id),
 ]
 
 
