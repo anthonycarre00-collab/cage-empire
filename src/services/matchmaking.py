@@ -76,11 +76,33 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
     cannot be booked — the medical staff hasn't cleared them to
     return. This is the reader required by CONVENTIONS §5.3 (every
     new table must ship with at least one reader).
+
+    Phase 1.5 Fix B4 (gender check): also filters by gender. The
+    weight_class_id is already gender-specific (each WC has a
+    `gender` column = 'male' or 'female' in the weight_classes
+    table), so this filter is REDUNDANT — but the brief asks for
+    it as a defensive measure: an explicit `f.gender = ?` clause
+    makes it impossible for a mixed-gender fight to be booked even
+    if a future bug puts a fighter in the wrong WC. The gender is
+    looked up from the weight_classes table by weight_class_id.
     """
+    # Phase 1.5 Fix B4: explicit gender check — no mixed-gender fights
+    # can be booked. Look up the WC's gender and filter fighters by it.
+    wc_row = conn.execute(
+        "SELECT gender FROM weight_classes WHERE weight_class_id = ?",
+        (weight_class_id,),
+    ).fetchone()
+    wc_gender = wc_row[0] if wc_row else 'male'  # defensive default
+
     sql = (
         "SELECT fighter_id FROM fighters "
         "WHERE current_promotion_id = ? AND is_active = 1 "
         "AND weight_class_id = ? "
+        # Phase 1.5 Fix B4: explicit gender check — no mixed-gender
+        # fights can be booked. Redundant with weight_class_id (which
+        # is gender-specific) but defensive: catches any future bug
+        # that puts a fighter in a wrong-gender WC.
+        "AND gender = ? "
         "AND fighter_id NOT IN (SELECT fighter_id FROM injuries WHERE is_active = 1)"
         # v3.4.0 (Phase B): also exclude fighters with active
         # suspensions. A suspended fighter cannot be booked — the
@@ -91,7 +113,7 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
         # SQL form here is the in-query equivalent for efficiency).
         " AND fighter_id NOT IN (SELECT fighter_id FROM suspensions WHERE is_active = 1)"
     )
-    params = [promotion_id, weight_class_id]
+    params = [promotion_id, weight_class_id, wc_gender]
     if exclude_fighter_ids:
         # Parameterized NOT IN clause. Never string-format fighter_ids
         # into SQL — always use placeholders.
@@ -101,7 +123,8 @@ def _pick_matchup(conn, promotion_id, weight_class_id, exclude_fighter_ids=()):
     rows = conn.execute(sql, params).fetchall()
     if len(rows) < 2:
         return None
-    # random.sample pulls 2 distinct rows without replacement.
+    # random.sample pulls 2 distinct rows without replacement. Both
+    # rows are guaranteed same-gender by the WHERE clause above.
     picks = random.sample(rows, 2)
     return (picks[0][0], picks[1][0])
 
@@ -439,7 +462,7 @@ def _get_available_fighters_for_card(conn, promotion_id,
         new event's date)
 
     Returns a list of dicts with keys: fighter_id, weight_class_id,
-    rating (ELO from rankings, default 1000.0), record_wins,
+    gender, rating (ELO from rankings, default 1000.0), record_wins,
     record_losses, record_draws, win_streak, loss_streak, potential,
     last_fight_date.
 
@@ -458,9 +481,17 @@ def _get_available_fighters_for_card(conn, promotion_id,
     Returns:
         List of fighter-dict rows. Empty list if no fighters are
         eligible.
+
+    Phase 1.5 Fix B4 (gender check): the SELECT now includes
+    `f.gender` so the downstream card-build functions can enforce
+    the same-gender constraint defensively. The weight_class_id is
+    already gender-specific (each WC has a `gender` column), so this
+    is a redundant check — but it makes the gender filter explicit
+    and impossible to forget. See `_assert_same_gender` (used by the
+    build functions).
     """
     rows = conn.execute(
-        "SELECT f.fighter_id, f.weight_class_id, "
+        "SELECT f.fighter_id, f.weight_class_id, f.gender, "
         "COALESCE(r.rating, 1000.0) AS rating, "
         "COALESCE(fc.record_wins, 0), COALESCE(fc.record_losses, 0), "
         "COALESCE(fc.record_draws, 0), COALESCE(fc.win_streak, 0), "
@@ -506,7 +537,8 @@ def _get_available_fighters_for_card(conn, promotion_id,
 
     available = []
     for row in rows:
-        (fighter_id, weight_class_id, rating,
+        # Phase 1.5 Fix B4: gender is now in the SELECT (3rd column).
+        (fighter_id, weight_class_id, gender, rating,
          wins, losses, draws, win_streak, loss_streak, potential,
          last_fight_date) = row
         # Rest period: skip fighters who fought in the last `rest_days`
@@ -524,6 +556,10 @@ def _get_available_fighters_for_card(conn, promotion_id,
         available.append({
             'fighter_id': fighter_id,
             'weight_class_id': weight_class_id,
+            # Phase 1.5 Fix B4: explicit gender — no mixed-gender fights
+            # can be booked. Available to the build functions for
+            # defensive same-gender assertions.
+            'gender': gender,
             'rating': rating,
             'record_wins': wins,
             'record_losses': losses,
@@ -548,6 +584,32 @@ def _group_available_by_wc(fighters):
     for f in fighters:
         by_wc.setdefault(f['weight_class_id'], []).append(f)
     return by_wc
+
+
+
+def _same_gender(f1, f2):
+    """Phase 1.5 Fix B4: defensive same-gender check.
+
+    Returns True if both fighter dicts have the same 'gender' value.
+    Returns False if either is missing 'gender' (defensive — old code
+    paths that don't populate 'gender' should NOT silently match
+    mixed-gender fighters; they should fail this check and the build
+    function will skip to the next pair).
+
+    Used by _build_main_event / _build_co_main / _build_featured_prelim
+    / _build_prelim as a redundant safety net on top of the WC grouping
+    (weight_class_id is already gender-specific, so two fighters in the
+    same WC are by definition the same gender — but this makes the
+    constraint EXPLICIT and impossible to silently violate).
+    """
+    g1 = f1.get('gender')
+    g2 = f2.get('gender')
+    if g1 is None or g2 is None:
+        # Defensive: if gender is missing from either fighter dict,
+        # fail safe — don't book the matchup. The build function will
+        # skip to the next available pair.
+        return False
+    return g1 == g2
 
 
 
@@ -595,10 +657,16 @@ def _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids):
                              if f['fighter_id'] == champion_id), None)
             if champion is None:
                 continue  # champion not available — try next title
+            # Phase 1.5 Fix B4: explicit gender check — no mixed-gender
+            # fights can be booked. Pair the champion with the highest-
+            # rated same-gender contender. (Redundant given WC grouping,
+            # but defensive — a future bug in WC seeding could other-
+            # wise slip a mixed-gender matchup past the WC filter.)
             contenders = [f for f in wc_fighters
-                          if f['fighter_id'] != champion_id]
+                          if f['fighter_id'] != champion_id
+                          and _same_gender(champion, f)]
             if not contenders:
-                continue  # no contender available
+                continue  # no same-gender contender available
             return {
                 'weight_class_id': wc_id,
                 'fighter_a': champion['fighter_id'],
@@ -609,12 +677,19 @@ def _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids):
             }
         elif is_vacant:
             # Vacant title — book #1 vs #2 contenders for the belt.
+            # Phase 1.5 Fix B4: defensive same-gender check — only
+            # pair contenders of the same gender.
             if len(wc_fighters) < 2:
                 continue
+            f1 = wc_fighters[0]
+            f2 = next((f for f in wc_fighters[1:]
+                       if _same_gender(f1, f)), None)
+            if f2 is None:
+                continue  # no same-gender #2 contender
             return {
                 'weight_class_id': wc_id,
-                'fighter_a': wc_fighters[0]['fighter_id'],
-                'fighter_b': wc_fighters[1]['fighter_id'],
+                'fighter_a': f1['fighter_id'],
+                'fighter_b': f2['fighter_id'],
                 'card_slot': 'main_event',
                 'is_title_fight': 1,
                 'scheduled_rounds': _TITLE_FIGHT_ROUNDS,
@@ -622,6 +697,7 @@ def _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids):
 
     # No title fight possible — book the two highest-rated fighters
     # in the same weight class (non-title main event).
+    # Phase 1.5 Fix B4: defensive same-gender check applies here too.
     by_wc_avail = {}
     for wc_id, fighters in fighters_by_wc.items():
         avail = [f for f in fighters if f['fighter_id'] not in booked_ids]
@@ -630,12 +706,26 @@ def _build_main_event(conn, promotion_id, fighters_by_wc, booked_ids):
             by_wc_avail[wc_id] = avail
     if not by_wc_avail:
         return None
-    # Pick the WC with the highest top-2 rating sum.
+    # Pick the WC with the highest top-2 rating sum — but only pair
+    # same-gender fighters (Phase 1.5 Fix B4).
     best = None
     for wc_id, fs in by_wc_avail.items():
-        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        # Find the highest-rated same-gender pair within this WC.
+        pair = None
+        for i in range(len(fs)):
+            for j in range(i + 1, len(fs)):
+                if _same_gender(fs[i], fs[j]):
+                    pair = (fs[i], fs[j])
+                    break
+            if pair:
+                break
+        if pair is None:
+            continue
+        top2_sum = pair[0]['rating'] + pair[1]['rating']
         if best is None or top2_sum > best[0]:
-            best = (top2_sum, wc_id, fs[0], fs[1])
+            best = (top2_sum, wc_id, pair[0], pair[1])
+    if best is None:
+        return None
     _, wc_id, f1, f2 = best
     return {
         'weight_class_id': wc_id,
@@ -656,6 +746,10 @@ def _build_co_main(fighters_by_wc, booked_ids, exclude_wc=None):
     3 rounds, is_title_fight=0. exclude_wc skips a WC (for variety
     — we don't want the entire main card in one weight class).
     Returns fight dict or None.
+
+    Phase 1.5 Fix B4: defensive same-gender check — only pairs
+    fighters of the same gender. Redundant with WC grouping (each WC
+    is gender-specific) but defensive against future bugs.
     """
     by_wc_avail = {}
     for wc_id, fighters in fighters_by_wc.items():
@@ -671,11 +765,26 @@ def _build_co_main(fighters_by_wc, booked_ids, exclude_wc=None):
         if exclude_wc is not None:
             return _build_co_main(fighters_by_wc, booked_ids, exclude_wc=None)
         return None
+    # Phase 1.5 Fix B4: explicit gender check — find the highest-rated
+    # same-gender pair within each WC, then pick the WC with the best
+    # top-2 sum.
     best = None
     for wc_id, fs in by_wc_avail.items():
-        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        pair = None
+        for i in range(len(fs)):
+            for j in range(i + 1, len(fs)):
+                if _same_gender(fs[i], fs[j]):
+                    pair = (fs[i], fs[j])
+                    break
+            if pair:
+                break
+        if pair is None:
+            continue
+        top2_sum = pair[0]['rating'] + pair[1]['rating']
         if best is None or top2_sum > best[0]:
-            best = (top2_sum, wc_id, fs[0], fs[1])
+            best = (top2_sum, wc_id, pair[0], pair[1])
+    if best is None:
+        return None
     _, wc_id, f1, f2 = best
     return {
         'weight_class_id': wc_id,
@@ -695,6 +804,10 @@ def _build_featured_prelim(fighters_by_wc, booked_ids, exclude_wc=None):
 
     3 rounds, is_title_fight=0. exclude_wc skips a WC for variety.
     Returns fight dict or None.
+
+    Phase 1.5 Fix B4: defensive same-gender check — only pairs
+    fighters of the same gender. Redundant with WC grouping but
+    defensive.
     """
     by_wc_avail = {}
     for wc_id, fighters in fighters_by_wc.items():
@@ -706,12 +819,25 @@ def _build_featured_prelim(fighters_by_wc, booked_ids, exclude_wc=None):
             by_wc_avail[wc_id] = avail
     if not by_wc_avail:
         return None
-    # Pick the WC with the highest top-2 rating sum.
+    # Phase 1.5 Fix B4: explicit gender check — pick the WC with the
+    # highest top-2 same-gender rating sum.
     best = None
     for wc_id, fs in by_wc_avail.items():
-        top2_sum = fs[0]['rating'] + fs[1]['rating']
+        pair = None
+        for i in range(len(fs)):
+            for j in range(i + 1, len(fs)):
+                if _same_gender(fs[i], fs[j]):
+                    pair = (fs[i], fs[j])
+                    break
+            if pair:
+                break
+        if pair is None:
+            continue
+        top2_sum = pair[0]['rating'] + pair[1]['rating']
         if best is None or top2_sum > best[0]:
-            best = (top2_sum, wc_id, fs[0], fs[1])
+            best = (top2_sum, wc_id, pair[0], pair[1])
+    if best is None:
+        return None
     _, wc_id, f1, f2 = best
     return {
         'weight_class_id': wc_id,
@@ -735,6 +861,10 @@ def _build_prelim(fighters_by_wc, booked_ids):
     fighters (loss_streak >= 2) are preferred — this is where the
     "prospect development" and "must-win fight" storylines live
     (Kingmaker fantasy).
+
+    Phase 1.5 Fix B4: defensive same-gender check — only pairs
+    fighters of the same gender. Redundant with WC grouping but
+    defensive.
     """
     by_wc_avail = {}
     for wc_id, fighters in fighters_by_wc.items():
@@ -758,15 +888,22 @@ def _build_prelim(fighters_by_wc, booked_ids):
     sorted_wcs = sorted(by_wc_avail.items(), key=wc_priority, reverse=True)
     for wc_id, fs in sorted_wcs:
         # Within this WC, prefer prospect (high potential) — sort by
-        # potential desc and pick top 2. This gives the "prospect
-        # development" storyline a chance to fire (the prospect gets
-        # matched against the next-available fighter, who may be a
-        # journeyman or another prospect).
+        # potential desc and pick top 2 same-gender fighters (Phase
+        # 1.5 Fix B4). This gives the "prospect development" storyline
+        # a chance to fire (the prospect gets matched against the next-
+        # available fighter, who may be a journeyman or another
+        # prospect).
         fs_sorted = sorted(fs, key=lambda f: f['potential'], reverse=True)
+        # Phase 1.5 Fix B4: explicit gender check — find the highest-
+        # potential same-gender pair within this WC.
+        f1 = fs_sorted[0]
+        f2 = next((f for f in fs_sorted[1:] if _same_gender(f1, f)), None)
+        if f2 is None:
+            continue  # no same-gender partner for the top prospect
         return {
             'weight_class_id': wc_id,
-            'fighter_a': fs_sorted[0]['fighter_id'],
-            'fighter_b': fs_sorted[1]['fighter_id'],
+            'fighter_a': f1['fighter_id'],
+            'fighter_b': f2['fighter_id'],
             'card_slot': 'prelim',
             'is_title_fight': 0,
             'scheduled_rounds': _NON_TITLE_FIGHT_ROUNDS,
