@@ -394,20 +394,18 @@ class CageEmpireApp(ctk.CTk):
     def _show_promotion_select(self):
         """Show the promotion selection screen at startup."""
         theme = get_theme()
+        from ui.screens.promotion_select import PromotionSelectScreen
 
-        # Hide the top bar + sidebar + bottom bar until a promotion is chosen
+        # Unpack the shell components so the promo select screen
+        # can take the full window
         self.top_bar.pack_forget()
         self.sidebar.pack_forget()
         self.bottom_bar.pack_forget()
+        self.main_content.pack_forget()
 
-        # Clear main content
-        for widget in self.screen_container.winfo_children():
-            widget.destroy()
-
-        # Create the promotion selection screen
-        from ui.screens.promotion_select import PromotionSelectScreen
+        # Create a fresh full-screen container for the promo select
         self.promo_select_screen = PromotionSelectScreen(
-            self.screen_container,
+            self,
             on_select_callback=self._on_promotion_selected,
             fg_color=theme.colors.bg_base,
         )
@@ -421,16 +419,28 @@ class CageEmpireApp(ctk.CTk):
 
         # Remove the promotion selection screen
         self.promo_select_screen.pack_forget()
+        self.promo_select_screen.destroy()
 
-        # Show the top bar + sidebar + bottom bar
-        theme = get_theme()
+        # Unpack EVERYTHING, then re-pack in the correct order.
+        # tkinter pack order is critical: top first, bottom second,
+        # then left sidebar, then main content fills the rest.
+        self.top_bar.pack_forget()
+        self.sidebar.pack_forget()
+        self.bottom_bar.pack_forget()
+        self.main_content.pack_forget()
+        self.screen_container.pack_forget()
+
+        # Re-pack in correct order
         self.top_bar.pack(side="top", fill="x")
-        self.sidebar.pack(side="left", fill="y")
         self.bottom_bar.pack(side="bottom", fill="x")
+        self.sidebar.pack(side="left", fill="y")
+        self.main_content.pack(side="left", fill="both", expand=True)
+        self.screen_container.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Navigate to the dashboard
         self._navigate("dashboard")
         self._update_top_bar()
+        self._update_sidebar()
         self._update_bottom_bar()
 
     # ============================================================
