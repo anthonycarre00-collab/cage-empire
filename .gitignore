@@ -27,8 +27,12 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# ---- Project: database (NEVER commit save games) ----
-data/*.db
+# ---- Project: database ----
+# The world DB (cage_empire.db) SHIPS WITH THE GAME — it's the default
+# game data, like FM/W MMA5. Do NOT ignore it.
+# But DO ignore save games, backups, test DBs, and temp files.
+data/cage_empire_test.db
+data/cage_empire.db.backup-*
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
