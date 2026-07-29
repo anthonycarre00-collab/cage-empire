@@ -48,12 +48,12 @@ random.seed(20260725)  # reproducible
 # Distribution targets (matches original phase3).
 # ----------------------------------------------------------------
 PROMOTION_ROSTER_SIZES = {
-    "major": 900,    # Alpha Combat Federation
-    "mid":   450,    # 3 mid promos × 450
-    "small": 200,    # 6 small promos × 200
-    "free_agent": 550,
+    "major": 60,     # Alpha Combat Federation — UFC-level, ~60 fighters
+    "mid":   40,     # 3 mid promos × 40 = 120
+    "small": 15,     # 6 small promos × 15 = 90
+    "free_agent": 4180,  # the rest — largest pool (realistic MMA)
 }
-# Total: 900 + 1350 + 1200 + 550 = 4000
+# Total: 60 + 120 + 90 + 4180 = 4450
 
 BATCH_SIZE = 100
 
@@ -110,41 +110,40 @@ def _lookup_archetype_id(conn, table, name):
 def _pick_promotion_id(conn, fighter_idx, total_fighters, rng):
     """Assign a fighter to a promotion based on the distribution targets.
 
-    Distribution (matches original phase3):
-      - First 900 fighters → major promo (Alpha Combat, id=1)
-      - Next 1350 fighters → 3 mid promos (450 each)
-      - Next 1200 fighters → 6 small promos (200 each)
-      - Last 550 fighters → free agents (promotion_id=NULL)
+    Realistic roster sizes (not 900 per promo!):
+      - First 60 fighters → major promo (Alpha Combat, id=1)
+      - Next 120 fighters → 3 mid promos (40 each)
+      - Next 90 fighters → 6 small promos (15 each)
+      - Remaining 4180 fighters → free agents (promotion_id=NULL)
     """
-    if fighter_idx < 900:
-        # Major
+    if fighter_idx < 60:
+        # Major — Alpha Combat
         promos = conn.execute(
             "SELECT promotion_id FROM promotions WHERE size_tier='major' ORDER BY promotion_id"
         ).fetchall()
         return promos[0][0] if promos else 1
-    elif fighter_idx < 2250:
-        # Mid (3 promos × 450)
+    elif fighter_idx < 180:
+        # Mid (3 promos × 40)
         promos = conn.execute(
             "SELECT promotion_id FROM promotions WHERE size_tier='mid' ORDER BY promotion_id"
         ).fetchall()
         if not promos:
             return None
-        # Distribute 450 per promo
-        idx_in_mid = fighter_idx - 900
-        promo_idx = idx_in_mid // 450
+        idx_in_mid = fighter_idx - 60
+        promo_idx = idx_in_mid // 40
         return promos[min(promo_idx, len(promos) - 1)][0]
-    elif fighter_idx < 3450:
-        # Small (6 promos × 200)
+    elif fighter_idx < 270:
+        # Small (6 promos × 15)
         promos = conn.execute(
             "SELECT promotion_id FROM promotions WHERE size_tier='small' ORDER BY promotion_id"
         ).fetchall()
         if not promos:
             return None
-        idx_in_small = fighter_idx - 2250
-        promo_idx = idx_in_small // 200
+        idx_in_small = fighter_idx - 180
+        promo_idx = idx_in_small // 15
         return promos[min(promo_idx, len(promos) - 1)][0]
     else:
-        # Free agent
+        # Free agent — the vast majority (realistic)
         return None
 
 
