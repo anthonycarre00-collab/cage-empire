@@ -138,7 +138,7 @@ class CageEmpireApp(ctk.CTk):
         # the player picks a promotion on the startup screen.
         # Default is None until selection.
         # ============================================================
-        self.state = GameState(self.conn, player_promotion_id=None)
+        self.game_state = GameState(self.conn, player_promotion_id=None)
 
         # ============================================================
         # Stage 6 (Phase 1, Fix 1.2 + Fix 1.4): Register all 15
@@ -276,7 +276,7 @@ class CageEmpireApp(ctk.CTk):
         # ============================================================
         from ui.screens.save_load import SaveLoadScreen
         self.save_load_screen = SaveLoadScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "save_load", self.save_load_screen, self.save_load_screen._refresh
         )
 
@@ -301,7 +301,7 @@ class CageEmpireApp(ctk.CTk):
         # ============================================================
         from ui.screens.dashboard import DashboardScreen
         self.dashboard_screen = DashboardScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "dashboard", self.dashboard_screen, self.dashboard_screen._refresh
         )
 
@@ -331,13 +331,13 @@ class CageEmpireApp(ctk.CTk):
         # ============================================================
         from ui.screens.roster import RosterScreen
         self.roster_screen = RosterScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "roster", self.roster_screen, self.roster_screen._refresh
         )
 
         from ui.screens.fighter_profile import FighterProfileScreen
         self.fighter_profile_screen = FighterProfileScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "fighter_profile", self.fighter_profile_screen,
             self.fighter_profile_screen._refresh
         )
@@ -372,14 +372,14 @@ class CageEmpireApp(ctk.CTk):
         # ============================================================
         from ui.screens.free_agents import FreeAgentsScreen
         self.free_agents_screen = FreeAgentsScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "free_agents", self.free_agents_screen,
             self.free_agents_screen._refresh
         )
 
         from ui.screens.scouting import ScoutingScreen
         self.scouting_screen = ScoutingScreen(self.screen_container)
-        self.state.register_screen(
+        self.game_state.register_screen(
             "scouting", self.scouting_screen,
             self.scouting_screen._refresh
         )
@@ -417,7 +417,7 @@ class CageEmpireApp(ctk.CTk):
     def _on_promotion_selected(self, promotion_id):
         """Called when the player picks a promotion on the startup screen."""
         # Set the player's promotion in GameState
-        self.state.player_promotion_id = promotion_id
+        self.game_state.player_promotion_id = promotion_id
 
         # Remove the promotion selection screen
         self.promo_select_screen.pack_forget()
@@ -502,7 +502,7 @@ class CageEmpireApp(ctk.CTk):
                 )
 
             # Get player promotion cash
-            promo_id = self.state.get_player_promotion_id()
+            promo_id = self.game_state.get_player_promotion_id()
             cash_row = self.conn.execute(
                 "SELECT current_cash FROM promotions WHERE promotion_id=?",
                 (promo_id,)
@@ -557,7 +557,7 @@ class CageEmpireApp(ctk.CTk):
     def _update_sidebar(self):
         """Highlight the active nav button."""
         theme = get_theme()
-        active = self.state.get_active_screen()
+        active = self.game_state.get_active_screen()
         for name, btn in self.nav_buttons.items():
             if name == active:
                 btn.configure(fg_color=theme.colors.bg_surface_elevated,
@@ -708,11 +708,11 @@ class CageEmpireApp(ctk.CTk):
         # four), this raises ValueError. We catch + ignore for the
         # placeholder screens — they have no refresh callback anyway.
         try:
-            self.state.set_active_screen(screen_name)
+            self.game_state.set_active_screen(screen_name)
         except ValueError:
             # Screen not registered (placeholder). Update active
             # screen name directly so the sidebar highlight works.
-            self.state._active_screen = screen_name
+            self.game_state._active_screen = screen_name
         self._update_sidebar()
         self._update_top_bar()
 
@@ -760,7 +760,7 @@ class CageEmpireApp(ctk.CTk):
         try:
             advance_day(self.conn)
             self.conn.commit()
-            self.state.refresh_all()
+            self.game_state.refresh_all()
             self._update_top_bar()
             self._update_bottom_bar()
         except Exception as e:
