@@ -510,7 +510,52 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.10.0"
+CODE_SCHEMA_VERSION = "3.11.0"
+
+
+# v3.11.0 (Phase 2 — Task 2.1-snapshot-cache: add 4 new cache tables for
+# the Snapshot Cache orchestrator) — MINOR bump. Per CONVENTIONS §1.1,
+# adding new tables qualifies as MINOR. Per §5 (one table-group per
+# task), this task adds ONLY the Phase 2 Interpretation Layer's 4 cache
+# tables that store daily-refreshed summaries of gyms, promotions,
+# divisions, and daily headlines. The orchestrator (snapshot_cache.py)
+# is the ONLY writer per CONVENTIONS §17.3; Office Mode UI is the
+# intended reader.
+#
+# 4 new tables:
+#   gym_descriptors         — PK = gym_id. ~5 TEXT columns describing
+#                             the gym's identity (identity_label,
+#                             known_for, produces, weakness,
+#                             development_rating_desc). Written by
+#                             Task 2.8 (gym_identity_engine).
+#   promotion_descriptors   — PK = promotion_id. 3 TEXT columns
+#                             (prestige_desc, market_position_desc,
+#                             roster_quality_desc).
+#   division_descriptors    — PK = (promotion_id, weight_class_id) via
+#                             UNIQUE constraint + AUTOINCREMENT surrogate.
+#                             2 TEXT columns (depth_desc,
+#                             competitiveness_desc).
+#   daily_headlines         — PK = (headline_date, headline_type) via
+#                             UNIQUE. 8 headline types per day
+#                             (top_story, upset_of_week,
+#                             fastest_rising, biggest_fall,
+#                             contract_drama, gym_of_month,
+#                             veteran_watch, prospect_watch). Written
+#                             by Task 2.6 (headline_engine).
+#
+# All 4 tables have a snapshot_version INTEGER (DEFAULT 1) + an
+# updated_at TEXT (DEFAULT CURRENT_TIMESTAMP) — mirrors the
+# fighter_descriptors cache pattern (Task 19) for cache busting.
+#
+# The migration function _migrate_v3_11_0_add_cache_tables is
+# idempotent (uses _has_table guards before each CREATE TABLE). On
+# --fresh builds, the SCHEMA_SQL already includes the 4 new tables
+# (the migration function is not called, but the migration_name is
+# still recorded in schema_migrations per §16.4).
+#
+# Default settings seeded by the migration: (none — schema-only change.
+# The daily interpretation pass in snapshot_cache.py populates the
+# tables on the first run_tick after registration.)
 
 
 # v3.10.0 (Phase 2 — Task 2.0c-schema-backfill: extend fighter_descriptors
@@ -2516,6 +2561,151 @@ CREATE TABLE IF NOT EXISTS interpretation_cache_meta (
     updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     CHECK (meta_id = 1)  -- singleton row
 );
+
+-- ----------------------------------------------------------------
+-- gym_descriptors (added v3.11.0, Phase 2 Task 2.1 — Snapshot Cache
+-- gym-level identity narrative).
+--
+-- One row per gym (PK = gym_id). Stores a player-facing identity
+-- narrative for the gym, computed by Task 2.8 (gym_identity_engine)
+-- from the gym's 8 INT columns (wrestling_bias, striking_bias,
+-- conditioning_bias, etc.) plus its active roster. The daily
+-- interpretation pass in snapshot_cache.py refreshes this row; the
+-- refresh_fighter single-fighter path does NOT touch it (gym identity
+-- is a daily-pass concern, not a per-fight concern).
+--
+-- Columns:
+--   identity_label:           short phrase ("The Wrestler Factory")
+--   known_for:                one-sentence description of gym's strength
+--   produces:                 fighter type the gym tends to develop
+--                             ("grinding pressure fighters")
+--   weakness:                 gym's characteristic blind spot
+--                             ("high injury rate")
+--   development_rating_desc:  voice phrase for the development_rating INT
+--                             ("elite developer of talent")
+--   snapshot_version:         incremented on each refresh (cache busting)
+--   updated_at:               timestamp of last refresh
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — the interpretation
+-- layer is the ONLY writer. Office Mode UI reads it directly.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS gym_descriptors (
+    gym_id                   INTEGER PRIMARY KEY REFERENCES gyms(gym_id) ON DELETE CASCADE,
+    identity_label           TEXT,
+    known_for                TEXT,
+    produces                 TEXT,
+    weakness                 TEXT,
+    development_rating_desc  TEXT,
+    snapshot_version         INTEGER NOT NULL DEFAULT 1,
+    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+-- ----------------------------------------------------------------
+-- promotion_descriptors (added v3.11.0, Phase 2 Task 2.1 — Snapshot
+-- Cache promotion-level summary).
+--
+-- One row per promotion (PK = promotion_id). Stores a player-facing
+-- summary of the promotion's current state (prestige, market position,
+-- roster quality) computed by the daily interpretation pass from the
+-- promotions table + roster aggregate queries.
+--
+-- Columns:
+--   prestige_desc:          voice phrase for the prestige INT
+--                           ("global superpower" / "regional player")
+--   market_position_desc:   voice phrase describing market standing
+--   roster_quality_desc:    voice phrase for the roster's overall strength
+--   snapshot_version:       incremented on each refresh (cache busting)
+--   updated_at:             timestamp of last refresh
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — the interpretation
+-- layer is the ONLY writer. Office Mode UI reads it directly.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS promotion_descriptors (
+    promotion_id             INTEGER PRIMARY KEY REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    prestige_desc            TEXT,
+    market_position_desc     TEXT,
+    roster_quality_desc      TEXT,
+    snapshot_version         INTEGER NOT NULL DEFAULT 1,
+    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+-- ----------------------------------------------------------------
+-- division_descriptors (added v3.11.0, Phase 2 Task 2.1 — Snapshot
+-- Cache division (promotion × weight class) summary).
+--
+-- One row per (promotion, weight_class) pair — UNIQUE constraint
+-- enforces the composite key, with an AUTOINCREMENT surrogate PK
+-- (division_id) for reference simplicity. Stores a player-facing
+-- summary of each division's depth + competitiveness, computed by
+-- the daily interpretation pass from rankings + roster queries.
+--
+-- Columns:
+--   division_id:            surrogate AUTOINCREMENT PK
+--   promotion_id:           FK to promotions
+--   weight_class_id:        FK to weight_classes
+--   depth_desc:             voice phrase for division depth
+--                           ("shallow — only 8 ranked fighters")
+--   competitiveness_desc:   voice phrase for parity at the top
+--                           ("wide open — 5 fighters within 10 rating points")
+--   snapshot_version:       incremented on each refresh (cache busting)
+--   updated_at:             timestamp of last refresh
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — the interpretation
+-- layer is the ONLY writer. Office Mode UI reads it directly.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS division_descriptors (
+    division_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id             INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+    weight_class_id          INTEGER NOT NULL REFERENCES weight_classes(weight_class_id) ON DELETE CASCADE,
+    depth_desc               TEXT,
+    competitiveness_desc     TEXT,
+    snapshot_version         INTEGER NOT NULL DEFAULT 1,
+    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (promotion_id, weight_class_id)
+);
+
+-- ----------------------------------------------------------------
+-- daily_headlines (added v3.11.0, Phase 2 Task 2.1 — Snapshot Cache
+-- daily news headlines).
+--
+-- One row per (headline_date, headline_type) pair — UNIQUE constraint
+-- enforces the composite key, with an AUTOINCREMENT surrogate PK
+-- (headline_id). At most 8 headlines per day (one per CHECK'd
+-- headline_type). Written by Task 2.6 (headline_engine) at the end of
+-- the daily interpretation pass; headlines older than a configurable
+-- retention window are pruned by the same pass.
+--
+-- Columns:
+--   headline_id:    surrogate AUTOINCREMENT PK
+--   headline_date:  simulation date the headline applies to (TEXT YYYY-MM-DD)
+--   headline_type:  one of 8 enumerated values (CHECK'd)
+--   headline_text:  player-facing headline (voice-rendered, no raw numbers)
+--   body_text:      optional 1-3 sentence body (voice-rendered)
+--   fighter_id:     optional FK — the fighter the headline is about
+--                   (NULL for "gym_of_month" or general headlines)
+--   snapshot_version: incremented on each rewrite (cache busting)
+--   created_at:     timestamp this headline row was inserted/refreshed
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — the interpretation
+-- layer is the ONLY writer. Office Mode UI reads it directly.
+-- Per §17.4 ("Rich Not Thin"): headline_text + body_text MUST be
+-- voice phrases (no raw numbers). The CHECK constraint enumerates
+-- the 8 headline types so a typo can't insert an unrecognized type.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_headlines (
+    headline_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    headline_date            TEXT NOT NULL,
+    headline_type            TEXT NOT NULL CHECK (headline_type IN (
+        'top_story', 'upset_of_week', 'fastest_rising', 'biggest_fall',
+        'contract_drama', 'gym_of_month', 'veteran_watch', 'prospect_watch'
+    )),
+    headline_text            TEXT NOT NULL,
+    body_text                TEXT,
+    fighter_id               INTEGER REFERENCES fighters(fighter_id),
+    snapshot_version         INTEGER NOT NULL DEFAULT 1,
+    created_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (headline_date, headline_type)
+);
 """
 
 def _has_column(conn, table, column):
@@ -3393,6 +3583,106 @@ def _migrate_v3_10_0_extend_fighter_descriptors(conn):
         )
 
 
+def _migrate_v3_11_0_add_cache_tables(conn):
+    """Phase 2 Task 2.1-snapshot-cache — add 4 new cache tables for the
+    Snapshot Cache orchestrator.
+
+    Per docs/PHASE_2_PLAN.md §3.2 + §5, this is the schema bump that
+    ships alongside snapshot_cache.py. The 4 new tables store daily-
+    refreshed summaries of gyms, promotions, divisions, and daily
+    headlines — the player-facing projection per CONVENTIONS §17.
+
+    Tables created:
+      gym_descriptors         — PK = gym_id, FK cascade to gyms.
+                                5 TEXT columns (identity_label, known_for,
+                                produces, weakness, development_rating_desc).
+                                Written by Task 2.8 (gym_identity_engine).
+      promotion_descriptors   — PK = promotion_id, FK cascade.
+                                3 TEXT columns (prestige_desc,
+                                market_position_desc, roster_quality_desc).
+      division_descriptors    — Surrogate PK (division_id AUTOINCREMENT),
+                                UNIQUE (promotion_id, weight_class_id).
+                                2 TEXT columns (depth_desc,
+                                competitiveness_desc).
+      daily_headlines         — Surrogate PK (headline_id AUTOINCREMENT),
+                                UNIQUE (headline_date, headline_type),
+                                CHECK'd headline_type enum (8 values).
+                                Written by Task 2.6 (headline_engine).
+
+    Per CONVENTIONS §5, this is a single-group schema change (the
+    Phase 2 Snapshot Cache's 4 narrow cache tables). Per §1.1, adding
+    4 new tables is a MINOR bump (3.10.0 → 3.11.0). Per §16.4, the
+    migration is idempotent — uses _has_table guards before each CREATE
+    TABLE.
+
+    Per CONVENTIONS §17.3, all 4 tables are CACHE tables — the
+    interpretation layer (src/interpretation/snapshot_cache.py) is the
+    ONLY writer. Simulation tables are NEVER written to.
+
+    Migration name: v3_11_0_add_cache_tables. On --fresh builds, the
+    SCHEMA_SQL already includes the 4 new tables (the migration
+    function is not called, but the migration_name is still recorded
+    in schema_migrations per §16.4).
+    """
+    if not _has_table(conn, "gym_descriptors"):
+        conn.execute(
+            "CREATE TABLE gym_descriptors (\n"
+            "    gym_id                   INTEGER PRIMARY KEY REFERENCES gyms(gym_id) ON DELETE CASCADE,\n"
+            "    identity_label           TEXT,\n"
+            "    known_for                TEXT,\n"
+            "    produces                 TEXT,\n"
+            "    weakness                 TEXT,\n"
+            "    development_rating_desc  TEXT,\n"
+            "    snapshot_version         INTEGER NOT NULL DEFAULT 1,\n"
+            "    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+    if not _has_table(conn, "promotion_descriptors"):
+        conn.execute(
+            "CREATE TABLE promotion_descriptors (\n"
+            "    promotion_id             INTEGER PRIMARY KEY REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    prestige_desc            TEXT,\n"
+            "    market_position_desc     TEXT,\n"
+            "    roster_quality_desc      TEXT,\n"
+            "    snapshot_version         INTEGER NOT NULL DEFAULT 1,\n"
+            "    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+
+    if not _has_table(conn, "division_descriptors"):
+        conn.execute(
+            "CREATE TABLE division_descriptors (\n"
+            "    division_id              INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    promotion_id             INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    weight_class_id          INTEGER NOT NULL REFERENCES weight_classes(weight_class_id) ON DELETE CASCADE,\n"
+            "    depth_desc               TEXT,\n"
+            "    competitiveness_desc     TEXT,\n"
+            "    snapshot_version         INTEGER NOT NULL DEFAULT 1,\n"
+            "    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (promotion_id, weight_class_id)\n"
+            ")"
+        )
+
+    if not _has_table(conn, "daily_headlines"):
+        conn.execute(
+            "CREATE TABLE daily_headlines (\n"
+            "    headline_id              INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    headline_date            TEXT NOT NULL,\n"
+            "    headline_type            TEXT NOT NULL CHECK (headline_type IN (\n"
+            "        'top_story', 'upset_of_week', 'fastest_rising', 'biggest_fall',\n"
+            "        'contract_drama', 'gym_of_month', 'veteran_watch', 'prospect_watch'\n"
+            "    )),\n"
+            "    headline_text            TEXT NOT NULL,\n"
+            "    body_text                TEXT,\n"
+            "    fighter_id               INTEGER REFERENCES fighters(fighter_id),\n"
+            "    snapshot_version         INTEGER NOT NULL DEFAULT 1,\n"
+            "    created_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (headline_date, headline_type)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3414,6 +3704,8 @@ MIGRATIONS = [
     ("v3_9_0_add_staff_gym_id",      "3.9.0", _migrate_v3_9_0_add_staff_gym_id),
     ("v3_10_0_extend_fighter_descriptors", "3.10.0",
         _migrate_v3_10_0_extend_fighter_descriptors),
+    ("v3_11_0_add_cache_tables", "3.11.0",
+        _migrate_v3_11_0_add_cache_tables),
 ]
 
 

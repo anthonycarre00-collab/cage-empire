@@ -229,6 +229,20 @@ class CageEmpireApp(ctk.CTk):
             _register_hof()
         except ImportError:
             pass  # services/hof_svc.py not available — legacy behavior
+        # Phase 2 (Task 2.1-snapshot-cache): Interpretation layer
+        # event-bus subscribers. Subscribes to 4 events
+        # (FIGHT_RESOLVED, FIGHTER_RETIRED, TITLE_CHANGED,
+        # CONTRACT_EXPIRED) for targeted single-fighter snapshot
+        # refresh. Registered LAST per CONVENTIONS §17.5 — the
+        # interpretation layer must run after every simulation-side
+        # subscriber has finished so the cache reflects the latest
+        # simulation state. The full daily pass is NOT a subscriber —
+        # it runs as a POST-COMMIT step in tick_processor.run_tick.
+        try:
+            from interpretation import register_subscribers as _register_interpretation
+            _register_interpretation()
+        except ImportError:
+            pass  # interpretation/ package not available yet
 
         # ============================================================
         # WINDOW SETUP

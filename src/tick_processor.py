@@ -1669,6 +1669,24 @@ def run_tick(conn, tick_type="day", steps=1):
         except ImportError:
             pass
         conn.commit()
+        # Phase 2 (Task 2.1-snapshot-cache): run the daily
+        # interpretation pass AFTER the simulation transaction commits.
+        # Per CONVENTIONS §17.5, this is a POST-COMMIT step (NOT a
+        # TICK_ADVANCED subscriber) — it sees all committed writes,
+        # writes to *_descriptors + daily_headlines cache tables in its
+        # own transaction, and can be skipped on bulk-tick (run_tick
+        # with steps=N runs the pass N times; a future optimization
+        # may detect bulk-tick and run the pass only once at the end).
+        #
+        # The pass is wrapped in try/except so a cache failure NEVER
+        # crashes the simulation — the simulation transaction has
+        # already committed; the worst case is a stale cache, which
+        # the next daily pass will refresh.
+        try:
+            from interpretation.snapshot_cache import run_daily_interpretation_pass
+            run_daily_interpretation_pass(conn)
+        except Exception as e:
+            print(f"Warning: daily interpretation pass failed: {e}", flush=True)
 
 def main():
     with sqlite3.connect(DB_PATH) as conn:
