@@ -59,7 +59,11 @@ import sqlite3
 # compute_single_fighter now write momentum + pressure columns. On
 # first run after this code lands, the engine-version mismatch
 # triggers a full cache rebuild (the 6 new columns start NULL).
-ENGINE_VERSION = "1.1.0"
+# v1.2.0 — Task 2.3 (Career Phase Engine) landed: compute_all_
+# career_phases / compute_single_phase now write career_phase. On
+# first run after this code lands, the engine-version mismatch
+# triggers a full cache rebuild (career_phase starts NULL).
+ENGINE_VERSION = "1.2.0"
 
 
 def run_daily_interpretation_pass(conn):
@@ -220,6 +224,22 @@ def refresh_fighter(conn, fighter_id):
     except Exception as e:
         import sys
         print(f"WARNING: context_engine.compute_single_fighter("
+              f"fighter_id={fighter_id}) failed in refresh_fighter: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    # Task 2.3 — refresh career_phase for this single fighter.
+    # Same try/except pattern as the context_engine block above —
+    # a single failed phase refresh must not roll back the work
+    # already done. If the career_phase engine isn't available
+    # (older code), this silently no-ops.
+    try:
+        from interpretation.career_phase_engine import compute_single_phase
+        compute_single_phase(conn, fighter_id)
+    except ImportError:
+        pass  # Task 2.3 not landed yet — no-op.
+    except Exception as e:
+        import sys
+        print(f"WARNING: career_phase_engine.compute_single_phase("
               f"fighter_id={fighter_id}) failed in refresh_fighter: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
 
