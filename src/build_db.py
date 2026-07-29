@@ -510,7 +510,48 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.11.0"
+CODE_SCHEMA_VERSION = "3.12.0"
+
+
+# v3.12.0 (Phase 2 — Task 2.5-memory-engine: expand fighter_memory_links.
+# link_type CHECK with 4 new values) — MINOR bump. Per CONVENTIONS §1.1
+# MINOR is for additive changes; per §16.6, expanding a CHECK constraint
+# requires a table rebuild (SQLite has no ALTER TABLE ADD CHECK).
+#
+# 4 new link_type values added to the CHECK enum:
+#   'previous_fight'   — the two fighters have fought before (written by
+#                        memory_svc when a fight between them resolves;
+#                        read by memory_engine.surface_memories when
+#                        surfacing fight history before a booked rematch).
+#   'shared_gym'       — the two fighters currently train at the same
+#                        gym (written by memory_svc; read by the Memory
+#                        Engine for the "former training partners" voice
+#                        phrase).
+#   'former_teammate'  — the two fighters trained at the same gym at
+#                        overlapping times in the past (written by
+#                        memory_svc; read by the Memory Engine).
+#   'injury_history'   — the linked fighter appears in this fighter's
+#                        injury narrative (e.g., the cause of a recent
+#                        layoff). Written by memory_svc; read by the
+#                        Memory Engine for the "recovering from injury"
+#                        voice phrase.
+#
+# The migration _migrate_v3_12_0_expand_memory_link_types rebuilds the
+# table (rename → recreate with new CHECK → copy → drop old) per
+# CONVENTIONS §16.6. The existing 96 rows (all 'style_echo') are
+# preserved verbatim — the new CHECK is a SUPERSET of the old one, so
+# every existing row still satisfies it.
+#
+# Memory Engine (Task 2.5) + Headline Engine (Task 2.6) ship in the
+# same task batch (Task ID 2.5-2.6-memory-headlines). The Headline
+# Engine writes to the existing daily_headlines table (added in
+# v3.11.0) — no schema change required for headlines.
+#
+# Pre-Task 2.5, link_type CHECK was:
+#   ('style_echo', 'gym_heir', 'regional_rival', 'successor')
+# Post-Task 2.5, link_type CHECK is:
+#   ('style_echo', 'gym_heir', 'regional_rival', 'successor',
+#    'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')
 
 
 # v3.11.0 (Phase 2 — Task 2.1-snapshot-cache: add 4 new cache tables for
@@ -1605,7 +1646,7 @@ CREATE TABLE IF NOT EXISTS fighter_memory_links (
     memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
     linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
-    link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor')),
+    link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')),
     link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
     created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_id, linked_fighter_id, link_type)
@@ -2924,7 +2965,7 @@ def _migrate_v2_2_0_add_fighter_depth(conn):
             "    memory_link_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
             "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
             "    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
-            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor')),\n"
+            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')),\n"
             "    link_strength INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),\n"
             "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
             "    UNIQUE (fighter_id, linked_fighter_id, link_type)\n"
@@ -3683,6 +3724,100 @@ def _migrate_v3_11_0_add_cache_tables(conn):
         )
 
 
+def _migrate_v3_12_0_expand_memory_link_types(conn):
+    """Phase 2 Task 2.5 — expand `fighter_memory_links.link_type` CHECK
+    with 4 new values: 'previous_fight', 'shared_gym', 'former_teammate',
+    'injury_history'.
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand a column's CHECK enum is a TABLE
+    REBUILD: rename the old table, create the new table with the
+    updated CHECK, copy data over, drop the old table. The existing
+    data (96 'style_echo' rows in the seeded world DB) is preserved
+    verbatim — the new CHECK is a SUPERSET of the old one, so every
+    existing row still satisfies it.
+
+    Idempotent (per CONVENTIONS §16.4): the migration runner records
+    its migration_name in schema_migrations AFTER it runs. If the
+    migration crashes mid-way, the next run re-executes it — the
+    partial work must be safe to re-apply. The `_has_check_constraint`
+    guard detects whether the new CHECK is already in place and skips
+    the rebuild (so a re-run after a successful migration is a no-op).
+
+    The new CHECK enum (8 values total):
+      'style_echo', 'gym_heir', 'regional_rival', 'successor'  (existing)
+      'previous_fight', 'shared_gym', 'former_teammate',
+      'injury_history'                                            (new)
+
+    Migration name: v3_12_0_expand_memory_link_types. On --fresh builds,
+    the SCHEMA_SQL already includes the new CHECK (the migration
+    function is not called, but the migration_name is still recorded
+    in schema_migrations per §16.4 — same idempotency pattern as every
+    other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already includes
+    # 'previous_fight' (a sentinel from the new enum), the migration has
+    # already been applied — no-op.
+    if _has_check_constraint(conn, "fighter_memory_links",
+                             "previous_fight"):
+        return
+
+    # Defensive: only attempt the rebuild if fighter_memory_links exists.
+    # On a fresh --fresh build, the SCHEMA_SQL already creates the table
+    # with the new CHECK (and the idempotency guard above would have
+    # returned), so we only get here on a --migrate path from a v3.11.0
+    # DB.
+    if not _has_table(conn, "fighter_memory_links"):
+        # Defensive — create the table with the new CHECK (matches
+        # SCHEMA_SQL exactly). Should never happen on the migrate path
+        # (every v3.x DB has this table), but the migration must not
+        # crash on edge cases.
+        conn.execute(
+            "CREATE TABLE fighter_memory_links (\n"
+            "    memory_link_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')),\n"
+            "    link_strength INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_id, linked_fighter_id, link_type)\n"
+            ")"
+        )
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6):
+    #   1. Rename the old table.
+    #   2. Create the new table with the updated CHECK (matches
+    #      SCHEMA_SQL exactly).
+    #   3. Copy all rows verbatim from the old table — the new CHECK
+    #      is a SUPERSET of the old one, so every existing row is
+    #      still valid (no row transformation needed).
+    #   4. Drop the old table.
+    # We accept the brief window where the table is renamed (the
+    # migration runs in a single transaction — caller commits).
+    conn.executescript("""
+        ALTER TABLE fighter_memory_links RENAME TO fighter_memory_links_old;
+    """)
+    conn.executescript("""
+        CREATE TABLE fighter_memory_links (
+            memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')),
+            link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
+            created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE (fighter_id, linked_fighter_id, link_type)
+        );
+        INSERT INTO fighter_memory_links
+            (memory_link_id, fighter_id, linked_fighter_id, link_type,
+             link_strength, created_at)
+        SELECT memory_link_id, fighter_id, linked_fighter_id, link_type,
+               link_strength, created_at
+        FROM fighter_memory_links_old;
+        DROP TABLE fighter_memory_links_old;
+    """)
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3706,6 +3841,8 @@ MIGRATIONS = [
         _migrate_v3_10_0_extend_fighter_descriptors),
     ("v3_11_0_add_cache_tables", "3.11.0",
         _migrate_v3_11_0_add_cache_tables),
+    ("v3_12_0_expand_memory_link_types", "3.12.0",
+        _migrate_v3_12_0_expand_memory_link_types),
 ]
 
 

@@ -71,7 +71,16 @@ import sqlite3
 # compute_single_legacy now write legacy_state. On first run after
 # this code lands, the engine-version mismatch triggers a full
 # cache rebuild (legacy_state starts NULL).
-ENGINE_VERSION = "1.4.0"
+# v1.5.0 — Task 2.6 (Headline Engine) landed: generate_daily_headlines
+# now writes 4 daily headlines (top_story, upset_of_week,
+# fastest_rising, biggest_fall) to the daily_headlines table. The
+# headlines are derived from fighter_descriptors, so they're only as
+# fresh as the last daily pass — they're regenerated on every daily
+# pass via INSERT OR REPLACE (idempotent — re-running for the same
+# date overwrites, doesn't duplicate). The Memory Engine (Task 2.5)
+# is a reader called on-demand (when a fight is booked), NOT wired
+# into the daily pass — it doesn't write to any cache table.
+ENGINE_VERSION = "1.5.0"
 
 
 def run_daily_interpretation_pass(conn):
@@ -384,13 +393,26 @@ def _interpret_divisions(conn, current_date):
 
 
 def _generate_headlines(conn, current_date):
-    """Generate daily headlines.
+    """Generate daily headlines via the Headline Engine (Task 2.6).
 
-    Skeleton (Task 2.1): no-op. The daily_headlines table stays empty
-    until Task 2.6 (headline_engine) lands.
+    Per CONVENTIONS §17.5 + the task spec for Task 2.6, the headline
+    engine runs at the END of the daily interpretation pass (after
+    fighter_descriptors is fully populated by context_engine +
+    career_phase + narrative_families + legacy). It writes 4 daily
+    headlines (top_story, upset_of_week, fastest_rising,
+    biggest_fall) to the daily_headlines table via INSERT OR REPLACE
+    (idempotent — re-running for the same date overwrites, doesn't
+    duplicate).
+
+    Per the task spec: the call is wrapped in try/except Exception so
+    a single failed headline-engine run doesn't crash the daily pass.
+    The other cache writes (fighter_descriptors, gym_descriptors,
+    etc.) have already committed by this point.
     """
     try:
         from interpretation.headline_engine import generate_daily_headlines
+        generate_daily_headlines(conn, current_date)
     except ImportError:
-        return  # Task 2.6 not landed yet — skeleton no-op.
-    generate_daily_headlines(conn, current_date)
+        pass  # headline_engine not landed yet — skeleton no-op.
+    except Exception as e:
+        print(f"Warning: headline engine failed: {e}", flush=True)
