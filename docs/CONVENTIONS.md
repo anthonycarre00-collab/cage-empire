@@ -816,3 +816,101 @@ python src/build_db.py --migrate
 ```
 
 If the migration fails or produces unexpected results, restore from backup. The migration runner does NOT auto-backup — this is the operator's responsibility.
+
+---
+
+## 17. UI Snapshot Rule (Phase 2 — Interpretation Layer)
+
+> **Status:** Authoritative. Violations will be rejected at code review.
+> **Added:** 2026-07-26 — Phase 2 planning.
+
+### 17.1 The Rule
+
+**Office Mode UI screens MUST read from `*_descriptors` and
+`daily_headlines` cache tables only.** Direct reads of simulation
+tables (`fighters`, `fighter_attributes`, `fighter_career`,
+`contracts`, `events`, `fights`, `rankings`, `titles`) from UI
+code are a §14-class violation.
+
+The interpretation layer (`src/interpretation/`) is the ONLY writer
+to `*_descriptors` cache tables. Simulation tables are the source
+of truth; descriptor tables are the player-facing projection.
+
+### 17.2 The Fight Night Exception
+
+**Fight Night Mode screens** (specifically the Fight Resolution
+screen, Task 6.7) are EXEMPT from §17.1. During a live fight, the
+screen reads from `fight_beats`, `fight_rounds`, and
+`commentary_segments` in real-time and applies `voice.py` on the
+fly. The daily snapshot cache is STALE during a live fight — the
+fight is happening NOW, beats are being written NOW.
+
+- **Office Mode** (Dashboard, Roster, Fighter Profile, Rankings,
+  News, Finance, etc.): reads snapshots ONLY.
+- **Fight Night Mode** (Fight Resolution screen): reads live
+  simulation tables + applies voice.py in real-time.
+
+### 17.3 Cache Table Taxonomy
+
+The following tables are **cache tables** (fair game for the
+interpretation layer to write to):
+- `fighter_descriptors` (extended in v3.10.0 with momentum,
+  pressure, career_phase, narrative_family, public_narrative,
+  legacy_state)
+- `gym_descriptors` (new in v3.11.0)
+- `promotion_descriptors` (new in v3.11.0)
+- `division_descriptors` (new in v3.11.0)
+- `daily_headlines` (new in v3.11.0)
+- `interpretation_cache_meta` (new in v3.11.0)
+
+The following tables are **simulation tables** (NEVER written to
+by the interpretation layer):
+- `fighters`, `fighter_attributes`, `fighter_personality`,
+  `fighter_career`, `fighter_bios`, `fighter_contracts`
+- `events`, `event_cards`, `fights`, `fight_beats`, `fight_rounds`,
+  `fight_history`, `fight_participants`
+- `rankings`, `titles`, `contracts`, `staff_contracts`
+- `training_camps`, `weight_cut_log`, `injuries`, `suspensions`
+- `rivalries`, `social_posts`, `news_items`, `news_sources`
+- `finance_transactions`, `show_ratings`
+- `hall_of_fame`, `fighter_memory_links`, `regen_lineage`
+- `gyms`, `promotions`, `staff`, `broadcast_staff`
+- `nations`, `regions`, `cities`, `markets`, `venues`
+- `weight_classes`, `name_pools`, `style_archetypes`,
+  `personality_archetypes`
+- `simulation_clock`, `player_settings`
+
+### 17.4 The "Rich Not Thin" Principle
+
+Every derived label in the cache MUST have an associated voice
+variant. If `fighter_descriptors.momentum` holds `"high"`, the UI
+MUST NOT display `"high"` — it must display a voice phrase like
+`"riding a hot streak"` or `"four in a row, the division is on
+notice"`.
+
+This is the difference between CAGE EMPIRE and a labeled spreadsheet.
+A dumb UI fed by a thin interpretation layer produces a dumb game.
+A dumb UI fed by a rich interpretation layer produces CAGE EMPIRE.
+
+Implementation: each cache table stores BOTH the canonical label
+(for logic/testing) AND a voice phrase (for UI display). The UI
+reads the voice phrase. The canonical label is used by the
+interpretation engine's rules (e.g., a "Prodigy" narrative family
+requires momentum="high" AND career_phase="prospect").
+
+### 17.5 Performance Contract
+
+The daily interpretation pass (all 4450 fighters + 300 gyms + 10
+promotions + 80 divisions + 4 headlines) MUST complete in <1 second.
+This requires the bulk-load pattern (one SELECT, Python loop,
+executemany UPDATE) demonstrated by `career_arc._process_career_arc()`.
+
+The interpretation pass runs as a **post-commit step** in
+`tick_processor.run_tick()` — NOT as a TICK_ADVANCED subscriber.
+This avoids event-bus ordering hazards and keeps the simulation
+transaction fast.
+
+Targeted single-fighter refreshes (on FIGHT_RESOLVED,
+FIGHTER_RETIRED, TITLE_CHANGED, CONTRACT_EXPIRED) are event-bus
+subscribers registered LAST in the app's `__init__`. Each refresh
+takes <10ms.
