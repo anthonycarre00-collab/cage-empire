@@ -341,6 +341,48 @@ class CageEmpireApp(ctk.CTk):
         )
 
         # ============================================================
+        # Stage 6 — Task 6.5: Register the Free Agents + Scouting
+        # screens. These complete the FIGHTERS group alongside the
+        # Roster + Fighter Profile (Task 6.4). Both are registered
+        # with GameState so:
+        #   - set_active_screen("free_agents") triggers _refresh on
+        #     nav — re-queries the unsigned-fighter pool.
+        #   - set_active_screen("scouting") triggers _refresh on nav
+        #     — re-queries scouting_reports + the scout list.
+        #   - refresh_all() picks them up after Advance Day / Save /
+        #     Load / theme toggle / fighter-signed / scout-assigned.
+        # Per CONVENTIONS §17: both screens read from cache tables
+        # (fighter_descriptors) for fighter interpretation data +
+        # game-state tables (fighters, weight_classes, fighter_career,
+        # scouting_reports, staff) for non-attribute data. NEVER read
+        # from fighter_attributes / fighter_personality.
+        #
+        # The Free Agents screen's Sign button calls
+        # `services.contracts.sign_free_agent(conn, fighter_id,
+        # promotion_id, start_date)` which writes a contract row +
+        # flips the fighter's current_promotion_id + writes a signing
+        # news item + publishes Events.FIGHTER_SIGNED. The Scouting
+        # screen's Assign Scout button calls
+        # `scouting.assign_scout(conn, scout_id, target_fighter_id,
+        # promotion_id)` which stores the assignment in the scout's
+        # specialty JSON — the report itself is generated 7 ticks
+        # later by _check_scouting_assignments on each tick.
+        # ============================================================
+        from ui.screens.free_agents import FreeAgentsScreen
+        self.free_agents_screen = FreeAgentsScreen(self.screen_container)
+        self.state.register_screen(
+            "free_agents", self.free_agents_screen,
+            self.free_agents_screen._refresh
+        )
+
+        from ui.screens.scouting import ScoutingScreen
+        self.scouting_screen = ScoutingScreen(self.screen_container)
+        self.state.register_screen(
+            "scouting", self.scouting_screen,
+            self.scouting_screen._refresh
+        )
+
+        # ============================================================
         # START ON DASHBOARD
         # ============================================================
         self._navigate("dashboard")
@@ -530,23 +572,36 @@ class CageEmpireApp(ctk.CTk):
         navigation via `fighter_profile_screen.set_fighter_id(id)`
         (called by RosterScreen._on_row_double_click).
 
-        For other screens (placeholder until Tasks 6.5-6.14): show
+        For "free_agents" + "scouting" (Stage 6 — Task 6.5): pack
+        the registered FreeAgentsScreen / ScoutingScreen into the
+        screen container + call its refresh callback. Both instances
+        are preserved across navigations (pack_forget on navigate-
+        away, pack on navigate-to) so the player's Free Agents
+        pagination state + Scouting scroll position survive a back-
+        and-forth. The Free Agents screen's Sign button calls
+        services.contracts.sign_free_agent + state.refresh_all so
+        the Roster + Dashboard reflect the new signing immediately.
+
+        For other screens (placeholder until Tasks 6.6-6.14): show
         a placeholder label with the screen name.
         """
         theme = get_theme()
 
         # Clear current content. The DashboardScreen + SaveLoadScreen
-        # + RosterScreen + FighterProfileScreen are special —
-        # pack_forget them (don't destroy) so their state survives
-        # across navigations. Everything else (placeholders, future
-        # screens) is destroyed.
+        # + RosterScreen + FighterProfileScreen + FreeAgentsScreen +
+        # ScoutingScreen are special — pack_forget them (don't
+        # destroy) so their state survives across navigations.
+        # Everything else (placeholders, future screens) is destroyed.
         dashboard_screen = getattr(self, "dashboard_screen", None)
         save_load_screen = getattr(self, "save_load_screen", None)
         roster_screen = getattr(self, "roster_screen", None)
         fighter_profile_screen = getattr(self, "fighter_profile_screen", None)
+        free_agents_screen = getattr(self, "free_agents_screen", None)
+        scouting_screen = getattr(self, "scouting_screen", None)
         preserved_screens = {
             dashboard_screen, save_load_screen,
             roster_screen, fighter_profile_screen,
+            free_agents_screen, scouting_screen,
         }
         for widget in self.screen_container.winfo_children():
             if widget in preserved_screens:
@@ -574,6 +629,19 @@ class CageEmpireApp(ctk.CTk):
             # _on_row_double_click handler — the screen is already
             # rendered with the right fighter.
             fighter_profile_screen.pack(fill="both", expand=True)
+        elif (screen_name == "free_agents"
+              and free_agents_screen is not None):
+            # Pack the FreeAgentsScreen into the container. The refresh
+            # callback fires via state.set_active_screen below — re-
+            # queries the unsigned-fighter pool with the current
+            # filter + search + pagination state preserved.
+            free_agents_screen.pack(fill="both", expand=True)
+        elif (screen_name == "scouting"
+              and scouting_screen is not None):
+            # Pack the ScoutingScreen into the container. The refresh
+            # callback fires via state.set_active_screen below — re-
+            # queries scouting_reports + the scout list.
+            scouting_screen.pack(fill="both", expand=True)
         else:
             # Show placeholder with screen name
             label = ctk.CTkLabel(self.screen_container,
