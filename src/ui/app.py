@@ -134,9 +134,11 @@ class CageEmpireApp(ctk.CTk):
         self.conn.execute("PRAGMA foreign_keys = ON;")
 
         # ============================================================
-        # GAME STATE SINGLETON
+        # GAME STATE SINGLETON — player_promotion_id set AFTER
+        # the player picks a promotion on the startup screen.
+        # Default is None until selection.
         # ============================================================
-        self.state = GameState(self.conn, player_promotion_id=1)
+        self.state = GameState(self.conn, player_promotion_id=None)
 
         # ============================================================
         # Stage 6 (Phase 1, Fix 1.2 + Fix 1.4): Register all 15
@@ -383,9 +385,53 @@ class CageEmpireApp(ctk.CTk):
         )
 
         # ============================================================
-        # START ON DASHBOARD
+        # SHOW PROMOTION SELECTION SCREEN FIRST
+        # The player chooses which promotion to manage.
+        # Only after selection do we navigate to the Dashboard.
         # ============================================================
+        self._show_promotion_select()
+
+    def _show_promotion_select(self):
+        """Show the promotion selection screen at startup."""
+        theme = get_theme()
+
+        # Hide the top bar + sidebar + bottom bar until a promotion is chosen
+        self.top_bar.pack_forget()
+        self.sidebar.pack_forget()
+        self.bottom_bar.pack_forget()
+
+        # Clear main content
+        for widget in self.screen_container.winfo_children():
+            widget.destroy()
+
+        # Create the promotion selection screen
+        from ui.screens.promotion_select import PromotionSelectScreen
+        self.promo_select_screen = PromotionSelectScreen(
+            self.screen_container,
+            on_select_callback=self._on_promotion_selected,
+            fg_color=theme.colors.bg_base,
+        )
+        self.promo_select_screen.set_conn(self.conn)
+        self.promo_select_screen.pack(fill="both", expand=True)
+
+    def _on_promotion_selected(self, promotion_id):
+        """Called when the player picks a promotion on the startup screen."""
+        # Set the player's promotion in GameState
+        self.state.player_promotion_id = promotion_id
+
+        # Remove the promotion selection screen
+        self.promo_select_screen.pack_forget()
+
+        # Show the top bar + sidebar + bottom bar
+        theme = get_theme()
+        self.top_bar.pack(side="top", fill="x")
+        self.sidebar.pack(side="left", fill="y")
+        self.bottom_bar.pack(side="bottom", fill="x")
+
+        # Navigate to the dashboard
         self._navigate("dashboard")
+        self._update_top_bar()
+        self._update_bottom_bar()
 
     # ============================================================
     # TOP BAR

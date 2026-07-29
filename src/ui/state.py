@@ -62,14 +62,14 @@ class GameState:
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, conn=None, player_promotion_id=1):
+    def __init__(self, conn=None, player_promotion_id=None):
         """Initialize the GameState.
 
         Args:
             conn: sqlite3.Connection to the world DB. Required on
                   first init; ignored on subsequent calls (singleton).
             player_promotion_id: which promotion the player controls.
-                  Defaults to 1 (Alpha Combat) until Task 6.15.
+                  None until the player picks one on the startup screen.
         """
         if self._initialized:
             return
