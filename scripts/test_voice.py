@@ -250,8 +250,11 @@ def case_c_snapshot_table():
         "potential_desc", "snapshot_version", "updated_at",
     }
     actual_cols = {r[1] for r in conn.execute("PRAGMA table_info(fighter_descriptors)").fetchall()}
-    check("C", f"fighter_descriptors has all {len(expected_cols)} columns",
-          expected_cols == actual_cols, f"missing={expected_cols - actual_cols}")
+    # v3.10.0 (Phase 2): fighter_descriptors has 6 new interpretation columns
+    # (momentum, pressure, career_phase, narrative_family, public_narrative,
+    # legacy_state). Use subset check so the test doesn't break on schema extensions.
+    check("C", f"fighter_descriptors has all {len(expected_cols)} core columns",
+          expected_cols <= actual_cols, f"missing={expected_cols - actual_cols}")
 
     # FK cascade
     try:
@@ -292,7 +295,13 @@ def case_d_update_snapshot():
         check("D", "career_stage is non-empty", isinstance(row[3], str) and len(row[3]) > 0, f"got={row[3]!r}")
         check("D", "career_health_desc is non-empty", isinstance(row[4], str) and len(row[4]) > 0, f"got={row[4]!r}")
         check("D", "overall_desc is non-empty", isinstance(row[5], str) and len(row[5]) > 0, f"got={row[5]!r}")
-        check("D", "snapshot_version is 1 on first update", row[7] == 1, f"got={row[7]}")
+        # v3.10.0: use named-column lookup instead of positional index
+        # (row[7] was snapshot_version before 6 new columns were added between
+        # potential_desc and snapshot_version)
+        sv_row = conn.execute(
+            "SELECT snapshot_version FROM fighter_descriptors WHERE fighter_id=1"
+        ).fetchone()
+        check("D", "snapshot_version is 1 on first update", sv_row[0] == 1, f"got={sv_row[0]}")
 
         # Update again — version should increment
         app.update_fighter_descriptor_snapshot(conn, 1)

@@ -510,7 +510,49 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # tables, no columns removed — this is purely an additive expansion
 # (the MAJOR bump is for the depth-of-sim significance, not for any
 # breaking change to existing data shape).
-CODE_SCHEMA_VERSION = "3.9.0"
+CODE_SCHEMA_VERSION = "3.10.0"
+
+
+# v3.10.0 (Phase 2 — Task 2.0c-schema-backfill: extend fighter_descriptors
+# with 6 interpretation columns + add interpretation_cache_meta table) —
+# MINOR bump. Per CONVENTIONS §1.1, adding columns to an existing table
+# AND adding a new table both qualify as MINOR. Per §5, this task adds
+# a single logical group: the Phase 2 Interpretation Layer's fighter-
+# facing snapshot columns + the cache-engine version meta table.
+#
+# 6 new columns on fighter_descriptors (all nullable TEXT — the Phase 2
+# Context Engine, Career Phase Engine, Narrative Families, and Legacy
+# Engine will populate them in subsequent tasks 2.2/2.3/2.4/2.7):
+#   momentum         — 'very_high'|'high'|'stable'|'falling'|'collapsing'
+#   pressure         — 'minimal'|'moderate'|'high'|'extreme'
+#   career_phase     — 'prospect'|'rising_contender'|'title_challenger'|
+#                      'champion'|'dominant_champion'|'veteran'|
+#                      'gatekeeper'|'journeyman'|'comeback'|'declining'|
+#                      'retirement_tour'
+#   narrative_family — 'prodigy'|'veteran'|'fallen_champion'|
+#                      'cinderella_story'|... or NULL
+#   public_narrative — 'future_champion'|'needs_one_more_win'|
+#                      'career_in_freefall'|... or NULL
+#   legacy_state     — 'building'|'established'|'legendary'|'forgotten'|...
+#
+# IMPORTANT: the existing career_stage column stays (it's used by
+# news.py for news generation; the new career_phase is for UI display
+# per CONVENTIONS §17). They serve different purposes.
+#
+# 1 new table: interpretation_cache_meta (singleton row, tracks the
+# interpretation engine version + last_built_date so the daily pass
+# can invalidate + rebuild caches when the engine's logic changes).
+#
+# The migration function _migrate_v3_10_0_extend_fighter_descriptors is
+# idempotent (uses _has_column / _has_table guards before ALTER / CREATE).
+# On --fresh builds, the SCHEMA_SQL already includes the new columns +
+# the new table. The backfill script (scripts/backfill_missing_snapshots.py)
+# creates descriptor snapshots for the 60 HoF legends + 450 Group B
+# fighters that were added in Phase 1.5 without descriptor rows.
+#
+# Default settings seeded by the migration: (none — schema-only change.
+# The 6 new columns default to NULL on existing rows; subsequent Phase
+# 2 tasks populate them via the daily interpretation pass.)
 
 
 # v3.9.0 (Phase 1.5 — Task 1.5C-seed-data Fix C6: add staff.gym_id
@@ -1923,6 +1965,18 @@ CREATE TABLE IF NOT EXISTS fighter_descriptors (
     career_health_desc      TEXT,
     overall_desc            TEXT,
     potential_desc          TEXT,
+    -- Phase 2 Interpretation Layer columns (added v3.10.0, Task 2.0c).
+    -- All nullable TEXT — populated by the daily interpretation pass
+    -- (Tasks 2.2/2.3/2.4/2.7) and refreshed on FIGHT_RESOLVED /
+    -- FIGHTER_RETIRED / TITLE_CHANGED / CONTRACT_EXPIRED events.
+    -- Per CONVENTIONS §17: these are CACHE columns — the interpretation
+    -- layer is the ONLY writer. Office Mode UI reads them directly.
+    momentum                TEXT,
+    pressure                TEXT,
+    career_phase            TEXT,
+    narrative_family        TEXT,
+    public_narrative        TEXT,
+    legacy_state            TEXT,
     snapshot_version        INTEGER NOT NULL DEFAULT 1,
     updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -2431,6 +2485,36 @@ CREATE TABLE IF NOT EXISTS player_settings (
     setting_key        TEXT PRIMARY KEY,
     setting_value      TEXT NOT NULL,
     updated_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
+-- ----------------------------------------------------------------
+-- interpretation_cache_meta (added v3.10.0, Phase 2 Task 2.0c —
+-- Interpretation Layer cache version tracking).
+--
+-- Singleton row (CHECK meta_id = 1) that records the interpretation
+-- engine version + last daily-pass metadata. When the engine's logic
+-- changes (e.g., a new narrative family is added, the momentum
+-- thresholds are retuned), engine_version is bumped — the daily pass
+-- detects the mismatch and rebuilds all descriptor caches from
+-- scratch on the next run.
+--
+-- This is the cache-invalidation handshake between code and data:
+--   - Writer: the daily interpretation pass (snapshot_cache.py, Task 2.1)
+--     updates last_built_date + last_built_fighter_count after each run.
+--   - Reader: the same daily pass compares engine_version on disk to
+--     its in-code constant; on mismatch, it forces a full rebuild.
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — the interpretation
+-- layer is the ONLY writer. Office Mode UI never reads it directly
+-- (it reads fighter_descriptors / gym_descriptors / etc. instead).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS interpretation_cache_meta (
+    meta_id                  INTEGER PRIMARY KEY DEFAULT 1,
+    engine_version           TEXT NOT NULL DEFAULT '1.0.0',
+    last_built_date          TEXT,
+    last_built_fighter_count INTEGER DEFAULT 0,
+    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    CHECK (meta_id = 1)  -- singleton row
 );
 """
 
@@ -3249,6 +3333,66 @@ def _migrate_v3_9_0_add_staff_gym_id(conn):
         )
 
 
+def _migrate_v3_10_0_extend_fighter_descriptors(conn):
+    """Phase 2 Task 2.0c-schema-backfill — extend fighter_descriptors with
+    6 interpretation columns + create interpretation_cache_meta table.
+
+    Per docs/PHASE_2_PLAN.md §3.1 + §5, this is the foundational schema
+    bump for the Phase 2 Interpretation Layer. The 6 new columns are
+    nullable TEXT (NULL on existing rows; populated by subsequent
+    Phase 2 tasks 2.2/2.3/2.4/2.7 via the daily interpretation pass).
+
+    Columns added to fighter_descriptors:
+      momentum         — 'very_high'|'high'|'stable'|'falling'|'collapsing'
+      pressure         — 'minimal'|'moderate'|'high'|'extreme'
+      career_phase     — 11 canonical labels (see SCHEMA_SQL comment)
+      narrative_family — 'prodigy'|'veteran'|'fallen_champion'|... or NULL
+      public_narrative — 'future_champion'|'needs_one_more_win'|... or NULL
+      legacy_state     — 'building'|'established'|'legendary'|'forgotten'
+
+    IMPORTANT: the existing `career_stage` column is NOT touched — it
+    stays where it is (used by news.py). The new `career_phase` column
+    is for UI display per CONVENTIONS §17. They serve different
+    purposes (see PHASE_2_PLAN.md §3.1 footnote).
+
+    Also creates the `interpretation_cache_meta` singleton table —
+    tracks the interpretation engine_version + last_built_date so the
+    daily pass can invalidate + rebuild caches when the engine's logic
+    changes (CONVENTIONS §17.3 lists it as a CACHE table).
+
+    Per CONVENTIONS §5, this is a single-group schema change (the
+    Phase 2 Interpretation Layer's cache columns + its meta table).
+    Per §1.1, adding columns + adding a table both qualify as MINOR
+    (3.9.0 → 3.10.0). Per §16.4, the migration is idempotent — uses
+    _has_column / _has_table guards before ALTER / CREATE.
+
+    Migration name: v3_10_0_extend_fighter_descriptors. On --fresh
+    builds, the SCHEMA_SQL already includes the 6 new columns + the
+    new table (the migration function is not called, but the
+    migration_name is still recorded in schema_migrations per §16.4).
+    """
+    # 6 new columns on fighter_descriptors (nullable TEXT, no DEFAULT)
+    for col in ["momentum", "pressure", "career_phase",
+                "narrative_family", "public_narrative", "legacy_state"]:
+        if not _has_column(conn, "fighter_descriptors", col):
+            conn.execute(
+                f"ALTER TABLE fighter_descriptors ADD COLUMN {col} TEXT"
+            )
+
+    # Singleton meta table for the interpretation engine version.
+    if not _has_table(conn, "interpretation_cache_meta"):
+        conn.execute(
+            "CREATE TABLE interpretation_cache_meta (\n"
+            "    meta_id                  INTEGER PRIMARY KEY DEFAULT 1,\n"
+            "    engine_version           TEXT NOT NULL DEFAULT '1.0.0',\n"
+            "    last_built_date          TEXT,\n"
+            "    last_built_fighter_count INTEGER DEFAULT 0,\n"
+            "    updated_at               TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    CHECK (meta_id = 1)\n"
+            ")"
+        )
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3268,6 +3412,8 @@ MIGRATIONS = [
     ("v3_7_0_add_player_settings", "3.7.0", _migrate_v3_7_0_add_player_settings),
     ("v3_8_0_add_staff_pundit_bias", "3.8.0", _migrate_v3_8_0_add_staff_pundit_bias),
     ("v3_9_0_add_staff_gym_id",      "3.9.0", _migrate_v3_9_0_add_staff_gym_id),
+    ("v3_10_0_extend_fighter_descriptors", "3.10.0",
+        _migrate_v3_10_0_extend_fighter_descriptors),
 ]
 
 
