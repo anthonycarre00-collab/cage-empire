@@ -55,7 +55,11 @@ import sqlite3
 #   - Task 2.7 (Legacy): bump to 1.5.0
 #   - Task 2.8 (Gym Identity): bump to 1.6.0
 # ----------------------------------------------------------------
-ENGINE_VERSION = "1.0.0"
+# v1.1.0 — Task 2.2 (Context Engine) landed: compute_all_fighters /
+# compute_single_fighter now write momentum + pressure columns. On
+# first run after this code lands, the engine-version mismatch
+# triggers a full cache rebuild (the 6 new columns start NULL).
+ENGINE_VERSION = "1.1.0"
 
 
 def run_daily_interpretation_pass(conn):
@@ -202,11 +206,22 @@ def refresh_fighter(conn, fighter_id):
     from services.fight_engine import update_fighter_descriptor_snapshot
     update_fighter_descriptor_snapshot(conn, fighter_id)
 
-    # TODO (Task 2.2): when context_engine lands, also call:
-    #   context_engine.refresh_fighter_context(conn, fighter_id)
-    # which would UPDATE the 6 new columns (momentum, pressure, etc.)
-    # for this single fighter. Until then, those columns are only
-    # refreshed by the daily pass (which is itself a stub).
+    # Task 2.2 — refresh momentum + pressure for this single fighter.
+    # Called BEFORE the commit so the descriptor snapshot + the
+    # context labels land in the same transaction. If the context
+    # engine isn't available (older code), this silently no-ops.
+    # Defensive — a single failed context refresh must not roll back
+    # the descriptor snapshot written above.
+    try:
+        from interpretation.context_engine import compute_single_fighter
+        compute_single_fighter(conn, fighter_id)
+    except ImportError:
+        pass  # Task 2.2 not landed yet — no-op.
+    except Exception as e:
+        import sys
+        print(f"WARNING: context_engine.compute_single_fighter("
+              f"fighter_id={fighter_id}) failed in refresh_fighter: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
 
     conn.commit()
 
@@ -225,26 +240,43 @@ def _interpret_fighters(conn, current_date):
 
     Per CONVENTIONS §17.5 + PHASE_2_PLAN.md §7, this MUST use the
     bulk-load pattern:
-      1. One SELECT (fighters JOIN fighter_career JOIN fighter_
-         personality JOIN fighter_descriptors) → fetch all 4450 rows.
-      2. Python loop computing momentum / pressure / career_phase /
-         narrative_family / public_narrative / legacy_state (pure
-         CPU, no DB calls inside the loop).
+      1. One SELECT (fighters JOIN fighter_career JOIN rankings JOIN
+         contracts) → fetch all 4450 rows.
+      2. Python loop computing momentum / pressure (pure CPU, no DB
+         calls inside the loop).
       3. executemany("UPDATE fighter_descriptors SET ...") → batch
          write.
 
-    Skeleton (Task 2.1): no-op. The 6 new columns stay NULL until
-    Tasks 2.2-2.4 + 2.7 land.
+    Task 2.2 (Context Engine) lands the momentum + pressure compute.
+    career_phase / narrative_family / public_narrative / legacy_state
+    remain NULL until Tasks 2.3, 2.4, 2.7 land. The stubs for those
+    are added below as separate try/except blocks (each sub-engine
+    is independently optional — no ImportError crashes the pass).
     """
+    # Task 2.2 — momentum + pressure.
     try:
-        from interpretation.context_engine import compute_fighter_context_batch
+        from interpretation.context_engine import compute_all_fighters
+        compute_all_fighters(conn, current_date)
     except ImportError:
-        return  # Task 2.2 not landed yet — skeleton no-op.
-    # When Task 2.2 lands, this becomes:
-    #   rows = conn.execute(<bulk SELECT>).fetchall()
-    #   updates = compute_fighter_context_batch(rows, current_date)
-    #   conn.executemany("UPDATE fighter_descriptors SET ...", updates)
-    compute_fighter_context_batch(conn, current_date)
+        pass  # Task 2.2 not landed yet — no-op.
+    # Task 2.3 — career_phase (stub until Task 2.3 lands).
+    try:
+        from interpretation.career_phase_engine import compute_all_career_phases
+        compute_all_career_phases(conn, current_date)
+    except ImportError:
+        pass
+    # Task 2.4 — narrative_family + public_narrative (stub until 2.4).
+    try:
+        from interpretation.narrative_families import classify_all_fighters
+        classify_all_fighters(conn, current_date)
+    except ImportError:
+        pass
+    # Task 2.7 — legacy_state (stub until Task 2.7 lands).
+    try:
+        from interpretation.legacy_engine import compute_all_legacy_states
+        compute_all_legacy_states(conn, current_date)
+    except ImportError:
+        pass
 
 
 def _interpret_gyms(conn, current_date):
