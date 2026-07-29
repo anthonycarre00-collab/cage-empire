@@ -161,20 +161,23 @@ class FontSizes:
     """Font size constants (in px). Same for both modes — only the
     font FAMILY changes (Office uses Inter for commentary; Fight
     Night uses Source Serif Pro).
+
+    Sizes increased for desktop readability — WMMA5/FM use 14-16px
+    body text minimum. Previous sizes (10-12px) were too small.
     """
-    DISPLAY = 36         # Splash, title bar (was 28-48 range)
-    H1 = 22              # Screen titles
-    H2 = 16              # Panel titles
-    H3 = 13              # Sub-panel titles
-    BODY = 12            # Body text
-    BODY_SMALL = 11      # Small body text
-    CAPTION = 10         # Metadata, timestamps
-    MONO = 12            # Numbers / stats (JetBrains Mono)
-    DESCRIPTOR = 12      # Attribute descriptors (italic)
-    COMMENTARY_OFFICE = 13  # Fight commentary in Office Mode
-    COMMENTARY_FIGHT = 15    # Fight commentary in Fight Night Mode (serif)
-    PUNDIT = 13          # Pundit interjection (serif italic)
-    BEAT_TIMESTAMP = 10  # "R2 3:42" — round + clock (mono)
+    DISPLAY = 36         # Splash, title bar
+    H1 = 26              # Screen titles
+    H2 = 20              # Panel titles
+    H3 = 16              # Sub-panel titles
+    BODY = 15            # Body text
+    BODY_SMALL = 14      # Small body text (sidebar items)
+    CAPTION = 12         # Metadata, timestamps, nav group labels
+    MONO = 15            # Numbers / stats (JetBrains Mono)
+    DESCRIPTOR = 15      # Attribute descriptors (italic)
+    COMMENTARY_OFFICE = 16  # Fight commentary in Office Mode
+    COMMENTARY_FIGHT = 18    # Fight commentary in Fight Night Mode (serif)
+    PUNDIT = 16          # Pundit interjection (serif italic)
+    BEAT_TIMESTAMP = 12  # "R2 3:42" — round + clock (mono)
 
 
 # ============================================================

@@ -497,12 +497,17 @@ class CageEmpireApp(ctk.CTk):
                 date_str = clock[0]  # current_date
                 week = clock[3]      # current_week
                 year = clock[5]      # current_year
+                if year == 0:
+                    year = 1
                 self.date_label.configure(
                     text=f"{date_str}  ·  Week {week}, Year {year}"
                 )
 
             # Get player promotion cash
             promo_id = self.game_state.get_player_promotion_id()
+            if promo_id is None:
+                self.cash_label.configure(text="")
+                return
             cash_row = self.conn.execute(
                 "SELECT current_cash FROM promotions WHERE promotion_id=?",
                 (promo_id,)
@@ -525,33 +530,39 @@ class CageEmpireApp(ctk.CTk):
     # ============================================================
 
     def _build_sidebar(self):
-        """Build the 180px sidebar with 8 nav groups."""
+        """Build the 220px sidebar with nav groups."""
         theme = get_theme()
-        self.sidebar = ctk.CTkFrame(self, width=180, corner_radius=0,
+        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0,
                                      fg_color=theme.colors.bg_surface)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
+        # Scrollable sidebar in case nav is too long
+        sidebar_scroll = ctk.CTkScrollableFrame(self.sidebar,
+                                                 fg_color="transparent",
+                                                 scrollbar_button_color=theme.colors.bg_border)
+        sidebar_scroll.pack(fill="both", expand=True)
+
         self.nav_buttons = {}
         for group_name, screens in NAV_GROUPS:
             # Group label
-            group_label = ctk.CTkLabel(self.sidebar, text=group_name,
+            group_label = ctk.CTkLabel(sidebar_scroll, text=group_name,
                                         font=theme.fonts.caption,
                                         text_color=theme.colors.text_tertiary)
-            group_label.pack(anchor="w", padx=15, pady=(15, 5))
+            group_label.pack(anchor="w", padx=15, pady=(20, 8))
 
             for screen_name, display_name, icon_key in screens:
-                btn = ctk.CTkButton(self.sidebar,
+                btn = ctk.CTkButton(sidebar_scroll,
                                     text=display_name,
                                     font=theme.fonts.body_small,
                                     anchor="w",
-                                    height=32,
+                                    height=34,
                                     corner_radius=6,
                                     fg_color="transparent",
                                     hover_color=theme.colors.bg_surface_elevated,
                                     text_color=theme.colors.text_secondary,
                                     command=lambda sn=screen_name: self._navigate(sn))
-                btn.pack(fill="x", padx=5, pady=1)
+                btn.pack(fill="x", padx=8, pady=2)
                 self.nav_buttons[screen_name] = btn
 
     def _update_sidebar(self):
@@ -731,21 +742,26 @@ class CageEmpireApp(ctk.CTk):
         self.ticker_label = ctk.CTkLabel(self.bottom_bar,
                                           text="CAGE EMPIRE · Loading news...",
                                           font=theme.fonts.caption,
-                                          text_color=theme.colors.text_tertiary)
-        self.ticker_label.pack(side="left", padx=15)
+                                          text_color=theme.colors.text_tertiary,
+                                          anchor="w")
+        self.ticker_label.pack(side="left", fill="x", expand=True, padx=15)
 
         self._update_bottom_bar()
 
     def _update_bottom_bar(self):
         """Refresh the news ticker from the DB."""
         try:
+            from services.news_svc import get_latest_news_summary
             summary = get_latest_news_summary(self.conn, limit=3)
             if summary:
-                self.ticker_label.configure(text="  ·  ".join(summary))
+                text = "  ·  ".join(summary)
+                if len(text) > 120:
+                    text = text[:117] + "..."
+                self.ticker_label.configure(text=text)
             else:
                 self.ticker_label.configure(text="CAGE EMPIRE · No recent news")
-        except Exception as e:
-            self.ticker_label.configure(text=f"CAGE EMPIRE · News unavailable")
+        except Exception:
+            self.ticker_label.configure(text="CAGE EMPIRE")
 
     # ============================================================
     # ACTIONS
