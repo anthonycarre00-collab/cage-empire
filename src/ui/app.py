@@ -304,6 +304,43 @@ class CageEmpireApp(ctk.CTk):
         )
 
         # ============================================================
+        # Stage 6 — Task 6.4: Register the Roster + Fighter Profile
+        # screens. These are the two highest-traffic Office Mode
+        # screens — the player spends most of their time here. Both
+        # are registered with GameState so:
+        #   - set_active_screen("roster") triggers _refresh on nav.
+        #   - set_active_screen("fighter_profile") triggers _refresh
+        #     on nav.
+        #   - refresh_all() picks them up after Advance Day / Save /
+        #     Load / theme toggle.
+        # Per CONVENTIONS §17: both screens read from cache tables
+        # (fighter_descriptors) for fighter interpretation data +
+        # game-state tables (fighters, weight_classes, gyms,
+        # promotions, fighter_career, fight_history, fighter_bios,
+        # titles) for non-attribute data. NEVER read from
+        # fighter_attributes / fighter_personality.
+        #
+        # The Fighter Profile screen needs to know WHICH fighter to
+        # display. The Roster calls
+        # `fighter_profile_screen.set_fighter_id(fighter_id)` BEFORE
+        # calling state.set_active_screen("fighter_profile"). The
+        # Fighter Profile screen stores the fighter_id + renders it
+        # on _refresh().
+        # ============================================================
+        from ui.screens.roster import RosterScreen
+        self.roster_screen = RosterScreen(self.screen_container)
+        self.state.register_screen(
+            "roster", self.roster_screen, self.roster_screen._refresh
+        )
+
+        from ui.screens.fighter_profile import FighterProfileScreen
+        self.fighter_profile_screen = FighterProfileScreen(self.screen_container)
+        self.state.register_screen(
+            "fighter_profile", self.fighter_profile_screen,
+            self.fighter_profile_screen._refresh
+        )
+
+        # ============================================================
         # START ON DASHBOARD
         # ============================================================
         self._navigate("dashboard")
@@ -483,19 +520,36 @@ class CageEmpireApp(ctk.CTk):
         navigate-to) so its state (cached save rows, entry value)
         survives.
 
-        For other screens (placeholder until Tasks 6.4-6.14): show
+        For "roster" + "fighter_profile" (Stage 6 — Task 6.4): pack
+        the registered RosterScreen / FighterProfileScreen into the
+        screen container + call its refresh callback. Both instances
+        are preserved across navigations (pack_forget on navigate-
+        away, pack on navigate-to) so the player's Roster pagination
+        state + selected Fighter Profile survive a back-and-forth.
+        The Fighter Profile screen's fighter_id is set BEFORE
+        navigation via `fighter_profile_screen.set_fighter_id(id)`
+        (called by RosterScreen._on_row_double_click).
+
+        For other screens (placeholder until Tasks 6.5-6.14): show
         a placeholder label with the screen name.
         """
         theme = get_theme()
 
         # Clear current content. The DashboardScreen + SaveLoadScreen
-        # are special — pack_forget them (don't destroy) so their
-        # state survives across navigations. Everything else
-        # (placeholders, future screens) is destroyed.
+        # + RosterScreen + FighterProfileScreen are special —
+        # pack_forget them (don't destroy) so their state survives
+        # across navigations. Everything else (placeholders, future
+        # screens) is destroyed.
         dashboard_screen = getattr(self, "dashboard_screen", None)
         save_load_screen = getattr(self, "save_load_screen", None)
+        roster_screen = getattr(self, "roster_screen", None)
+        fighter_profile_screen = getattr(self, "fighter_profile_screen", None)
+        preserved_screens = {
+            dashboard_screen, save_load_screen,
+            roster_screen, fighter_profile_screen,
+        }
         for widget in self.screen_container.winfo_children():
-            if widget is dashboard_screen or widget is save_load_screen:
+            if widget in preserved_screens:
                 widget.pack_forget()
             else:
                 widget.destroy()
@@ -508,6 +562,18 @@ class CageEmpireApp(ctk.CTk):
             # Pack the SaveLoadScreen into the container. The refresh
             # callback fires via state.set_active_screen below.
             save_load_screen.pack(fill="both", expand=True)
+        elif screen_name == "roster" and roster_screen is not None:
+            # Pack the RosterScreen into the container. The refresh
+            # callback fires via state.set_active_screen below.
+            roster_screen.pack(fill="both", expand=True)
+        elif (screen_name == "fighter_profile"
+              and fighter_profile_screen is not None):
+            # Pack the FighterProfileScreen into the container. The
+            # refresh callback fires via state.set_active_screen below.
+            # The fighter_id was set BEFORE navigation by the Roster's
+            # _on_row_double_click handler — the screen is already
+            # rendered with the right fighter.
+            fighter_profile_screen.pack(fill="both", expand=True)
         else:
             # Show placeholder with screen name
             label = ctk.CTkLabel(self.screen_container,
@@ -521,11 +587,12 @@ class CageEmpireApp(ctk.CTk):
 
         # Update state — this calls set_active_screen which calls
         # the screen's refresh callback (DashboardScreen._refresh
-        # for "dashboard", SaveLoadScreen._refresh for "save_load").
-        # For unregistered screens (every screen OTHER than
-        # dashboard + save_load), this raises ValueError. We catch
-        # + ignore for the placeholder screens — they have no
-        # refresh callback anyway.
+        # for "dashboard", SaveLoadScreen._refresh for "save_load",
+        # RosterScreen._refresh for "roster", FighterProfileScreen.
+        # _refresh for "fighter_profile").
+        # For unregistered screens (every screen OTHER than these
+        # four), this raises ValueError. We catch + ignore for the
+        # placeholder screens — they have no refresh callback anyway.
         try:
             self.state.set_active_screen(screen_name)
         except ValueError:
