@@ -5,28 +5,81 @@ sign fighters, scout prospects, book cards, manage staff and finances, and
 follow long-running fighter careers through retirement, injury, decline,
 death, and regeneration.
 
-> **Current state:** v1.2.1 — working skeleton. See `docs/MASTER_PLAN.md`
-> for the gap between current state and the v1.6 spec target.
+> **Current state:** Schema 3.12.0 — 4,450 active fighters, 60 Hall of Fame
+> legends, full interpretation layer (momentum, pressure, career phases,
+> narrative families, legacy, daily headlines, memory engine), 6 working UI
+> screens (Dashboard, Roster, Fighter Profile, Free Agents, Scouting, Save/Load).
 
-## Quick start
+## Quick Start — ONE CLICK
 
 ### Windows
-```bat
-run.bat
-```
+1. Install Python 3.10+ from https://python.org (check "Add Python to PATH")
+2. Download the game from GitHub (Code → Download ZIP, then unzip)
+3. **Double-click `PLAY.bat`**
+
+That's it. The first run will:
+- Install the required packages automatically (customtkinter, pillow, ttkbootstrap)
+- Build the world database (4,450 fighters from your profiles, ~10 seconds)
+- Launch the game
 
 ### macOS / Linux
+1. Install Python 3.10+
+2. Open a terminal in the game folder
+3. Run: `./run.sh build-world` (first time only, builds the world)
+4. Run: `./run.sh run` (launches the game)
+
+## How to Play
+
+1. **Dashboard** — Your home screen. Shows top stories, headlines, your
+   promotion status, fighter watch (top prospect, biggest fall), recent news.
+2. **Advance Day** — Click the gold "▶ Advance Day" button in the top bar
+   to progress the simulation. The world comes alive: fights are resolved,
+   fighters retire, news is generated, headlines update.
+3. **Roster** — Browse your 1,000+ fighters. Each shows their career phase
+   ("rising contender"), momentum ("riding a hot streak"), and narrative
+   family ("the wunderkind everyone's talking about") — all as voice phrases,
+   not raw numbers.
+4. **Fighter Profile** — Click any fighter to see their full profile: bio,
+   career stats, recent fights, all 26 attributes and 20 personality traits
+   as voice descriptors.
+5. **Free Agents** — Browse 550+ unsigned fighters. Click "Sign Selected
+   Fighter" to add them to your roster.
+6. **Scouting** — Assign scouts to evaluate free agents. Scouting reports
+   reveal estimated potential, strengths, and weaknesses.
+7. **Save/Load** — Save your game, load a previous save, or delete saves.
+   The game auto-saves on exit.
+
+## What Makes CAGE EMPIRE Different
+
+- **No raw numbers.** Every attribute, every rating, every stat is translated
+  into a voice phrase. You don't see "Punch Power: 87" — you see
+  "fight-ending power in both hands."
+- **The player collects stories, not fighters.** The interpretation layer
+  generates momentum, pressure, career phases, narrative families, and daily
+  headlines from the simulation. Every fighter has a story.
+- **4,450 unique fighters.** Each with their own bio, attributes derived from
+  their bio keywords, career history, and personality.
+
+## For Developers
+
+### Build modes
 ```bash
-chmod +x run.sh
-./run.sh
+./run.sh run          # Launch the game
+./run.sh build-world  # Full world rebuild (4,450 fighters, ~10s)
+./run.sh build-dev    # Minimal dev rebuild (5 fighters for testing)
+./run.sh migrate      # Apply schema migrations (preserves world data)
+./run.sh check        # Forensic DB integrity check (140 checks)
+./run.sh test         # Run all 43 acceptance tests
 ```
 
-This will:
-1. Rebuild the SQLite database (`data/cage_empire.db`)
-2. Seed a minimal playable world (2 promotions, 5 fighters, 1 event, 1 fight)
-3. Launch the Tkinter desktop app
-
-## Run order (manual, if you skip the launcher)
+### Architecture
+- **Simulation layer:** `src/tick_processor.py`, `src/services/fight_engine.py`,
+  `src/services/matchmaking.py`, `src/career_arc.py`, etc.
+- **Interpretation layer:** `src/interpretation/` — context_engine, career_phase_engine,
+  narrative_families, memory_engine, headline_engine, legacy_engine, snapshot_cache
+- **Voice layer:** `src/voice.py` — pure functions translating numbers to phrases
+- **UI layer:** `src/ui/` — CustomTkinter screens reading from cache tables only (§17)
+- **Database:** SQLite, schema 3.12.0, 54+ tables, 21 migrations
 
 ```bash
 python src/build_db.py          # drop + recreate schema (version 1.2.1)
