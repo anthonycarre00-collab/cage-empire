@@ -279,6 +279,31 @@ class CageEmpireApp(ctk.CTk):
         )
 
         # ============================================================
+        # Stage 6 — Task 6.3: Register the Dashboard screen.
+        # The Dashboard is the player's home screen — the FIRST real
+        # screen in CAGE EMPIRE (every prior screen is a placeholder).
+        # Created with self.screen_container as its parent. Packed
+        # by _navigate("dashboard") when the player clicks the
+        # sidebar entry (or on app launch — see _navigate call below).
+        # The refresh callback (_refresh) re-queries daily_headlines,
+        # fighter_descriptors, promotions, titles, news_items + re-
+        # renders every section. Registered with GameState so:
+        #   - set_active_screen("dashboard") triggers _refresh on nav.
+        #   - refresh_all() picks it up after Advance Day / Save /
+        #     Load / theme toggle.
+        # Per CONVENTIONS §17: reads from cache tables
+        # (daily_headlines, fighter_descriptors) for fighter
+        # interpretation data + game-state tables (promotions, titles,
+        # fighters, news_items) for non-fighter data. NEVER reads
+        # fighter_attributes / fighter_personality / fighter_career.
+        # ============================================================
+        from ui.screens.dashboard import DashboardScreen
+        self.dashboard_screen = DashboardScreen(self.screen_container)
+        self.state.register_screen(
+            "dashboard", self.dashboard_screen, self.dashboard_screen._refresh
+        )
+
+        # ============================================================
         # START ON DASHBOARD
         # ============================================================
         self._navigate("dashboard")
@@ -441,30 +466,45 @@ class CageEmpireApp(ctk.CTk):
     def _navigate(self, screen_name):
         """Navigate to a screen.
 
+        For "dashboard" (Stage 6 — Task 6.3): pack the registered
+        DashboardScreen into the screen container. The refresh
+        callback fires via state.set_active_screen below (which
+        calls _refresh — re-queries daily_headlines, fighter_
+        descriptors, promotions, titles, news_items + re-renders
+        every section). The DashboardScreen instance is preserved
+        across navigations (pack_forget on navigate-away, pack on
+        navigate-to) so its rendered widgets survive — same pattern
+        as SaveLoadScreen.
+
         For "save_load" (Phase 1 — Fix 1.3): pack the registered
         SaveLoadScreen into the screen container + call its refresh
-        callback (set_active_screen triggers this — see GameState).
-        The SaveLoadScreen instance is preserved across navigations
-        (pack_forget on navigate-away, pack on navigate-to) so its
-        state (cached save rows, entry value) survives.
+        callback. The SaveLoadScreen instance is preserved across
+        navigations (pack_forget on navigate-away, pack on
+        navigate-to) so its state (cached save rows, entry value)
+        survives.
 
-        For other screens (placeholder until Tasks 6.3-6.14): show
+        For other screens (placeholder until Tasks 6.4-6.14): show
         a placeholder label with the screen name.
         """
         theme = get_theme()
 
-        # Clear current content. The SaveLoadScreen is special —
-        # pack_forget it (don't destroy) so its state survives
-        # across navigations. Everything else (placeholders, future
-        # screens) is destroyed.
+        # Clear current content. The DashboardScreen + SaveLoadScreen
+        # are special — pack_forget them (don't destroy) so their
+        # state survives across navigations. Everything else
+        # (placeholders, future screens) is destroyed.
+        dashboard_screen = getattr(self, "dashboard_screen", None)
         save_load_screen = getattr(self, "save_load_screen", None)
         for widget in self.screen_container.winfo_children():
-            if widget is save_load_screen:
+            if widget is dashboard_screen or widget is save_load_screen:
                 widget.pack_forget()
             else:
                 widget.destroy()
 
-        if screen_name == "save_load" and save_load_screen is not None:
+        if screen_name == "dashboard" and dashboard_screen is not None:
+            # Pack the DashboardScreen into the container. The refresh
+            # callback fires via state.set_active_screen below.
+            dashboard_screen.pack(fill="both", expand=True)
+        elif screen_name == "save_load" and save_load_screen is not None:
             # Pack the SaveLoadScreen into the container. The refresh
             # callback fires via state.set_active_screen below.
             save_load_screen.pack(fill="both", expand=True)
@@ -480,11 +520,12 @@ class CageEmpireApp(ctk.CTk):
             label.pack(expand=True)
 
         # Update state — this calls set_active_screen which calls
-        # the screen's refresh callback (SaveLoadScreen._refresh
-        # for "save_load"). For unregistered screens (every screen
-        # OTHER than save_load + dashboard-as-placeholder), this
-        # raises ValueError. We catch + ignore for the placeholder
-        # screens — they have no refresh callback anyway.
+        # the screen's refresh callback (DashboardScreen._refresh
+        # for "dashboard", SaveLoadScreen._refresh for "save_load").
+        # For unregistered screens (every screen OTHER than
+        # dashboard + save_load), this raises ValueError. We catch
+        # + ignore for the placeholder screens — they have no
+        # refresh callback anyway.
         try:
             self.state.set_active_screen(screen_name)
         except ValueError:
