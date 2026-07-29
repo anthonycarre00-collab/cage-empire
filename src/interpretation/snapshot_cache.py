@@ -63,7 +63,15 @@ import sqlite3
 # career_phases / compute_single_phase now write career_phase. On
 # first run after this code lands, the engine-version mismatch
 # triggers a full cache rebuild (career_phase starts NULL).
-ENGINE_VERSION = "1.2.0"
+# v1.3.0 — Task 2.4 (Narrative Families) landed: compute_all_
+# families / compute_single_family now write narrative_family. On
+# first run after this code lands, the engine-version mismatch
+# triggers a full cache rebuild (narrative_family starts NULL).
+# v1.4.0 — Task 2.7 (Legacy Engine) landed: compute_all_legacies /
+# compute_single_legacy now write legacy_state. On first run after
+# this code lands, the engine-version mismatch triggers a full
+# cache rebuild (legacy_state starts NULL).
+ENGINE_VERSION = "1.4.0"
 
 
 def run_daily_interpretation_pass(conn):
@@ -243,6 +251,36 @@ def refresh_fighter(conn, fighter_id):
               f"fighter_id={fighter_id}) failed in refresh_fighter: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
 
+    # Task 2.4 — refresh narrative_family for this single fighter.
+    # Same try/except pattern — a single failed family refresh must
+    # not roll back the work already done. If the narrative_families
+    # engine isn't available (older code), this silently no-ops.
+    try:
+        from interpretation.narrative_families import compute_single_family
+        compute_single_family(conn, fighter_id)
+    except ImportError:
+        pass  # Task 2.4 not landed yet — no-op.
+    except Exception as e:
+        import sys
+        print(f"WARNING: narrative_families.compute_single_family("
+              f"fighter_id={fighter_id}) failed in refresh_fighter: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    # Task 2.7 — refresh legacy_state for this single fighter.
+    # Same try/except pattern. Applies to active AND retired fighters
+    # (the engine's internal logic handles both — no is_active filter
+    # at the refresh site).
+    try:
+        from interpretation.legacy_engine import compute_single_legacy
+        compute_single_legacy(conn, fighter_id)
+    except ImportError:
+        pass  # Task 2.7 not landed yet — no-op.
+    except Exception as e:
+        import sys
+        print(f"WARNING: legacy_engine.compute_single_legacy("
+              f"fighter_id={fighter_id}) failed in refresh_fighter: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
     conn.commit()
 
 
@@ -285,18 +323,23 @@ def _interpret_fighters(conn, current_date):
         compute_all_career_phases(conn, current_date)
     except ImportError:
         pass
-    # Task 2.4 — narrative_family + public_narrative (stub until 2.4).
+    # Task 2.4 — narrative_family (4 MVP families: prodigy, veteran,
+    # fallen_champion, cinderella_story). Depends on momentum (Task 2.2)
+    # + career_phase (Task 2.3) being populated FIRST — the bulk-load
+    # reads those columns from fighter_descriptors.
     try:
-        from interpretation.narrative_families import classify_all_fighters
-        classify_all_fighters(conn, current_date)
-    except ImportError:
-        pass
-    # Task 2.7 — legacy_state (stub until Task 2.7 lands).
+        from interpretation.narrative_families import compute_all_families
+        compute_all_families(conn)
+    except Exception as e:
+        print(f"Warning: narrative families failed: {e}", flush=True)
+    # Task 2.7 — legacy_state (4 MVP states: building, established,
+    # legendary, forgotten). Applies to ALL fighters (active + retired).
+    # Independent of momentum/career_phase — runs last in the daily pass.
     try:
-        from interpretation.legacy_engine import compute_all_legacy_states
-        compute_all_legacy_states(conn, current_date)
-    except ImportError:
-        pass
+        from interpretation.legacy_engine import compute_all_legacies
+        compute_all_legacies(conn)
+    except Exception as e:
+        print(f"Warning: legacy engine failed: {e}", flush=True)
 
 
 def _interpret_gyms(conn, current_date):
