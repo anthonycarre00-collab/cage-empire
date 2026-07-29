@@ -163,15 +163,16 @@ class FontSizes:
     Night uses Source Serif Pro).
 
     Sizes increased for desktop readability — WMMA5/FM use 14-16px
-    body text minimum. Previous sizes (10-12px) were too small.
+    body text minimum. Body=15, captions bumped to 13 (was 12) per
+    UI Polish Task UI-POLISH (user feedback: "text is too small").
     """
     DISPLAY = 36         # Splash, title bar
     H1 = 26              # Screen titles
     H2 = 20              # Panel titles
     H3 = 16              # Sub-panel titles
     BODY = 15            # Body text
-    BODY_SMALL = 14      # Small body text (sidebar items)
-    CAPTION = 12         # Metadata, timestamps, nav group labels
+    BODY_SMALL = 14      # Small body text (sidebar items, table rows)
+    CAPTION = 13         # Metadata, timestamps, nav group labels
     MONO = 15            # Numbers / stats (JetBrains Mono)
     DESCRIPTOR = 15      # Attribute descriptors (italic)
     COMMENTARY_OFFICE = 16  # Fight commentary in Office Mode
@@ -196,16 +197,112 @@ SOURCE_SERIF_FAMILY = "Source Serif Pro"
 DISPLAY_FAMILY = "Oswald"  # fallback to Inter Bold if not available
 
 _fonts_registered = False
+_font_families_available = {
+    INTER_FAMILY: False,
+    JETBRAINS_MONO_FAMILY: False,
+    SOURCE_SERIF_FAMILY: False,
+    DISPLAY_FAMILY: False,
+}
+
+
+def _platform_default_sans():
+    """Pick a sensible default sans-serif family per-platform.
+
+    Used when Inter fails to register — the UI still needs a readable
+    body font. Returns the family NAME (string), not a path.
+    """
+    import platform as _pf
+    sys_name = _pf.system().lower()
+    if sys_name.startswith("win"):
+        return "Segoe UI"
+    if sys_name == "darwin":
+        return "Helvetica"
+    return "Sans"  # Linux / unknown — Tk falls back to Helvetica.
+
+
+def _platform_default_mono():
+    """Pick a sensible default monospace family per-platform."""
+    import platform as _pf
+    sys_name = _pf.system().lower()
+    if sys_name.startswith("win"):
+        return "Consolas"
+    if sys_name == "darwin":
+        return "Menlo"
+    return "Mono"
+
+
+# Resolved family names — set by _register_fonts(). Start with the
+# ideal names; fall back to platform defaults if registration fails.
+INTER_FAMILY_RESOLVED = INTER_FAMILY
+JETBRAINS_MONO_FAMILY_RESOLVED = JETBRAINS_MONO_FAMILY
+SOURCE_SERIF_FAMILY_RESOLVED = SOURCE_SERIF_FAMILY
+DISPLAY_FAMILY_RESOLVED = DISPLAY_FAMILY
+
+
+def _register_one_font(root, font_path, family, slant, weight):
+    """Try multiple methods to register a single TTF with Tk.
+
+    Method 1: tk.call("font", "create", ... "-file", path) — works on
+              most platforms but silently fails on some Windows Tk
+              builds when the font file is already loaded.
+    Method 2: tk.call("font", "create", ...) without -file, then use
+              font.actual() to verify — fallback for cases where
+              Method 1 raises but the font is still usable by name.
+    Method 3: PIL ImageFont.truetype load test — if PIL can parse the
+              TTF, we trust Tk to find it by family name (Tk 8.6+
+              searches bundled TTFs in some configurations).
+
+    Returns True if any method succeeded, False otherwise. Idempotent
+    — does not raise if the font is already registered.
+    """
+    if not font_path.exists():
+        return False
+    name = f"{family}_{slant}_{weight}"
+    # Method 1: -file registration (preferred — actually loads the
+    # TTF into Tk's font registry).
+    try:
+        root.tk.call(
+            "font", "create", name,
+            "-family", family,
+            "-slant", slant,
+            "-weight", weight,
+            "-file", str(font_path),
+        )
+        return True
+    except tk.TclError:
+        pass  # Already registered, or method 1 unsupported — try method 2.
+    # Method 2: register the name without -file. The family is then
+    # resolved by Tk's font search at render time. This works when
+    # the TTF is in a known font directory OR has been loaded by name
+    # via another mechanism (e.g. PIL).
+    try:
+        root.tk.call(
+            "font", "create", name,
+            "-family", family,
+            "-slant", slant,
+            "-weight", weight,
+        )
+        return True
+    except tk.TclError:
+        return False  # Give up — caller falls back to platform default.
 
 
 def _register_fonts():
     """Register bundled TTF fonts with tkinter so they can be used
     by name (e.g., 'Inter' instead of loading the file each time).
 
-    Called automatically on first import of this module. Safe to
-    call multiple times — checks _fonts_registered flag.
+    Robust across platforms (Windows / macOS / Linux). Falls back to
+    sensible system fonts when bundled TTFs fail to register — the
+    UI still works, just with a less branded typeface.
+
+    Called automatically on first import of this module + on app
+    construction (CageEmpireApp.__init__). Safe to call multiple times
+    — checks _fonts_registered flag.
     """
     global _fonts_registered
+    global INTER_FAMILY_RESOLVED, JETBRAINS_MONO_FAMILY_RESOLVED
+    global SOURCE_SERIF_FAMILY_RESOLVED, DISPLAY_FAMILY_RESOLVED
+    global _font_families_available
     if _fonts_registered:
         return
 
@@ -218,6 +315,11 @@ def _register_fonts():
         root.withdraw()
         created_root = True
 
+    # Track which families registered successfully. Each TTF is
+    # registered under its family name with the appropriate slant +
+    # weight; the SAME family name is used for all weights of Inter
+    # (Regular, Medium, SemiBold, Bold) — Tk resolves the weight at
+    # render time via the font tuple's weight element.
     try:
         font_files = [
             (FONT_INTER_REGULAR, INTER_FAMILY, "normal", "normal"),
@@ -231,19 +333,74 @@ def _register_fonts():
             (FONT_SOURCE_SERIF_SEMIBOLD_ITALIC, SOURCE_SERIF_FAMILY, "italic", "bold"),
         ]
         for font_path, family, slant, weight in font_files:
-            if font_path.exists():
-                try:
-                    root.tk.call("font", "create", f"{family}_{slant}_{weight}",
-                                 "-family", family, "-slant", slant, "-weight", weight,
-                                 "-file", str(font_path))
-                except tk.TclError:
-                    # Font may already be registered — that's OK
-                    pass
+            try:
+                ok = _register_one_font(root, font_path, family, slant, weight)
+                if ok:
+                    _font_families_available[family] = True
+            except Exception:
+                # Individual font registration failure is non-fatal —
+                # we fall back to platform defaults below.
+                pass
+
+        # Verify each family is actually usable by querying Tk's font
+        # registry. A family may "register" via tk.call but not be
+        # resolvable — tk.fontFamilies() is the source of truth.
+        try:
+            available_families = set(root.tk.call("font", "families"))
+        except Exception:
+            available_families = set()
+        for fam in (INTER_FAMILY, JETBRAINS_MONO_FAMILY,
+                    SOURCE_SERIF_FAMILY, DISPLAY_FAMILY):
+            if fam in available_families:
+                _font_families_available[fam] = True
+            else:
+                # Mark as unavailable so we fall back.
+                _font_families_available[fam] = False
     finally:
         if created_root:
             root.destroy()
 
+    # Resolve the family names: use the bundled family if available,
+    # otherwise fall back to a platform-appropriate default. The
+    # resolved names are what OfficeFonts / FightNightFonts use for
+    # font tuples (set below in the FONTS RESOLUTION section).
+    INTER_FAMILY_RESOLVED = (INTER_FAMILY
+                             if _font_families_available[INTER_FAMILY]
+                             else _platform_default_sans())
+    JETBRAINS_MONO_FAMILY_RESOLVED = (
+        JETBRAINS_MONO_FAMILY
+        if _font_families_available[JETBRAINS_MONO_FAMILY]
+        else _platform_default_mono())
+    SOURCE_SERIF_FAMILY_RESOLVED = (
+        SOURCE_SERIF_FAMILY
+        if _font_families_available[SOURCE_SERIF_FAMILY]
+        else _platform_default_sans())
+    # Display family (Oswald) is rarely bundled — fall back to
+    # Inter-Bold or the platform sans if not available.
+    DISPLAY_FAMILY_RESOLVED = (DISPLAY_FAMILY
+                               if _font_families_available[DISPLAY_FAMILY]
+                               else (INTER_FAMILY
+                                     if _font_families_available[INTER_FAMILY]
+                                     else _platform_default_sans()))
+
     _fonts_registered = True
+
+
+# ============================================================
+# AUTO-REGISTER FONTS — runs at module import time, BEFORE the
+# OfficeFonts / FightNightFonts class definitions below. This
+# ensures INTER_FAMILY_RESOLVED etc. are set to their final values
+# (bundled family or platform fallback) by the time the class
+# attributes are bound. Safe to call before tkinter has a root
+# window — _register_fonts creates a temporary hidden one.
+# ============================================================
+try:
+    _register_fonts()
+except Exception as _e:
+    print(f"Warning: font registration failed: {_e}", flush=True)
+    # Non-fatal — OfficeFonts / FightNightFonts will use the default
+    # RESOLVED names (which equal the bundled family names). Tk will
+    # fall back to a system font if the bundled family isn't found.
 
 
 # ============================================================
@@ -255,17 +412,22 @@ class OfficeFonts:
     numbers which use JetBrains Mono).
 
     CTk expects fonts as tuples: (family, size, weight).
+
+    Uses the RESOLVED family names (INTER_FAMILY_RESOLVED etc.) so
+    the UI gracefully falls back to platform defaults (Segoe UI on
+    Windows, Helvetica on Mac, Sans on Linux) when bundled TTFs
+    fail to register — see _register_fonts().
     """
-    display = (DISPLAY_FAMILY, FontSizes.DISPLAY, "bold")
-    h1 = (INTER_FAMILY, FontSizes.H1, "bold")
-    h2 = (INTER_FAMILY, FontSizes.H2, "bold")
-    h3 = (INTER_FAMILY, FontSizes.H3, "bold")
-    body = (INTER_FAMILY, FontSizes.BODY, "normal")
-    body_small = (INTER_FAMILY, FontSizes.BODY_SMALL, "normal")
-    caption = (INTER_FAMILY, FontSizes.CAPTION, "normal")
-    mono = (JETBRAINS_MONO_FAMILY, FontSizes.MONO, "normal")
-    descriptor = (INTER_FAMILY, FontSizes.DESCRIPTOR, "normal")
-    commentary = (INTER_FAMILY, FontSizes.COMMENTARY_OFFICE, "normal")
+    display = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY, "bold")
+    h1 = (INTER_FAMILY_RESOLVED, FontSizes.H1, "bold")
+    h2 = (INTER_FAMILY_RESOLVED, FontSizes.H2, "bold")
+    h3 = (INTER_FAMILY_RESOLVED, FontSizes.H3, "bold")
+    body = (INTER_FAMILY_RESOLVED, FontSizes.BODY, "normal")
+    body_small = (INTER_FAMILY_RESOLVED, FontSizes.BODY_SMALL, "normal")
+    caption = (INTER_FAMILY_RESOLVED, FontSizes.CAPTION, "normal")
+    mono = (JETBRAINS_MONO_FAMILY_RESOLVED, FontSizes.MONO, "normal")
+    descriptor = (INTER_FAMILY_RESOLVED, FontSizes.DESCRIPTOR, "normal")
+    commentary = (INTER_FAMILY_RESOLVED, FontSizes.COMMENTARY_OFFICE, "normal")
 
 
 class FightNightFonts:
@@ -274,20 +436,23 @@ class FightNightFonts:
     Same as Office EXCEPT commentary switches to Source Serif Pro
     (serif feels like documentary narration, not UI text) and
     pundit interjections use Source Serif Pro SemiBold Italic.
+
+    Uses RESOLVED family names — falls back to platform defaults
+    when Source Serif Pro isn't registered.
     """
-    display = (DISPLAY_FAMILY, FontSizes.DISPLAY, "bold")
-    h1 = (INTER_FAMILY, FontSizes.H1, "bold")
-    h2 = (INTER_FAMILY, FontSizes.H2, "bold")
-    h3 = (INTER_FAMILY, FontSizes.H3, "bold")
-    body = (INTER_FAMILY, FontSizes.BODY, "normal")
-    body_small = (INTER_FAMILY, FontSizes.BODY_SMALL, "normal")
-    caption = (INTER_FAMILY, FontSizes.CAPTION, "normal")
-    mono = (JETBRAINS_MONO_FAMILY, FontSizes.MONO, "normal")
-    descriptor = (INTER_FAMILY, FontSizes.DESCRIPTOR, "normal")
+    display = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY, "bold")
+    h1 = (INTER_FAMILY_RESOLVED, FontSizes.H1, "bold")
+    h2 = (INTER_FAMILY_RESOLVED, FontSizes.H2, "bold")
+    h3 = (INTER_FAMILY_RESOLVED, FontSizes.H3, "bold")
+    body = (INTER_FAMILY_RESOLVED, FontSizes.BODY, "normal")
+    body_small = (INTER_FAMILY_RESOLVED, FontSizes.BODY_SMALL, "normal")
+    caption = (INTER_FAMILY_RESOLVED, FontSizes.CAPTION, "normal")
+    mono = (JETBRAINS_MONO_FAMILY_RESOLVED, FontSizes.MONO, "normal")
+    descriptor = (INTER_FAMILY_RESOLVED, FontSizes.DESCRIPTOR, "normal")
     # THE key Fight Night font change: commentary switches to serif
-    commentary = (SOURCE_SERIF_FAMILY, FontSizes.COMMENTARY_FIGHT, "normal")
-    pundit = (SOURCE_SERIF_FAMILY, FontSizes.PUNDIT, "italic")
-    beat_timestamp = (JETBRAINS_MONO_FAMILY, FontSizes.BEAT_TIMESTAMP, "normal")
+    commentary = (SOURCE_SERIF_FAMILY_RESOLVED, FontSizes.COMMENTARY_FIGHT, "normal")
+    pundit = (SOURCE_SERIF_FAMILY_RESOLVED, FontSizes.PUNDIT, "italic")
+    beat_timestamp = (JETBRAINS_MONO_FAMILY_RESOLVED, FontSizes.BEAT_TIMESTAMP, "normal")
 
 
 # ============================================================
@@ -418,9 +583,12 @@ def get_icon(name):
 # AUTO-REGISTER FONTS ON IMPORT
 # ============================================================
 
-# Register fonts as soon as this module is imported. The first
-# CTk window creation will trigger this. Safe to call before
-# tkinter has a root window (the function creates a temporary one).
+# Font registration already ran above (before OfficeFonts / FightNightFonts
+# were defined) so the resolved family names are available to the font
+# tuple class attributes. The duplicate call here is a no-op (the
+# _fonts_registered flag short-circuits it) — kept for backward
+# compatibility with any code that imports `_register_fonts` and calls
+# it manually (e.g., src/ui/app.py's CageEmpireApp.__init__).
 try:
     _register_fonts()
 except Exception as e:

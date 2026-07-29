@@ -210,6 +210,8 @@ import tkinter.ttk as ttk
 
 from ui.theme import get_theme
 from ui.state import get_state
+from ui.voice_display import title_case_phrase, display_phrase, \
+    display_attr_descriptor
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
@@ -351,6 +353,8 @@ class FreeAgentsScreen(ctk.CTkFrame):
         # Fighter Profile and back. See D5, D7, D10.
         self._current_page = 1
         self._weight_class_filter = None  # None = "All Weight Classes"
+        # Per UI-POLISH Fix 2: gender filter. None = "All Genders".
+        self._gender_filter = None
         self._search_term = ""
         self._sort_column = "fighter_id"  # default: insertion order
         self._sort_reverse = False
@@ -368,6 +372,10 @@ class FreeAgentsScreen(ctk.CTkFrame):
         self._next_button = None
         self._subtitle_label = None
         self._weight_class_menu = None
+        # Per UI-POLISH Fix 2: gender filter dropdown.
+        self._gender_menu = None
+        # Per UI-POLISH Fix 3: View Profile button (alongside Sign).
+        self._view_profile_button = None
         self._search_entry = None
         self._empty_label = None
         self._sign_button = None
@@ -415,16 +423,40 @@ class FreeAgentsScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_filter_row(self):
-        """Build the filter row: weight-class dropdown + search entry.
+        """Build the filter row: gender + weight-class + search entry.
 
-        Same layout as the Roster (D4 in roster.py):
-          [Weight Class: ▼ All Weight Classes]  [Search: [_______]]
+        Same layout as the Roster (D4 in roster.py), plus a gender
+        dropdown (UI-POLISH Fix 2):
+          [Gender: ▼ All]  [Weight Class: ▼ All WC]  [Search: [___]]
         """
         theme = get_theme()
 
         filter_row = ctk.CTkFrame(self, fg_color="transparent")
         filter_row.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
+        # ---- GENDER dropdown (UI-POLISH Fix 2) ----
+        gender_label = ctk.CTkLabel(
+            filter_row, text="Gender:",
+            font=theme.fonts.body, text_color=theme.colors.text_secondary,
+        )
+        gender_label.pack(side="left", padx=(0, 8))
+
+        self._gender_menu = ctk.CTkOptionMenu(
+            filter_row,
+            values=["All", "Male", "Female"],
+            command=self._on_gender_change,
+            width=110, height=30,
+            font=theme.fonts.body,
+            dropdown_font=theme.fonts.body,
+            fg_color=theme.colors.bg_surface,
+            button_color=theme.colors.bg_surface_elevated,
+            button_hover_color=theme.colors.steel,
+            text_color=theme.colors.text_primary,
+        )
+        self._gender_menu.set("All")
+        self._gender_menu.pack(side="left", padx=(0, 20))
+
+        # ---- WEIGHT CLASS dropdown ----
         wc_label = ctk.CTkLabel(
             filter_row, text="Weight Class:",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
@@ -545,6 +577,11 @@ class FreeAgentsScreen(ctk.CTkFrame):
         Mirrors RosterScreen._apply_treeview_style (D2 in roster.py).
         Separate style name so the two screens can be themed
         independently. Idempotent — safe to call multiple times.
+
+        Per UI-POLISH Fix 5 + Fix 6: row font bumped from 12px to
+        14px (theme.fonts.body_small) for readability, heading font
+        bumped from 13 to 15 (theme.fonts.body) for visual hierarchy.
+        Hover effect on rows added (Fix 6).
         """
         theme = get_theme()
         try:
@@ -554,19 +591,24 @@ class FreeAgentsScreen(ctk.CTkFrame):
             except Exception:
                 pass  # clam may already be in use; that's fine
 
+            body_font = theme.fonts.body_small
+            heading_font = (body_font[0], body_font[1] + 1, "bold")
+
             style.configure(
                 "FreeAgents.Treeview",
                 background=theme.colors.bg_surface,
                 foreground=theme.colors.text_primary,
                 fieldbackground=theme.colors.bg_surface,
                 bordercolor=theme.colors.bg_border,
-                rowheight=28,
-                font=("Inter", 12),
+                rowheight=30,
+                font=body_font,
             )
             style.map(
                 "FreeAgents.Treeview",
-                background=[("selected", theme.colors.bg_surface_elevated)],
-                foreground=[("selected", theme.colors.text_primary)],
+                background=[("selected", theme.colors.bg_surface_elevated),
+                            ("active", theme.colors.bg_surface_elevated)],
+                foreground=[("selected", theme.colors.text_primary),
+                            ("active", theme.colors.gold)],
             )
             style.configure(
                 "FreeAgents.Treeview.Heading",
@@ -574,7 +616,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 foreground=theme.colors.gold,
                 bordercolor=theme.colors.bg_border,
                 relief="flat",
-                font=("Inter", 13, "bold"),
+                font=heading_font,
             )
             style.map(
                 "FreeAgents.Treeview.Heading",
@@ -636,12 +678,17 @@ class FreeAgentsScreen(ctk.CTkFrame):
     def _build_sign_bar(self):
         """Build the Sign Selected Fighter bar (D2, D3, D4).
 
-        Layout:
-          [Sign Selected Fighter]   Status: ...
+        Layout (per UI-POLISH Fix 3 — added a "View Profile" button
+        alongside Sign, so the player can inspect a free agent before
+        committing to signing them):
+          [✚ Sign Selected Fighter]  [▶ View Profile]   Status: ...
 
-        The button is gold-themed (matches the top-bar Advance Day
+        The Sign button is gold-themed (matches the top-bar Advance Day
         button — both are the dopamine buttons in their respective
         screens). Disabled when no row is selected.
+        The View Profile button is neutral — opens the Fighter Profile
+        screen for the selected fighter. Also disabled when no row is
+        selected.
         """
         theme = get_theme()
 
@@ -652,7 +699,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
         self._sign_button = ctk.CTkButton(
             sign_row, text="✚  Sign Selected Fighter",
             font=theme.fonts.body,
-            width=200, height=32,
+            width=220, height=32,
             corner_radius=6,
             fg_color=theme.colors.gold,
             hover_color=theme.colors.crimson,
@@ -662,10 +709,25 @@ class FreeAgentsScreen(ctk.CTkFrame):
         )
         self._sign_button.pack(side="left")
 
+        # View Profile button (UI-POLISH Fix 3) — neutral elevated
+        # surface. Disabled initially; enabled when a row is selected.
+        self._view_profile_button = ctk.CTkButton(
+            sign_row, text="▶  View Profile",
+            font=theme.fonts.body,
+            width=160, height=32,
+            corner_radius=6,
+            fg_color=theme.colors.bg_surface_elevated,
+            hover_color=theme.colors.steel,
+            text_color=theme.colors.text_primary,
+            state="disabled",
+            command=self._on_view_profile_clicked,
+        )
+        self._view_profile_button.pack(side="left", padx=(10, 0))
+
         # Status label — shows the last sign action's result.
         # Idle by default; updated by _on_sign_clicked.
         self._status_label = ctk.CTkLabel(
-            sign_row, text="Select a fighter, then click Sign.",
+            sign_row, text="Select a fighter, then click Sign or View Profile.",
             font=theme.fonts.body_small,
             text_color=theme.colors.text_tertiary,
             anchor="w",
@@ -677,13 +739,13 @@ class FreeAgentsScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_footer(self):
-        """Build the footer hint: 'Double-click to view profile'."""
+        """Build the footer hint: 'Single-click selects, double-click views'."""
         theme = get_theme()
 
         footer_label = ctk.CTkLabel(
             self,
-            text="Double-click a fighter to view their profile.  "
-                 "Single-click selects, then Sign Selected to add them to your roster.",
+            text="Single-click a fighter to select. Double-click (or click "
+                 "View Profile) to inspect them. Click Sign to add them to your roster.",
             font=theme.fonts.caption,
             text_color=theme.colors.text_tertiary,
             anchor="w",
@@ -715,6 +777,24 @@ class FreeAgentsScreen(ctk.CTkFrame):
                     self._weight_class_filter = None
             except (ValueError, AttributeError):
                 self._weight_class_filter = None
+        self._current_page = 1
+        self._refresh()
+
+    def _on_gender_change(self, choice):
+        """Handle gender dropdown change (UI-POLISH Fix 2).
+
+        Maps the dropdown label to the fighters.gender column value:
+          "All"     → None (no filter)
+          "Male"    → "male"
+          "Female"  → "female"
+        Resets to page 1 + triggers _refresh.
+        """
+        if choice == "Male":
+            self._gender_filter = "male"
+        elif choice == "Female":
+            self._gender_filter = "female"
+        else:
+            self._gender_filter = None
         self._current_page = 1
         self._refresh()
 
@@ -757,28 +837,42 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._refresh()
 
     def _on_row_select(self, event=None):
-        """Handle single-click row selection — enable the Sign button.
+        """Handle single-click row selection — enable Sign + View Profile.
 
         Per D2: the Sign button reads the Treeview selection to
         recover the fighter_id. Disabled when no row is selected
         (e.g., after _refresh clears the selection).
+        Per UI-POLISH Fix 3: View Profile button enabled alongside
+        Sign — the player can inspect before committing to sign.
         """
         try:
             selection = self._treeview.selection()
             if selection:
                 self._sign_button.configure(state="normal")
+                self._view_profile_button.configure(state="normal")
             else:
                 self._sign_button.configure(state="disabled")
+                self._view_profile_button.configure(state="disabled")
         except Exception:
             pass
 
-    def _on_row_double_click(self, event=None):
-        """Handle double-click on a Treeview row — navigate to profile.
+    def _on_view_profile_clicked(self):
+        """Handle View Profile button click (UI-POLISH Fix 3).
 
-        Mirrors RosterScreen._on_row_double_click (D7 in roster.py).
-        Reads the selected row's fighter_id (stored as the Treeview
-        item's iid), calls set_fighter_id() on the Fighter Profile
-        screen, then navigates via state.set_active_screen.
+        Navigates to the Fighter Profile screen for the selected
+        free agent. The fighter is NOT signed — the player is just
+        inspecting them. This is the "look before you leap" affordance
+        for the Talent Hunter fantasy.
+        """
+        self._navigate_to_selected_profile()
+
+    def _navigate_to_selected_profile(self):
+        """Shared navigation helper — used by double-click + View Profile.
+
+        Reads the selected fighter_id from the Treeview, calls
+        set_fighter_id on the Fighter Profile screen, then navigates
+        via state.set_active_screen. Defensive against missing
+        selection / unregistered screen.
         """
         try:
             selection = self._treeview.selection()
@@ -801,8 +895,17 @@ class FreeAgentsScreen(ctk.CTkFrame):
             print(f"Warning: navigation to fighter_profile failed: {e}",
                   flush=True)
         except Exception as e:
-            print(f"Warning: row double-click handler failed: {e}",
-                  flush=True)
+            print(f"Warning: navigation handler failed: {e}", flush=True)
+
+    def _on_row_double_click(self, event=None):
+        """Handle double-click on a Treeview row — navigate to profile.
+
+        Mirrors RosterScreen._on_row_double_click (D7 in roster.py).
+        Reads the selected row's fighter_id (stored as the Treeview
+        item's iid), calls set_fighter_id() on the Fighter Profile
+        screen, then navigates via state.set_active_screen.
+        """
+        self._navigate_to_selected_profile()
 
     def _on_sign_clicked(self):
         """Handle Sign Selected Fighter button click (D2, D3, D4).
@@ -987,10 +1090,13 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._refresh_subtitle(len(self._fa_data))
 
             # After a re-render, the selection is gone — disable the
-            # Sign button until the player picks a new row.
+            # Sign + View Profile buttons until the player picks a new
+            # row (UI-POLISH Fix 3 — View Profile added alongside Sign).
             try:
                 if self._sign_button:
                     self._sign_button.configure(state="disabled")
+                if self._view_profile_button:
+                    self._view_profile_button.configure(state="disabled")
             except Exception:
                 pass
         except Exception as e:
@@ -1028,6 +1134,9 @@ class FreeAgentsScreen(ctk.CTkFrame):
         of this method) + "All Weight Classes" as the first option.
         Values are formatted as "WC Name (gender) [id=N]" so we can
         extract the id when the player selects one.
+
+        Per UI-POLISH Fix 2: when a gender filter is active, the
+        dropdown only shows weight classes for that gender.
         """
         try:
             current_value = None
@@ -1039,19 +1148,36 @@ class FreeAgentsScreen(ctk.CTkFrame):
             rows = []
             try:
                 # Query weight classes present in the free-agent pool.
-                # current_promotion_id IS NULL = free agent.
-                rows = conn.execute(
-                    """
-                    SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
-                    FROM fighters f
-                    JOIN weight_classes wc
-                      ON wc.weight_class_id = f.weight_class_id
-                    WHERE f.current_promotion_id IS NULL
-                      AND f.is_active = 1
-                      AND f.is_retired = 0
-                    ORDER BY wc.display_order ASC, wc.name ASC
-                    """,
-                ).fetchall()
+                # current_promotion_id IS NULL = free agent. If a
+                # gender filter is active, filter by gender too.
+                if self._gender_filter is not None:
+                    rows = conn.execute(
+                        """
+                        SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
+                        FROM fighters f
+                        JOIN weight_classes wc
+                          ON wc.weight_class_id = f.weight_class_id
+                        WHERE f.current_promotion_id IS NULL
+                          AND f.is_active = 1
+                          AND f.is_retired = 0
+                          AND f.gender = ?
+                        ORDER BY wc.display_order ASC, wc.name ASC
+                        """,
+                        (self._gender_filter,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
+                        FROM fighters f
+                        JOIN weight_classes wc
+                          ON wc.weight_class_id = f.weight_class_id
+                        WHERE f.current_promotion_id IS NULL
+                          AND f.is_active = 1
+                          AND f.is_retired = 0
+                        ORDER BY wc.display_order ASC, wc.name ASC
+                        """,
+                    ).fetchall()
             except sqlite3.Error as e:
                 print(f"Warning: free-agent weight-class query failed: {e}",
                       flush=True)
@@ -1105,6 +1231,11 @@ class FreeAgentsScreen(ctk.CTkFrame):
             if self._weight_class_filter is not None:
                 where_clauses.append("f.weight_class_id = ?")
                 params.append(self._weight_class_filter)
+
+            # Per UI-POLISH Fix 2: gender filter. Applied in SQL.
+            if self._gender_filter is not None:
+                where_clauses.append("f.gender = ?")
+                params.append(self._gender_filter)
 
             if self._search_term:
                 # Case-insensitive substring on first_name + last_name
@@ -1274,10 +1405,14 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 pass
 
             for i, fighter in enumerate(page_rows):
-                phase_phrase = _phrase_or_fallback(
-                    fighter["career_phase_stored"], "(uncached)")
-                momentum_phrase = _phrase_or_fallback(
-                    fighter["momentum_stored"], "(uncached)")
+                # Per UI-POLISH Fix 5: title-case the voice phrases so
+                # they read as polished prose, not lowercase voice.py
+                # output. display_phrase handles the "label||phrase"
+                # cache decode + title-case in one call.
+                phase_phrase = display_phrase(
+                    fighter["career_phase_stored"], "(Uncached)")
+                momentum_phrase = display_phrase(
+                    fighter["momentum_stored"], "(Uncached)")
                 # Potential phrase. Per D1: reads from
                 # fighter_descriptors.potential_desc (the interpretation-
                 # layer projection of the raw potential number). NULL
@@ -1286,9 +1421,9 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 # can't see a potential: they haven't scouted this
                 # fighter yet. (Per the Soul doc, this information
                 # asymmetry is the intended design.)
-                potential_phrase = _phrase_or_fallback(
+                potential_phrase = display_phrase(
                     fighter["potential_stored"],
-                    "(no scouting report yet)")
+                    "(No Scouting Report Yet)")
                 record_str = _format_record(
                     fighter["record_wins"],
                     fighter["record_losses"],

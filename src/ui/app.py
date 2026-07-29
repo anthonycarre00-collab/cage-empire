@@ -397,9 +397,11 @@ class CageEmpireApp(ctk.CTk):
         from ui.screens.promotion_select import PromotionSelectScreen
 
         # Unpack the shell components so the promo select screen
-        # can take the full window
+        # can take the full window. Note: the sidebar is now wrapped
+        # in sidebar_wrapper (per UI-POLISH Fix 6 — the 2px separator),
+        # so we unpack the WRAPPER, not the sidebar itself.
         self.top_bar.pack_forget()
-        self.sidebar.pack_forget()
+        self.sidebar_wrapper.pack_forget()
         self.bottom_bar.pack_forget()
         self.main_content.pack_forget()
 
@@ -423,9 +425,12 @@ class CageEmpireApp(ctk.CTk):
 
         # Unpack EVERYTHING, then re-pack in the correct order.
         # tkinter pack order is critical: top first, bottom second,
-        # then left sidebar, then main content fills the rest.
+        # then left sidebar (wrapper), then main content fills the rest.
+        # Per UI-POLISH Fix 6: sidebar is now inside sidebar_wrapper
+        # (2px separator on the right edge), so we pack the wrapper
+        # instead of the sidebar directly.
         self.top_bar.pack_forget()
-        self.sidebar.pack_forget()
+        self.sidebar_wrapper.pack_forget()
         self.bottom_bar.pack_forget()
         self.main_content.pack_forget()
         self.screen_container.pack_forget()
@@ -433,7 +438,7 @@ class CageEmpireApp(ctk.CTk):
         # Re-pack in correct order
         self.top_bar.pack(side="top", fill="x")
         self.bottom_bar.pack(side="bottom", fill="x")
-        self.sidebar.pack(side="left", fill="y")
+        self.sidebar_wrapper.pack(side="left", fill="y")
         self.main_content.pack(side="left", fill="both", expand=True)
         self.screen_container.pack(fill="both", expand=True, padx=20, pady=20)
 
@@ -448,7 +453,14 @@ class CageEmpireApp(ctk.CTk):
     # ============================================================
 
     def _build_top_bar(self):
-        """Build the 60px top bar: logo + date + cash + Advance Day."""
+        """Build the 60px top bar: logo + date + cash + Advance Day.
+
+        Per UI-POLISH Fix 6: the top bar now shows the actual logo
+        image (loaded from `src/ui/assets/logo/cage_empire_compact.png`)
+        at 40x40px on the far left, instead of the text "CAGE EMPIRE".
+        Falls back to the text label if the image can't be loaded
+        (PIL missing, file deleted, etc.).
+        """
         theme = get_theme()
         self.top_bar = ctk.CTkFrame(self, height=60,
                                      corner_radius=0,
@@ -456,28 +468,58 @@ class CageEmpireApp(ctk.CTk):
         self.top_bar.pack(side="top", fill="x")
         self.top_bar.pack_propagate(False)
 
-        # Logo (compact version)
-        self.logo_label = ctk.CTkLabel(self.top_bar, text="CAGE EMPIRE",
-                                        font=theme.fonts.h2,
-                                        text_color=theme.colors.gold)
-        self.logo_label.pack(side="left", padx=20)
-
+        # ---- LOGO (image, with text fallback) ----
+        # The compact logo is a square mark — 40x40 reads well at the
+        # 60px top bar height (10px padding above + below). The text
+        # fallback uses the gold H2 font so the brand still reads
+        # even if the image is missing.
+        self.logo_image = None  # keep a reference so GC doesn't drop it
+        logo_loaded = False
         if HAS_PIL and LOGO_COMPACT.exists():
             try:
                 img = Image.open(str(LOGO_COMPACT))
                 img = img.resize((40, 40), Image.LANCZOS)
-                self.logo_image = ctk.CTkImage(light_image=img, dark_image=img,
-                                                size=(40, 40))
-                self.logo_label.configure(image=self.logo_image,
-                                           compound="left", text="")
-            except Exception:
-                pass  # fall back to text
+                self.logo_image = ctk.CTkImage(
+                    light_image=img, dark_image=img, size=(40, 40))
+                self.logo_label = ctk.CTkLabel(
+                    self.top_bar, image=self.logo_image, text="",
+                    anchor="w",
+                )
+                self.logo_label.pack(side="left", padx=(16, 8))
+                logo_loaded = True
+            except Exception as e:
+                print(f"Warning: logo image load failed: {e}",
+                      flush=True)
+
+        if not logo_loaded:
+            # Text fallback — gold wordmark, matches the brand.
+            self.logo_label = ctk.CTkLabel(
+                self.top_bar, text="CAGE EMPIRE",
+                font=theme.fonts.h2,
+                text_color=theme.colors.gold,
+                anchor="w",
+            )
+            self.logo_label.pack(side="left", padx=20)
+
+        # ---- BRAND WORDMARK (next to logo) ----
+        # Even with the logo image, show the wordmark — the logo is a
+        # mark, the wordmark is the name. Both reinforce the brand.
+        # Hidden if the logo image failed (the text fallback above
+        # already shows "CAGE EMPIRE").
+        if logo_loaded:
+            self.wordmark_label = ctk.CTkLabel(
+                self.top_bar, text="CAGE EMPIRE",
+                font=theme.fonts.h2,
+                text_color=theme.colors.gold,
+                anchor="w",
+            )
+            self.wordmark_label.pack(side="left", padx=(0, 16))
 
         # Sim date (center-left)
         self.date_label = ctk.CTkLabel(self.top_bar, text="",
                                         font=theme.fonts.body,
                                         text_color=theme.colors.text_secondary)
-        self.date_label.pack(side="left", padx=30)
+        self.date_label.pack(side="left", padx=20)
 
         # Cash (center-right)
         self.cash_label = ctk.CTkLabel(self.top_bar, text="",
@@ -485,12 +527,17 @@ class CageEmpireApp(ctk.CTk):
                                         text_color=theme.colors.gold)
         self.cash_label.pack(side="right", padx=20)
 
-        # Advance Day button (the dopamine button — gold accent on hover)
+        # ---- ADVANCE DAY BUTTON (the dopamine button) ----
+        # Per UI-POLISH Fix 6: more prominent — larger (180x44),
+        # bold H3 font, gold background with a subtle crimson hover.
+        # The ▶ glyph + "Advance Day" text + larger size make this
+        # the visual focal point of the top bar — the player's eye
+        # should land here first.
         self.advance_button = ctk.CTkButton(self.top_bar,
-                                             text="▶ Advance Day",
+                                             text="▶  Advance Day",
                                              font=theme.fonts.h3,
-                                             width=140, height=36,
-                                             corner_radius=8,
+                                             width=180, height=44,
+                                             corner_radius=10,
                                              fg_color=theme.colors.gold,
                                              hover_color=theme.colors.crimson,
                                              text_color=theme.colors.bg_base,
@@ -540,17 +587,43 @@ class CageEmpireApp(ctk.CTk):
     # ============================================================
 
     def _build_sidebar(self):
-        """Build the 220px sidebar with nav groups."""
+        """Build the 220px sidebar with nav groups.
+
+        Per UI-POLISH Fix 6: a subtle border on the right edge of the
+        sidebar separates it from the main content (previously the
+        sidebar + main content had no visual divider — they read as
+        one undifferentiated surface).
+        Per UI-POLISH Fix 7: the sidebar is wrapped in a
+        CTkScrollableFrame so it scrolls if the nav list overflows
+        (the existing code already used CTkScrollableFrame here, but
+        we verify the scrollbar is themed to match).
+        """
         theme = get_theme()
-        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0,
-                                     fg_color=theme.colors.bg_surface)
-        self.sidebar.pack(side="left", fill="y")
+        # Use a 2px right border via a parent frame trick: CTkFrame
+        # doesn't natively support per-edge borders, so we wrap the
+        # sidebar in a thin container with bg = bg_border to simulate
+        # a right-edge separator.
+        self.sidebar_wrapper = ctk.CTkFrame(
+            self, width=222, corner_radius=0,
+            fg_color=theme.colors.bg_border,  # the 2px separator color
+        )
+        self.sidebar_wrapper.pack(side="left", fill="y")
+        self.sidebar_wrapper.pack_propagate(False)
+
+        self.sidebar = ctk.CTkFrame(
+            self.sidebar_wrapper, width=220, corner_radius=0,
+            fg_color=theme.colors.bg_surface,
+        )
+        self.sidebar.pack(side="left", fill="both", expand=True)
         self.sidebar.pack_propagate(False)
 
-        # Scrollable sidebar in case nav is too long
-        sidebar_scroll = ctk.CTkScrollableFrame(self.sidebar,
-                                                 fg_color="transparent",
-                                                 scrollbar_button_color=theme.colors.bg_border)
+        # Scrollable sidebar in case nav is too long (D — already
+        # present in the original code; preserved here).
+        sidebar_scroll = ctk.CTkScrollableFrame(
+            self.sidebar,
+            fg_color="transparent",
+            scrollbar_button_color=theme.colors.bg_border,
+        )
         sidebar_scroll.pack(fill="both", expand=True)
 
         self.nav_buttons = {}
@@ -759,14 +832,24 @@ class CageEmpireApp(ctk.CTk):
         self._update_bottom_bar()
 
     def _update_bottom_bar(self):
-        """Refresh the news ticker from the DB."""
+        """Refresh the news ticker from the DB.
+
+        Per UI-POLISH Fix 7: truncate the ticker text to 140 chars
+        (was 120) with "..." so longer headlines still fit. The
+        bottom bar is 32px tall — at the caption font size (13px),
+        ~140 chars fit comfortably in a 1400px-wide window.
+        """
         try:
             from services.news_svc import get_latest_news_summary
             summary = get_latest_news_summary(self.conn, limit=3)
             if summary:
                 text = "  ·  ".join(summary)
-                if len(text) > 120:
-                    text = text[:117] + "..."
+                # Truncate to 140 chars with ellipsis. The brief said
+                # "ensure the news ticker text doesn't overflow" —
+                # 140 chars is the practical max at the caption font
+                # size in a 1400px window.
+                if len(text) > 140:
+                    text = text[:137] + "..."
                 self.ticker_label.configure(text=text)
             else:
                 self.ticker_label.configure(text="CAGE EMPIRE · No recent news")

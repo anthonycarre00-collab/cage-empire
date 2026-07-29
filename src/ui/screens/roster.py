@@ -223,6 +223,8 @@ import tkinter.ttk as ttk
 
 from ui.theme import get_theme
 from ui.state import get_state
+from ui.voice_display import title_case_phrase, display_phrase, \
+    display_attr_descriptor
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
@@ -384,6 +386,8 @@ class RosterScreen(ctk.CTkFrame):
         # Fighter Profile and back. See D3, D4, D5.
         self._current_page = 1
         self._weight_class_filter = None  # None = "All Weight Classes"
+        # Per UI-POLISH Fix 2: gender filter. None = "All Genders".
+        self._gender_filter = None
         self._search_term = ""
         self._sort_column = "fighter_id"  # default: insertion order
         self._sort_reverse = False
@@ -401,6 +405,10 @@ class RosterScreen(ctk.CTkFrame):
         self._next_button = None
         self._subtitle_label = None
         self._weight_class_menu = None
+        # Per UI-POLISH Fix 2: gender filter dropdown.
+        self._gender_menu = None
+        # Per UI-POLISH Fix 3: "View Profile" button below the table.
+        self._view_profile_button = None
         self._search_entry = None
         self._empty_label = None
 
@@ -411,6 +419,7 @@ class RosterScreen(ctk.CTkFrame):
         self._build_filter_row()
         self._build_table()
         self._build_pagination()
+        self._build_view_profile_button()
         self._build_footer()
 
         # Initial render. Use after(50, ...) so the widget is fully
@@ -447,22 +456,49 @@ class RosterScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_filter_row(self):
-        """Build the filter row: weight-class dropdown + search entry.
+        """Build the filter row: gender + weight-class + search entry.
 
-        Layout:
-          [Weight Class: ▼ All Weight Classes]  [Search: [_______]]
+        Layout (per UI-POLISH Fix 2 — gender dropdown added next to
+        the weight-class dropdown):
+          [Gender: ▼ All]  [Weight Class: ▼ All WC]  [Search: [___]]
 
-        The dropdown lists every weight class present in the player's
-        promotion + an "All Weight Classes" option. The search entry
-        is case-insensitive substring on first_name + last_name +
-        nickname. See D4, D5.
+        The gender dropdown filters by `fighters.gender` (male /
+        female / unknown). Male + female weight classes are different
+        divisions in fight sports — separating them is a UX win.
+
+        The weight-class dropdown lists every weight class present in
+        the player's promotion + an "All Weight Classes" option. The
+        search entry is case-insensitive substring on first_name +
+        last_name + nickname. See D4, D5.
         """
         theme = get_theme()
 
         filter_row = ctk.CTkFrame(self, fg_color="transparent")
         filter_row.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
-        # Weight-class dropdown label
+        # ---- GENDER dropdown (UI-POLISH Fix 2) ----
+        gender_label = ctk.CTkLabel(
+            filter_row, text="Gender:",
+            font=theme.fonts.body, text_color=theme.colors.text_secondary,
+        )
+        gender_label.pack(side="left", padx=(0, 8))
+
+        self._gender_menu = ctk.CTkOptionMenu(
+            filter_row,
+            values=["All", "Male", "Female"],
+            command=self._on_gender_change,
+            width=110, height=30,
+            font=theme.fonts.body,
+            dropdown_font=theme.fonts.body,
+            fg_color=theme.colors.bg_surface,
+            button_color=theme.colors.bg_surface_elevated,
+            button_hover_color=theme.colors.steel,
+            text_color=theme.colors.text_primary,
+        )
+        self._gender_menu.set("All")
+        self._gender_menu.pack(side="left", padx=(0, 20))
+
+        # ---- WEIGHT CLASS dropdown ----
         wc_label = ctk.CTkLabel(
             filter_row, text="Weight Class:",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
@@ -488,7 +524,7 @@ class RosterScreen(ctk.CTkFrame):
         self._weight_class_menu.set("All Weight Classes")
         self._weight_class_menu.pack(side="left", padx=(0, 20))
 
-        # Search entry label
+        # ---- SEARCH entry ----
         search_label = ctk.CTkLabel(
             filter_row, text="Search:",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
@@ -589,6 +625,16 @@ class RosterScreen(ctk.CTkFrame):
 
         # Bind double-click → navigate to Fighter Profile (D7).
         self._treeview.bind("<Double-1>", self._on_row_double_click)
+        # Per UI-POLISH Fix 3: bind single-click (ButtonRelease-1) to
+        # enable the View Profile button. Single-click SELECTS (standard
+        # idiom); the player navigates via double-click OR the View
+        # Profile button (D2 — see worklog). This is a deliberate
+        # deviation from the brief's literal "single-click navigates"
+        # because navigating on every single-click would prevent the
+        # player from ever just selecting a row (e.g., to scan the
+        # table without jumping away). The View Profile button is the
+        # visible affordance the brief asks for.
+        self._treeview.bind("<<TreeviewSelect>>", self._on_row_select)
 
         # Empty-state label — shown when no fighters match the
         # filter/search. Packed into the table_card so it overlays
@@ -611,6 +657,12 @@ class RosterScreen(ctk.CTkFrame):
         via ttk.Style(). The style is rebuilt on every _refresh() so
         theme-change refresh picks up the new colors.
 
+        Per UI-POLISH Fix 5 + Fix 6: row font bumped from 12px to
+        14px (theme.fonts.body_small) for readability, heading font
+        bumped from 13 to 15 (theme.fonts.body) for visual hierarchy.
+        Hover effect on rows added (Fix 6) — uses bg_surface_elevated
+        on hover.
+
         Idempotent — safe to call multiple times (ttk.Style.configure
         overwrites the previous config).
         """
@@ -625,6 +677,12 @@ class RosterScreen(ctk.CTkFrame):
             except Exception:
                 pass  # clam may already be in use; that's fine
 
+            # Resolve the font family via theme.fonts (which uses
+            # INTER_FAMILY_RESOLVED — falls back to Segoe UI/Helvetica/
+            # Sans if Inter failed to register).
+            body_font = theme.fonts.body_small
+            heading_font = (body_font[0], body_font[1] + 1, "bold")
+
             # Treeview body
             style.configure(
                 "Roster.Treeview",
@@ -632,15 +690,19 @@ class RosterScreen(ctk.CTkFrame):
                 foreground=theme.colors.text_primary,
                 fieldbackground=theme.colors.bg_surface,
                 bordercolor=theme.colors.bg_border,
-                rowheight=28,
-                font=("Inter", 12),
+                rowheight=30,
+                font=body_font,
             )
             # Selected row — uses bg_surface_elevated (subtle highlight
-            # that matches the Dashboard's hover state)
+            # that matches the Dashboard's hover state). Per UI-POLISH
+            # Fix 6: hover effect on rows — same color as selected for
+            # visual consistency.
             style.map(
                 "Roster.Treeview",
-                background=[("selected", theme.colors.bg_surface_elevated)],
-                foreground=[("selected", theme.colors.text_primary)],
+                background=[("selected", theme.colors.bg_surface_elevated),
+                            ("active", theme.colors.bg_surface_elevated)],
+                foreground=[("selected", theme.colors.text_primary),
+                            ("active", theme.colors.gold)],
             )
             # Heading — gold text on elevated surface (matches the
             # Dashboard's H2 panel titles)
@@ -650,7 +712,7 @@ class RosterScreen(ctk.CTkFrame):
                 foreground=theme.colors.gold,
                 bordercolor=theme.colors.bg_border,
                 relief="flat",
-                font=("Inter", 13, "bold"),
+                font=heading_font,
             )
             style.map(
                 "Roster.Treeview.Heading",
@@ -713,7 +775,49 @@ class RosterScreen(ctk.CTkFrame):
         self._next_button.pack(side="left")
 
     # ============================================================
-    # SECTION 5 — FOOTER (click-to-view-profile hint)
+    # SECTION 5 — VIEW PROFILE BUTTON (UI-POLISH Fix 3)
+    # ============================================================
+
+    def _build_view_profile_button(self):
+        """Build the "View Profile" button below the pagination bar.
+
+        Per UI-POLISH Fix 3: the user didn't discover that double-
+        click navigates to Fighter Profile. The fix adds:
+          1. Single-click on a row selects it (existing behavior).
+          2. A visible "View Profile" button below the table that
+             navigates to the selected fighter's profile.
+        This makes the click-to-view affordance OBVIOUS — the player
+        doesn't need to know about double-click.
+        """
+        theme = get_theme()
+        button_row = ctk.CTkFrame(self, fg_color="transparent")
+        button_row.pack(side="top", fill="x", padx=20, pady=(0, 8))
+
+        self._view_profile_button = ctk.CTkButton(
+            button_row, text="▶  View Profile",
+            font=theme.fonts.body,
+            width=160, height=32,
+            corner_radius=6,
+            fg_color=theme.colors.gold,
+            hover_color=theme.colors.crimson,
+            text_color=theme.colors.bg_base,
+            state="disabled",  # enabled when a row is selected
+            command=self._on_view_profile_clicked,
+        )
+        self._view_profile_button.pack(side="left")
+
+        hint_label = ctk.CTkLabel(
+            button_row,
+            text="Tip: single-click a fighter to select, then click View Profile "
+                 "(or double-click a row to jump straight there).",
+            font=theme.fonts.caption,
+            text_color=theme.colors.text_tertiary,
+            anchor="w",
+        )
+        hint_label.pack(side="left", padx=20)
+
+    # ============================================================
+    # SECTION 6 — FOOTER (click-to-view-profile hint)
     # ============================================================
 
     def _build_footer(self):
@@ -722,7 +826,8 @@ class RosterScreen(ctk.CTkFrame):
 
         footer_label = ctk.CTkLabel(
             self,
-            text="Double-click a fighter to view their profile.",
+            text="Click a fighter to view their profile — single-click selects, "
+                 "double-click opens.",
             font=theme.fonts.caption,
             text_color=theme.colors.text_tertiary,
             anchor="w",
@@ -755,6 +860,24 @@ class RosterScreen(ctk.CTkFrame):
                     self._weight_class_filter = None
             except (ValueError, AttributeError):
                 self._weight_class_filter = None
+        self._current_page = 1
+        self._refresh()
+
+    def _on_gender_change(self, choice):
+        """Handle gender dropdown change (UI-POLISH Fix 2).
+
+        Maps the dropdown label to the fighters.gender column value:
+          "All"     → None (no filter)
+          "Male"    → "male"
+          "Female"  → "female"
+        Resets to page 1 + triggers _refresh.
+        """
+        if choice == "Male":
+            self._gender_filter = "male"
+        elif choice == "Female":
+            self._gender_filter = "female"
+        else:
+            self._gender_filter = None
         self._current_page = 1
         self._refresh()
 
@@ -814,6 +937,41 @@ class RosterScreen(ctk.CTkFrame):
         Profile screen isn't registered yet, catch the ValueError
         and log a warning.
         """
+        self._navigate_to_selected_profile()
+
+    def _on_row_select(self, event=None):
+        """Handle single-click row selection (UI-POLISH Fix 3).
+
+        Enables the View Profile button when a row is selected.
+        The player can then click View Profile to navigate, OR
+        double-click the row to navigate directly.
+        """
+        try:
+            selection = self._treeview.selection()
+            if selection:
+                self._view_profile_button.configure(state="normal")
+            else:
+                self._view_profile_button.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _on_view_profile_clicked(self):
+        """Handle View Profile button click (UI-POLISH Fix 3).
+
+        Navigates to the Fighter Profile screen for the currently
+        selected row. Defensive: if no row is selected, no-op (the
+        button should be disabled in that case, but defensive).
+        """
+        self._navigate_to_selected_profile()
+
+    def _navigate_to_selected_profile(self):
+        """Shared navigation helper — used by double-click + View Profile.
+
+        Reads the selected fighter_id from the Treeview, calls
+        set_fighter_id on the Fighter Profile screen, then navigates
+        via state.set_active_screen. Defensive against missing
+        selection / unregistered screen.
+        """
         try:
             selection = self._treeview.selection()
             if not selection:
@@ -837,8 +995,7 @@ class RosterScreen(ctk.CTkFrame):
             print(f"Warning: navigation to fighter_profile failed: {e}",
                   flush=True)
         except Exception as e:
-            print(f"Warning: row double-click handler failed: {e}",
-                  flush=True)
+            print(f"Warning: navigation handler failed: {e}", flush=True)
 
     # ============================================================
     # REFRESH CALLBACK (registered with GameState)
@@ -889,6 +1046,15 @@ class RosterScreen(ctk.CTkFrame):
             self._render_table()
             self._refresh_pagination(total_pages)
             self._refresh_subtitle(conn, promo_id, len(self._roster_data))
+
+            # After a re-render, the selection is gone — disable the
+            # View Profile button until the player picks a new row
+            # (UI-POLISH Fix 3).
+            try:
+                if self._view_profile_button:
+                    self._view_profile_button.configure(state="disabled")
+            except Exception:
+                pass
         except Exception as e:
             print(f"Warning: RosterScreen._refresh failed: {e}", flush=True)
 
@@ -934,6 +1100,11 @@ class RosterScreen(ctk.CTkFrame):
         are formatted as "WC Name (gender) [id=N]" so we can extract
         the id when the player selects one.
 
+        Per UI-POLISH Fix 2: when a gender filter is active, the
+        dropdown only shows weight classes for that gender — saves
+        the player from picking a mismatched combination (e.g., Female
+        + Heavyweight) that would yield an empty result set.
+
         Defensive — if the query fails, the dropdown just shows "All
         Weight Classes" (the player can still see the full roster).
         """
@@ -948,19 +1119,35 @@ class RosterScreen(ctk.CTkFrame):
                 pass
 
             # Query weight classes present in the player's roster.
+            # If a gender filter is active, filter by gender too.
             rows = []
             try:
-                rows = conn.execute(
-                    """
-                    SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
-                    FROM fighters f
-                    JOIN weight_classes wc
-                      ON wc.weight_class_id = f.weight_class_id
-                    WHERE f.current_promotion_id = ? AND f.is_active = 1
-                    ORDER BY wc.display_order ASC, wc.name ASC
-                    """,
-                    (promo_id,),
-                ).fetchall()
+                if self._gender_filter is not None:
+                    rows = conn.execute(
+                        """
+                        SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
+                        FROM fighters f
+                        JOIN weight_classes wc
+                          ON wc.weight_class_id = f.weight_class_id
+                        WHERE f.current_promotion_id = ?
+                          AND f.is_active = 1
+                          AND f.gender = ?
+                        ORDER BY wc.display_order ASC, wc.name ASC
+                        """,
+                        (promo_id, self._gender_filter),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT DISTINCT wc.weight_class_id, wc.name, wc.gender
+                        FROM fighters f
+                        JOIN weight_classes wc
+                          ON wc.weight_class_id = f.weight_class_id
+                        WHERE f.current_promotion_id = ? AND f.is_active = 1
+                        ORDER BY wc.display_order ASC, wc.name ASC
+                        """,
+                        (promo_id,),
+                    ).fetchall()
             except sqlite3.Error as e:
                 print(f"Warning: weight-class query failed: {e}",
                       flush=True)
@@ -976,8 +1163,8 @@ class RosterScreen(ctk.CTkFrame):
             self._weight_class_menu.configure(values=values)
 
             # If the current value is no longer in the list (e.g., the
-            # last fighter in that weight class was cut), reset to
-            # "All Weight Classes".
+            # last fighter in that weight class was cut, OR the gender
+            # filter narrowed the list), reset to "All Weight Classes".
             if current_value and current_value in values:
                 self._weight_class_menu.set(current_value)
             else:
@@ -1020,6 +1207,12 @@ class RosterScreen(ctk.CTkFrame):
             if self._weight_class_filter is not None:
                 where_clauses.append("f.weight_class_id = ?")
                 params.append(self._weight_class_filter)
+
+            # Per UI-POLISH Fix 2: gender filter. Applied in SQL —
+            # efficient even with 1000+ rows.
+            if self._gender_filter is not None:
+                where_clauses.append("f.gender = ?")
+                params.append(self._gender_filter)
 
             if self._search_term:
                 # Case-insensitive substring on first_name + last_name
@@ -1211,12 +1404,15 @@ class RosterScreen(ctk.CTkFrame):
                 pass
 
             for i, fighter in enumerate(page_rows):
-                phase_phrase = _phrase_or_fallback(
-                    fighter["career_phase_stored"], "(uncached)")
-                momentum_phrase = _phrase_or_fallback(
-                    fighter["momentum_stored"], "(uncached)")
-                narrative_phrase = _phrase_or_fallback(
-                    fighter["narrative_stored"], "(none)")
+                # Per UI-POLISH Fix 5: title-case the voice phrases
+                # so they read as polished prose, not lowercase
+                # voice.py output.
+                phase_phrase = display_phrase(
+                    fighter["career_phase_stored"], "(Uncached)")
+                momentum_phrase = display_phrase(
+                    fighter["momentum_stored"], "(Uncached)")
+                narrative_phrase = display_phrase(
+                    fighter["narrative_stored"], "(None)")
                 record_str = _format_record(
                     fighter["record_wins"],
                     fighter["record_losses"],

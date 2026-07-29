@@ -239,11 +239,22 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
 
 import json
 import sqlite3
+from pathlib import Path
 
 import customtkinter as ctk
 
+# PIL is used for portrait image loading + placeholder generation
+# (UI-POLISH Fix 4). Falls back gracefully if PIL isn't installed.
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 from ui.theme import get_theme
 from ui.state import get_state
+from ui.voice_display import title_case_phrase, display_phrase, \
+    display_attr_descriptor
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
@@ -287,6 +298,13 @@ _ATTRIBUTE_DISPLAY_ORDER = [
     "fight_iq", "adaptability",
 ]
 
+# Per UI-POLISH Fix 1: how many attributes to show by default (the
+# "top N" by raw value). The rest are hidden behind the "Show Full
+# Stats" toggle. 6 is a good balance — enough to characterise a
+# fighter (their 2-3 strengths + 2-3 supporting traits) without
+# overwhelming the screen.
+_TOP_ATTRIBUTES_COUNT = 6
+
 # Personality display order. Groups traits into logical categories
 # (combat behavior → mental toughness → social → career).
 _PERSONALITY_DISPLAY_ORDER = [
@@ -301,6 +319,20 @@ _PERSONALITY_DISPLAY_ORDER = [
     # Career
     "ambition", "loyalty", "coachability",
     "professionalism", "morale", "travel_comfort",
+]
+
+# Per UI-POLISH Fix 1: the 5 key personality traits shown by default.
+# The brief specifies "aggression, composure, discipline,
+# marketability, fan_friendliness" — but marketability +
+# fan_friendliness are NOT in fighter_personality (they're in
+# fighters table) and therefore NOT in the personality_descriptors
+# JSON. We substitute with the closest semantic equivalents that ARE
+# in the cache (D3 — see worklog):
+#   marketability    → charisma (public-facing magnetism)
+#   fan_friendliness → sportsmanship (how fans perceive conduct)
+_KEY_PERSONALITY_TRAITS = [
+    "aggression", "composure", "discipline",
+    "charisma", "sportsmanship",
 ]
 
 # Human-readable result_type labels. The fight_history.result_type
@@ -434,6 +466,203 @@ def _outcome_badge(outcome):
 
 
 # ============================================================
+# HELPERS — portrait loading (UI-POLISH Fix 4)
+# ============================================================
+
+# Path to the data/portraits/ directory. Portrait files are named
+# <fighter_id>.png (e.g., data/portraits/724.png). The directory is
+# at the project root (cage_empire/data/portraits/).
+_PORTRAITS_DIR = (Path(__file__).resolve().parent.parent.parent.parent
+                  / "data" / "portraits")
+
+# Portrait display size (px). Per the brief: "200x200px placeholder
+# at the top-left of the profile".
+_PORTRAIT_SIZE = 200
+
+# Palette for the initials-placeholder background. Picked from the
+# Office Mode palette so the placeholders feel branded. The fighter_id
+# selects the color deterministically (so the same fighter always
+# gets the same placeholder color).
+_PLACEHOLDER_COLORS = [
+    "#c8323a",  # crimson
+    "#d4a55a",  # gold
+    "#6b7280",  # steel
+    "#4ade80",  # success
+    "#fbbf24",  # warning
+    "#3b82f6",  # blue (rare — used for variety)
+]
+
+
+def _load_portrait_image(fighter_id, first_name, last_name):
+    """Load a fighter's portrait image, or generate a placeholder.
+
+    Per UI-POLISH Fix 4: if `data/portraits/<fighter_id>.png` exists,
+    load it with PIL + resize to 200x200. If no portrait exists,
+    generate a placeholder image: a colored square with the fighter's
+    initials (e.g., "JR" for John Reed). The color is derived from
+    the fighter_id (deterministic).
+
+    Returns a PIL.Image (ready to be wrapped in CTkImage), or None
+    if PIL isn't available.
+    """
+    if not HAS_PIL:
+        return None
+
+    # Try to load the fighter's portrait file.
+    portrait_path = _PORTRAITS_DIR / f"{fighter_id}.png"
+    if portrait_path.exists():
+        try:
+            img = Image.open(str(portrait_path))
+            img = img.convert("RGBA")
+            img = img.resize((_PORTRAIT_SIZE, _PORTRAIT_SIZE),
+                             Image.LANCZOS)
+            return img
+        except Exception as e:
+            print(f"Warning: portrait load failed for fighter "
+                  f"{fighter_id}: {e}", flush=True)
+
+    # No portrait file (or load failed) — generate a placeholder.
+    return _generate_initials_placeholder(fighter_id, first_name, last_name)
+
+
+def _generate_initials_placeholder(fighter_id, first_name, last_name):
+    """Generate a colored placeholder image with the fighter's initials.
+
+    The placeholder is a 200x200 RGBA image with:
+      - A solid color background (deterministic from fighter_id).
+      - The fighter's initials centered in white, large font.
+
+    Args:
+        fighter_id: int — used to pick the background color.
+        first_name, last_name: strings — used to compute initials.
+
+    Returns:
+        PIL.Image, or None if PIL isn't available.
+    """
+    if not HAS_PIL:
+        return None
+
+    # Pick the background color deterministically.
+    color = _PLACEHOLDER_COLORS[fighter_id % len(_PLACEHOLDER_COLORS)]
+
+    # Create the image with the colored background.
+    img = Image.new("RGBA", (_PORTRAIT_SIZE, _PORTRAIT_SIZE), color)
+    draw = ImageDraw.Draw(img)
+
+    # Compute initials (e.g., "John" "Reed" → "JR").
+    initials = ""
+    if first_name:
+        initials += str(first_name)[0].upper()
+    if last_name:
+        initials += str(last_name)[0].upper()
+    if not initials:
+        initials = "?"
+
+    # Try to load a bundled font for the initials. Fall back to the
+    # default bitmap font if none load.
+    font_size = 80
+    font = None
+    try:
+        from ui.theme import FONT_INTER_BOLD
+        if FONT_INTER_BOLD.exists():
+            font = ImageFont.truetype(str(FONT_INTER_BOLD), font_size)
+    except Exception:
+        pass
+    if font is None:
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+
+    # Center the initials in the image.
+    try:
+        # textbbox returns (left, top, right, bottom) in pixels.
+        bbox = draw.textbbox((0, 0), initials, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        x = (_PORTRAIT_SIZE - text_w) // 2 - bbox[0]
+        y = (_PORTRAIT_SIZE - text_h) // 2 - bbox[1]
+        draw.text((x, y), initials, fill="white", font=font)
+    except Exception:
+        # Last-resort: just draw the initials at a fixed position.
+        draw.text((60, 60), initials, fill="white", font=font)
+
+    return img
+
+
+# ============================================================
+# HELPERS — scouting report (UI-POLISH Fix 1)
+# ============================================================
+
+def _confidence_band(confidence):
+    """Translate a scout_confidence (0-100) to a voice phrase.
+
+    Per §14: no raw attribute values in the player-facing UI. The
+    scout_confidence is a raw number — band it into a voice phrase.
+    """
+    try:
+        v = int(confidence)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if v >= 80:
+        return "High Confidence"
+    if v >= 60:
+        return "Moderate Confidence"
+    if v >= 40:
+        return "Mixed Confidence"
+    if v >= 20:
+        return "Low Confidence"
+    return "Very Low Confidence"
+
+
+# ============================================================
+# HELPERS — attribute ranking (UI-POLISH Fix 1, D1 carve-out)
+# ============================================================
+
+def _rank_attributes_by_value(conn, fighter_id):
+    """Return attribute names sorted by raw value (descending).
+
+    Per UI-POLISH Fix 1 D1 (§17 carve-out): reads `fighter_attributes`
+    for the SOLE PURPOSE of ranking attributes by value. The raw
+    values themselves are NEVER displayed — only the voice descriptors
+    from the cache's attribute_descriptors JSON. This is a
+    transitional pattern; a future task should add a
+    `top_attribute_keys` JSON column to fighter_descriptors so the UI
+    doesn't need to touch the simulation table at all.
+
+    Returns:
+        List of attribute names (strings), highest value first.
+        Empty list if the fighter has no attributes row.
+    """
+    try:
+        # Read all attribute columns + their values for this fighter.
+        row = conn.execute(
+            "SELECT * FROM fighter_attributes WHERE fighter_id = ?",
+            (fighter_id,),
+        ).fetchone()
+        if row is None:
+            return []
+        cols = [d[0] for d in conn.execute(
+            "SELECT * FROM fighter_attributes WHERE fighter_id = ?",
+            (fighter_id,),
+        ).description]
+        # Build {attr_name: value} excluding the non-attribute columns.
+        skip = {"fighter_attribute_id", "fighter_id",
+                "created_at", "updated_at"}
+        attrs = {col: val for col, val in zip(cols, row)
+                 if col not in skip and val is not None}
+        # Sort by value descending. Return the names only.
+        sorted_names = sorted(attrs.keys(),
+                              key=lambda k: attrs[k],
+                              reverse=True)
+        return sorted_names
+    except sqlite3.Error as e:
+        print(f"Warning: attribute ranking query failed for "
+              f"fighter {fighter_id}: {e}", flush=True)
+        return []
+
+
+# ============================================================
 # FIGHTER PROFILE SCREEN
 # ============================================================
 
@@ -466,6 +695,18 @@ class FighterProfileScreen(ctk.CTkFrame):
         # navigation. None = "no fighter selected" (D5).
         self._fighter_id = None
 
+        # Per UI-POLISH Fix 1: "Show Full Stats" toggle state. Default
+        # OFF (show only top 6 attributes + 5 key personality traits).
+        # Reset to OFF whenever set_fighter_id is called (so switching
+        # fighters doesn't inherit the toggle state).
+        self._show_full_stats = False
+
+        # Per UI-POLISH Fix 4: portrait image reference. Kept as an
+        # attribute so the GC doesn't drop the underlying Tk image
+        # (Tk images are referenced by name, not Python refcount).
+        self._portrait_ctk_image = None
+        self._portrait_label = None
+
         # Dynamic-widget tracking. _refresh destroys these before
         # re-rendering. See D10.
         self._header_widgets = []
@@ -475,10 +716,12 @@ class FighterProfileScreen(ctk.CTkFrame):
         self._fights_widgets = []
         self._attr_widgets = []
         self._pers_widgets = []
+        # Per UI-POLISH Fix 1: scouting report section widgets.
+        self._scouting_widgets = []
 
         # Scrollable root container (D4). Holds all the cards.
         self._scroll = None
-        # Header label (name + subtitle) — kept as attributes so
+        # Header labels (name + subtitle) — kept as attributes so
         # _refresh can call .configure() on them without recreating.
         self._name_label = None
         self._subtitle_label = None
@@ -490,6 +733,16 @@ class FighterProfileScreen(ctk.CTkFrame):
         self._attr_content = None
         self._pers_content = None
         self._empty_label = None
+        # Per UI-POLISH Fix 1: scouting section content container.
+        self._scouting_content = None
+        # Per UI-POLISH Fix 1: attribute + personality section cards
+        # (so we can hide/show them based on whether the fighter is
+        # on the player's promotion).
+        self._attr_card = None
+        self._pers_card = None
+        self._scouting_card = None
+        # Per UI-POLISH Fix 1: the "Show Full Stats" toggle button.
+        self._toggle_button = None
 
         # Build the static structure. Dynamic content is rendered by
         # _refresh.
@@ -502,6 +755,9 @@ class FighterProfileScreen(ctk.CTkFrame):
         self._build_recent_fights()
         self._build_attribute_profile()
         self._build_personality()
+        # Per UI-POLISH Fix 1: scouting section (shown instead of
+        # attribute/personality for other-promotion fighters).
+        self._build_scouting_section()
 
         # Initial render — shows the "no fighter selected" empty
         # state until set_fighter_id is called.
@@ -523,6 +779,10 @@ class FighterProfileScreen(ctk.CTkFrame):
         state.refresh("fighter_profile") which calls _refresh() again
         — harmless (idempotent).
 
+        Per UI-POLISH Fix 1: resets the "Show Full Stats" toggle to
+        OFF whenever a new fighter is loaded. The player starts with
+        the summary view + can expand if they want details.
+
         Args:
             fighter_id: int — the fighter_id to display.
         """
@@ -530,6 +790,8 @@ class FighterProfileScreen(ctk.CTkFrame):
             self._fighter_id = int(fighter_id)
         except (TypeError, ValueError):
             self._fighter_id = None
+        # Reset the toggle state for the new fighter.
+        self._show_full_stats = False
         # Immediate refresh so the screen is ready before navigation.
         self._refresh()
 
@@ -592,24 +854,63 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_header(self):
-        """Build the H1 name + subtitle ('WC · Promo · Gym')."""
+        """Build the header: portrait + H1 name + WC · Promo · Gym subtitle.
+
+        Per UI-POLISH Fix 4: the header is now a horizontal layout —
+        portrait (200x200) on the left, name + subtitle on the right.
+        The portrait is loaded by _refresh_header (which calls
+        _load_portrait_image). If the portrait can't be loaded (PIL
+        missing, file not found, placeholder generation fails), the
+        portrait label is hidden + the name takes the full width.
+
+        Layout:
+          ┌──────────┐  ┌─────────────────────────────────────┐
+          │          │  │  John Reed "Lightning"               │
+          │ Portrait │  │  Lightweight · Alpha Combat · Gym X  │
+          │ 200x200  │  │                                     │
+          └──────────┘  └─────────────────────────────────────┘
+        """
         theme = get_theme()
+
+        # Horizontal container: portrait on left, name+subtitle right.
+        header_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        header_row.pack(side="top", fill="x", padx=20, pady=(10, 0))
+
+        # ---- LEFT: Portrait ----
+        self._portrait_label = ctk.CTkLabel(
+            header_row, text="",
+            width=_PORTRAIT_SIZE, height=_PORTRAIT_SIZE,
+            corner_radius=8,
+            fg_color=theme.colors.bg_surface_elevated,
+            anchor="center",
+        )
+        self._portrait_label.pack(side="left", padx=(0, 16), pady=(0, 10))
+        # The portrait image is set by _refresh_header. Until then,
+        # show a placeholder text "No Image".
+        self._portrait_label.configure(text="No Image",
+                                        text_color=theme.colors.text_tertiary,
+                                        font=theme.fonts.caption)
+
+        # ---- RIGHT: Name + Subtitle ----
+        name_subtle_container = ctk.CTkFrame(header_row, fg_color="transparent")
+        name_subtle_container.pack(side="left", fill="both", expand=True,
+                                    pady=(0, 10))
 
         # Name label (H1) — populated by _refresh.
         self._name_label = ctk.CTkLabel(
-            self._scroll, text="No fighter selected",
+            name_subtle_container, text="No fighter selected",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
-            anchor="w",
+            anchor="w", wraplength=700, justify="left",
         )
-        self._name_label.pack(side="top", fill="x", padx=20, pady=(10, 0))
+        self._name_label.pack(side="top", fill="x", pady=(0, 4))
 
         # Subtitle — populated by _refresh.
         self._subtitle_label = ctk.CTkLabel(
-            self._scroll, text="",
+            name_subtle_container, text="",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
-            anchor="w",
+            anchor="w", wraplength=700, justify="left",
         )
-        self._subtitle_label.pack(side="top", fill="x", padx=20, pady=(0, 10))
+        self._subtitle_label.pack(side="top", fill="x")
 
     # ============================================================
     # SECTION 3 — IDENTITY BLOCK (6 voice phrases)
@@ -720,27 +1021,52 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_attribute_profile(self):
-        """Build the attribute profile: 26 attributes, 2-col grid.
+        """Build the attribute profile card: 2-col grid + toggle button.
 
         Per D7: rendered as a 2-column grid (label | descriptor).
-        26 attributes / 2 columns = 13 rows. Inside its own card with
-        a gold H2 section title ("ATTRIBUTE PROFILE").
+        Per UI-POLISH Fix 1: shows top 6 attributes by default (D1
+        carve-out for ranking via fighter_attributes). The "Show Full
+        Stats" toggle button reveals all 26. The toggle is at the
+        top-right of the card title row.
+
+        The card reference is kept as self._attr_card so _refresh can
+        hide/show it based on whether the fighter is on the player's
+        promotion (Fix 1 — other-promotion fighters see a scouting
+        report instead).
         """
         theme = get_theme()
 
-        card = ctk.CTkFrame(
+        self._attr_card = ctk.CTkFrame(
             self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
         )
-        card.pack(side="top", fill="x", padx=20, pady=(0, 10))
+        self._attr_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
+
+        # Title row: H2 title on the left, toggle button on the right.
+        title_row = ctk.CTkFrame(self._attr_card, fg_color="transparent")
+        title_row.pack(side="top", fill="x", padx=15, pady=(12, 5))
 
         title = ctk.CTkLabel(
-            card, text="ATTRIBUTE PROFILE",
+            title_row, text="ATTRIBUTE PROFILE",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
-        title.pack(side="top", fill="x", padx=15, pady=(12, 5))
+        title.pack(side="left")
 
-        self._attr_content = ctk.CTkFrame(card, fg_color="transparent")
+        # Toggle button (UI-POLISH Fix 1). Default text: "Show Full
+        # Stats". When clicked, flips to "Hide Full Stats" + re-renders.
+        self._toggle_button = ctk.CTkButton(
+            title_row, text="▸ Show Full Stats",
+            font=theme.fonts.body_small,
+            width=160, height=28,
+            corner_radius=6,
+            fg_color=theme.colors.bg_surface_elevated,
+            hover_color=theme.colors.steel,
+            text_color=theme.colors.text_primary,
+            command=self._on_toggle_full_stats,
+        )
+        self._toggle_button.pack(side="right")
+
+        self._attr_content = ctk.CTkFrame(self._attr_card, fg_color="transparent")
         self._attr_content.pack(side="top", fill="x", padx=15, pady=(0, 12))
 
     # ============================================================
@@ -748,27 +1074,72 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_personality(self):
-        """Build the personality section: 20 traits, 2-col grid.
+        """Build the personality card: 2-col grid.
 
         Per D7: rendered as a 2-column grid (label | descriptor).
-        20 traits / 2 columns = 10 rows. Inside its own card.
+        Per UI-POLISH Fix 1: shows 5 key traits (aggression, composure,
+        discipline, charisma, sportsmanship) by default; the rest are
+        revealed by the SAME "Show Full Stats" toggle in the attribute
+        profile section (D3 — substituted marketability → charisma,
+        fan_friendliness → sportsmanship since the former aren't in
+        the personality_descriptors cache).
+
+        The card reference is kept as self._pers_card so _refresh can
+        hide/show it for other-promotion fighters.
         """
         theme = get_theme()
 
-        card = ctk.CTkFrame(
+        self._pers_card = ctk.CTkFrame(
             self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
         )
-        card.pack(side="top", fill="x", padx=20, pady=(0, 10))
+        self._pers_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
         title = ctk.CTkLabel(
-            card, text="PERSONALITY",
+            self._pers_card, text="PERSONALITY",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
         title.pack(side="top", fill="x", padx=15, pady=(12, 5))
 
-        self._pers_content = ctk.CTkFrame(card, fg_color="transparent")
+        self._pers_content = ctk.CTkFrame(self._pers_card, fg_color="transparent")
         self._pers_content.pack(side="top", fill="x", padx=15, pady=(0, 12))
+
+    # ============================================================
+    # SECTION 9 — SCOUTING REPORT (UI-POLISH Fix 1)
+    # ============================================================
+
+    def _build_scouting_section(self):
+        """Build the scouting report card (UI-POLISH Fix 1).
+
+        Shown INSTEAD of the attribute + personality cards for
+        fighters NOT on the player's promotion (other-promotion
+        fighters + free agents). Per the brief:
+          - If a scouting report exists, show the scout's estimates
+            (with uncertainty).
+          - If no scouting report exists, show "No scouting data
+            available — assign a scout to evaluate this fighter".
+
+        The card is built hidden (pack_forget) — _refresh decides
+        whether to show it based on the fighter's promotion.
+        """
+        theme = get_theme()
+
+        self._scouting_card = ctk.CTkFrame(
+            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+        )
+        # NOT packed here — _refresh shows/hides it based on the
+        # fighter's promotion.
+
+        title = ctk.CTkLabel(
+            self._scouting_card, text="SCOUTING REPORT",
+            font=theme.fonts.h2, text_color=theme.colors.gold,
+            anchor="w",
+        )
+        title.pack(side="top", fill="x", padx=15, pady=(12, 5))
+
+        self._scouting_content = ctk.CTkFrame(
+            self._scouting_card, fg_color="transparent")
+        self._scouting_content.pack(side="top", fill="x", padx=15, pady=(0, 12))
 
     # ============================================================
     # REFRESH CALLBACK (registered with GameState)
@@ -810,14 +1181,33 @@ class FighterProfileScreen(ctk.CTkFrame):
                 self._render_empty_state("Fighter not found.")
                 return
 
+            # Per UI-POLISH Fix 1: determine if this fighter is on the
+            # player's promotion. If yes → show full attribute +
+            # personality profile. If no → hide them + show the
+            # scouting report instead.
+            player_promo_id = state.get_player_promotion_id()
+            is_own_fighter = (data.get("current_promotion_id") is not None
+                              and data["current_promotion_id"] == player_promo_id)
+
             # Render every section.
-            self._refresh_header(data)
+            self._refresh_header(conn, data)
             self._refresh_identity(conn, data)
             self._refresh_bio(data)
             self._refresh_career(conn, data)
             self._refresh_recent_fights(conn, data)
-            self._refresh_attribute_profile(data)
-            self._refresh_personality(data)
+            if is_own_fighter:
+                # Own fighter — show attribute + personality profile.
+                self._show_attribute_profile()
+                self._hide_scouting_profile()
+                self._refresh_attribute_profile(conn, data)
+                self._refresh_personality(data)
+            else:
+                # Other promotion's fighter — hide attribute +
+                # personality, show scouting report instead.
+                self._hide_attribute_profile()
+                self._hide_personality_profile()
+                self._show_scouting_profile()
+                self._refresh_scouting(conn, data)
         except Exception as e:
             print(f"Warning: FighterProfileScreen._refresh failed: {e}",
                   flush=True)
@@ -832,7 +1222,7 @@ class FighterProfileScreen(ctk.CTkFrame):
             self._header_widgets, self._identity_widgets,
             self._bio_widgets, self._career_widgets,
             self._fights_widgets, self._attr_widgets,
-            self._pers_widgets,
+            self._pers_widgets, self._scouting_widgets,
         ):
             for w in widget_list:
                 try:
@@ -947,8 +1337,14 @@ class FighterProfileScreen(ctk.CTkFrame):
     # Header — name + WC · Promo · Gym subtitle
     # ------------------------------------------------------------
 
-    def _refresh_header(self, data):
-        """Render the H1 name + 'WC · Promo · Gym' subtitle."""
+    def _refresh_header(self, conn, data):
+        """Render the H1 name + 'WC · Promo · Gym' subtitle + portrait.
+
+        Per UI-POLISH Fix 4: loads the fighter's portrait image (from
+        data/portraits/<fighter_id>.png) or generates a placeholder
+        with the fighter's initials. The portrait is set on
+        self._portrait_label.
+        """
         try:
             theme = get_theme()
             name = _format_name(
@@ -977,6 +1373,38 @@ class FighterProfileScreen(ctk.CTkFrame):
                 font=theme.fonts.body,
                 text_color=theme.colors.text_secondary,
             )
+
+            # ---- Portrait (UI-POLISH Fix 4) ----
+            # Load the portrait image (or generate an initials
+            # placeholder). Wrap in CTkImage + set on the portrait label.
+            try:
+                pil_img = _load_portrait_image(
+                    data["fighter_id"],
+                    data.get("first_name"),
+                    data.get("last_name"),
+                )
+                if pil_img is not None:
+                    self._portrait_ctk_image = ctk.CTkImage(
+                        light_image=pil_img, dark_image=pil_img,
+                        size=(_PORTRAIT_SIZE, _PORTRAIT_SIZE),
+                    )
+                    self._portrait_label.configure(
+                        image=self._portrait_ctk_image, text="")
+                else:
+                    # PIL not available — show a text placeholder.
+                    self._portrait_label.configure(
+                        image=None, text="?",
+                        font=theme.fonts.display,
+                        text_color=theme.colors.text_secondary,
+                    )
+            except Exception as e:
+                print(f"Warning: portrait display failed for "
+                      f"fighter {data['fighter_id']}: {e}", flush=True)
+                self._portrait_label.configure(
+                    image=None, text="?",
+                    font=theme.fonts.display,
+                    text_color=theme.colors.text_secondary,
+                )
         except Exception as e:
             print(f"Warning: header refresh failed: {e}", flush=True)
 
@@ -1018,18 +1446,21 @@ class FighterProfileScreen(ctk.CTkFrame):
                       flush=True)
 
             # Build the 6 phrase rows. Each is (LABEL, phrase).
+            # Per UI-POLISH Fix 5: title-case the voice phrases via
+            # display_phrase (handles "label||phrase" decode + title
+            # case in one call).
             rows = [
                 ("CAREER PHASE",
-                 _phrase_or_fallback(data["career_phase_stored"], "(uncached)")),
+                 display_phrase(data["career_phase_stored"], "(Uncached)")),
                 ("MOMENTUM",
-                 _phrase_or_fallback(data["momentum_stored"], "(uncached)")),
+                 display_phrase(data["momentum_stored"], "(Uncached)")),
                 ("PRESSURE",
-                 _phrase_or_fallback(data["pressure_stored"], "(uncached)")),
+                 display_phrase(data["pressure_stored"], "(Uncached)")),
                 ("NARRATIVE",
-                 _phrase_or_fallback(data["narrative_stored"], "(none)")),
+                 display_phrase(data["narrative_stored"], "(None)")),
                 ("LEGACY",
-                 _phrase_or_fallback(data["legacy_stored"], "(uncached)")),
-                ("TRAJECTORY", trajectory_phrase),
+                 display_phrase(data["legacy_stored"], "(Uncached)")),
+                ("TRAJECTORY", title_case_phrase(trajectory_phrase)),
             ]
 
             # Render as a 2-column grid (label | phrase). Each row is
@@ -1324,17 +1755,33 @@ class FighterProfileScreen(ctk.CTkFrame):
     # Attribute profile (26 attributes, 2-col grid)
     # ------------------------------------------------------------
 
-    def _refresh_attribute_profile(self, data):
-        """Render the attribute profile: 26 attributes, 2-col grid.
+    def _refresh_attribute_profile(self, conn, data):
+        """Render the attribute profile card.
 
-        Per D7: 2-column grid (label | descriptor). Each cell shows
-        the attribute name (gold, smaller) + the voice descriptor
-        (text_primary). The attribute_descriptors JSON stores the
-        descriptors DIRECTLY (no "||" prefix) — voice.py already
-        applied describe_attribute when building the snapshot.
+        Per UI-POLISH Fix 1:
+          - Default view: top _TOP_ATTRIBUTES_COUNT (6) attributes by
+            raw value, displayed as voice descriptors.
+          - "Show Full Stats" toggle reveals all 26 attributes.
+          - The ranking is computed via _rank_attributes_by_value
+            (D1 carve-out — reads fighter_attributes for SORTING ONLY;
+            the displayed values are voice descriptors from the
+            attribute_descriptors JSON cache, never raw numbers).
+        Per UI-POLISH Fix 5: descriptors are title-cased via
+          display_attr_descriptor so they read as polished prose.
+
+        Per D7: 2-column grid (label | descriptor). The
+        attribute_descriptors JSON stores descriptors DIRECTLY (no
+        "||" prefix) — voice.py already applied describe_attribute.
         """
         try:
             theme = get_theme()
+
+            # Update the toggle button text based on the current state.
+            if self._toggle_button is not None:
+                if self._show_full_stats:
+                    self._toggle_button.configure(text="▴ Hide Full Stats")
+                else:
+                    self._toggle_button.configure(text="▸ Show Full Stats")
 
             # Parse the JSON. Defensive — if missing/malformed, show
             # the empty-state (D5).
@@ -1360,23 +1807,42 @@ class FighterProfileScreen(ctk.CTkFrame):
                 self._attr_widgets.append(label)
                 return
 
-            # Build the ordered attribute list. Use the display order
-            # list; append any extras at the end (defensive against
-            # schema drift — D5).
-            ordered_keys = []
-            seen = set()
-            for key in _ATTRIBUTE_DISPLAY_ORDER:
-                if key in attrs and key not in seen:
-                    ordered_keys.append(key)
-                    seen.add(key)
-            for key in attrs:
-                if key not in seen:
-                    ordered_keys.append(key)
-                    seen.add(key)
+            # Build the ordered attribute list. Per UI-POLISH Fix 1:
+            # when the toggle is OFF, show the top N attributes by
+            # raw value (using _rank_attributes_by_value — D1 carve-
+            # out for ranking only). When ON, show ALL attributes in
+            # the canonical display order.
+            if self._show_full_stats:
+                # Full stats — use the canonical display order.
+                ordered_keys = []
+                seen = set()
+                for key in _ATTRIBUTE_DISPLAY_ORDER:
+                    if key in attrs and key not in seen:
+                        ordered_keys.append(key)
+                        seen.add(key)
+                for key in attrs:
+                    if key not in seen:
+                        ordered_keys.append(key)
+                        seen.add(key)
+            else:
+                # Summary view — top N by raw value. Get the ranking
+                # from fighter_attributes (D1 carve-out), then filter
+                # to those that have descriptors in the JSON cache.
+                ranked = _rank_attributes_by_value(conn, data["fighter_id"])
+                ordered_keys = [k for k in ranked if k in attrs][:_TOP_ATTRIBUTES_COUNT]
+                # If ranking failed (empty), fall back to the first
+                # N from the canonical display order.
+                if not ordered_keys:
+                    for key in _ATTRIBUTE_DISPLAY_ORDER:
+                        if key in attrs:
+                            ordered_keys.append(key)
+                        if len(ordered_keys) >= _TOP_ATTRIBUTES_COUNT:
+                            break
 
             self._render_descriptor_grid(
                 self._attr_content, self._attr_widgets,
-                ordered_keys, attrs, _humanize_attr_name)
+                ordered_keys, attrs, _humanize_attr_name,
+                title_case=True)
         except Exception as e:
             print(f"Warning: attribute profile refresh failed: {e}",
                   flush=True)
@@ -1386,11 +1852,19 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
 
     def _refresh_personality(self, data):
-        """Render the personality section: 20 traits, 2-col grid.
+        """Render the personality card.
+
+        Per UI-POLISH Fix 1:
+          - Default view: 5 key traits (aggression, composure,
+            discipline, charisma, sportsmanship — D3 substitutes for
+            the brief's marketability/fan_friendliness which aren't
+            in the personality_descriptors cache).
+          - "Show Full Stats" toggle reveals all 20 traits.
+        Per UI-POLISH Fix 5: descriptors are title-cased via
+          display_attr_descriptor.
 
         Per D7: 2-column grid (label | descriptor). Same pattern as
-        the attribute profile. The personality_descriptors JSON stores
-        the descriptors DIRECTLY.
+        the attribute profile.
         """
         try:
             theme = get_theme()
@@ -1417,21 +1891,38 @@ class FighterProfileScreen(ctk.CTkFrame):
                 self._pers_widgets.append(label)
                 return
 
-            # Build the ordered trait list.
-            ordered_keys = []
-            seen = set()
-            for key in _PERSONALITY_DISPLAY_ORDER:
-                if key in pers and key not in seen:
-                    ordered_keys.append(key)
-                    seen.add(key)
-            for key in pers:
-                if key not in seen:
-                    ordered_keys.append(key)
-                    seen.add(key)
+            # Build the ordered trait list. Per UI-POLISH Fix 1:
+            # when the toggle is OFF, show only the 5 key traits.
+            # When ON, show ALL traits in canonical display order.
+            if self._show_full_stats:
+                ordered_keys = []
+                seen = set()
+                for key in _PERSONALITY_DISPLAY_ORDER:
+                    if key in pers and key not in seen:
+                        ordered_keys.append(key)
+                        seen.add(key)
+                for key in pers:
+                    if key not in seen:
+                        ordered_keys.append(key)
+                        seen.add(key)
+            else:
+                # Summary view — 5 key traits in the brief's order.
+                ordered_keys = [k for k in _KEY_PERSONALITY_TRAITS
+                                if k in pers]
+                # If none of the key traits are in the cache (shouldn't
+                # happen, but defensive), fall back to the first 5
+                # from the canonical display order.
+                if not ordered_keys:
+                    for key in _PERSONALITY_DISPLAY_ORDER:
+                        if key in pers:
+                            ordered_keys.append(key)
+                        if len(ordered_keys) >= 5:
+                            break
 
             self._render_descriptor_grid(
                 self._pers_content, self._pers_widgets,
-                ordered_keys, pers, _humanize_trait_name)
+                ordered_keys, pers, _humanize_trait_name,
+                title_case=True)
         except Exception as e:
             print(f"Warning: personality refresh failed: {e}", flush=True)
 
@@ -1440,7 +1931,7 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
 
     def _render_descriptor_grid(self, parent, widget_list, keys, descriptors,
-                                 name_humanizer):
+                                 name_humanizer, title_case=False):
         """Render a 2-column grid of (label | descriptor) rows.
 
         Shared by _refresh_attribute_profile + _refresh_personality
@@ -1458,6 +1949,10 @@ class FighterProfileScreen(ctk.CTkFrame):
             name_humanizer: callable that converts a snake_case key
                 to a human-readable label (e.g.,
                 _humanize_attr_name, _humanize_trait_name).
+            title_case: if True (UI-POLISH Fix 5), apply
+                display_attr_descriptor to the descriptor string so
+                it reads as polished Title Case prose rather than
+                lowercase voice.py output.
         """
         theme = get_theme()
 
@@ -1486,8 +1981,15 @@ class FighterProfileScreen(ctk.CTkFrame):
             lbl.pack(side="top", fill="x")
             widget_list.append(lbl)
 
-            # Descriptor (voice phrase) — body text
-            descriptor = descriptors.get(key, "(uncached)")
+            # Descriptor (voice phrase) — body text. Per UI-POLISH
+            # Fix 5: title-case the descriptor so it reads as polished
+            # prose. display_attr_descriptor handles None/empty + the
+            # title-case transformation.
+            descriptor = descriptors.get(key, "")
+            if title_case:
+                descriptor = display_attr_descriptor(descriptor)
+            else:
+                descriptor = descriptor or "(Uncached)"
             val = ctk.CTkLabel(
                 cell, text=descriptor,
                 font=theme.fonts.descriptor,
@@ -1498,3 +2000,270 @@ class FighterProfileScreen(ctk.CTkFrame):
             widget_list.append(val)
 
             widget_list.append(cell)
+
+    # ============================================================
+    # UI-POLISH Fix 1 — show/hide helpers + toggle handler
+    # ============================================================
+
+    def _show_attribute_profile(self):
+        """Pack the attribute profile card so it's visible."""
+        try:
+            if self._attr_card is not None:
+                self._attr_card.pack(side="top", fill="x", padx=20,
+                                     pady=(0, 10))
+        except Exception:
+            pass
+
+    def _hide_attribute_profile(self):
+        """Hide the attribute profile card (other-promotion fighter)."""
+        try:
+            if self._attr_card is not None:
+                self._attr_card.pack_forget()
+        except Exception:
+            pass
+
+    def _hide_personality_profile(self):
+        """Hide the personality card (other-promotion fighter)."""
+        try:
+            if self._pers_card is not None:
+                self._pers_card.pack_forget()
+        except Exception:
+            pass
+
+    def _show_scouting_profile(self):
+        """Pack the scouting report card so it's visible."""
+        try:
+            if self._scouting_card is not None:
+                self._scouting_card.pack(side="top", fill="x", padx=20,
+                                          pady=(0, 10))
+        except Exception:
+            pass
+
+    def _hide_scouting_profile(self):
+        """Hide the scouting report card (own fighter)."""
+        try:
+            if self._scouting_card is not None:
+                self._scouting_card.pack_forget()
+        except Exception:
+            pass
+
+    def _on_toggle_full_stats(self):
+        """Handle "Show Full Stats" / "Hide Full Stats" button click.
+
+        Flips self._show_full_stats + re-renders the attribute +
+        personality sections. Does NOT re-query the DB (the data is
+        already cached in self._roster_data... actually no, it's
+        re-queried — _refresh re-queries. That's fine, the query is
+        fast for a single fighter).
+        """
+        try:
+            self._show_full_stats = not self._show_full_stats
+            # Re-render. The toggle state is preserved (we just
+            # flipped it). _refresh will pick up the new state.
+            self._refresh()
+        except Exception as e:
+            print(f"Warning: toggle full stats failed: {e}", flush=True)
+
+    # ============================================================
+    # UI-POLISH Fix 1 — scouting report refresh
+    # ============================================================
+
+    def _refresh_scouting(self, conn, data):
+        """Render the scouting report card for other-promotion fighters.
+
+        Per UI-POLISH Fix 1 + the brief:
+          - If a scouting_reports row exists for this fighter, show
+            the scout's estimates (potential, strengths, weaknesses,
+            report text, confidence as a voice band).
+          - If no row exists, show "No scouting data available —
+            assign a scout to evaluate this fighter".
+
+        Reads from `scouting_reports` (a simulation table per §17.3,
+        but it's NOT a fighter-attribute table — it's a scouting-
+        specific table that the player explicitly commissions via the
+        Scouting screen. Reading it here is a §17-adjacent carve-out
+        analogous to fighter_career for record stats: the data is
+        commission-by-the-player, not raw fighter simulation state.)
+        """
+        try:
+            theme = get_theme()
+
+            # Query the latest scouting report for this fighter.
+            # ORDER BY report_date DESC LIMIT 1 — if multiple reports
+            # exist, show the most recent.
+            report = None
+            try:
+                report = conn.execute(
+                    """
+                    SELECT scout_id, report_date, estimated_potential,
+                           estimated_ceiling, estimated_floor,
+                           estimated_strengths, estimated_weaknesses,
+                           marketability_assessment, injury_risk_assessment,
+                           contract_cost_estimate, scout_confidence,
+                           is_stale, report_text
+                    FROM scouting_reports
+                    WHERE target_fighter_id = ?
+                    ORDER BY report_date DESC
+                    LIMIT 1
+                    """,
+                    (data["fighter_id"],),
+                ).fetchone()
+            except sqlite3.Error as e:
+                print(f"Warning: scouting report query failed: {e}",
+                      flush=True)
+
+            if report is None:
+                # No scouting report — show the empty-state message.
+                empty_label = ctk.CTkLabel(
+                    self._scouting_content,
+                    text="No scouting data available — assign a scout to "
+                         "evaluate this fighter.",
+                    font=theme.fonts.body,
+                    text_color=theme.colors.text_tertiary,
+                    anchor="w", wraplength=700, justify="left",
+                )
+                empty_label.pack(side="top", fill="x", pady=(0, 8))
+                self._scouting_widgets.append(empty_label)
+
+                # Add a hint about how to assign a scout.
+                hint_label = ctk.CTkLabel(
+                    self._scouting_content,
+                    text="Tip: open the Scouting screen (FIGHTERS group in "
+                         "the sidebar) to assign a scout to this fighter.",
+                    font=theme.fonts.caption,
+                    text_color=theme.colors.text_secondary,
+                    anchor="w", wraplength=700, justify="left",
+                )
+                hint_label.pack(side="top", fill="x")
+                self._scouting_widgets.append(hint_label)
+                return
+
+            # Unpack the report row.
+            (scout_id, report_date, est_potential, est_ceiling, est_floor,
+             est_strengths_json, est_weaknesses_json, marketability,
+             injury_risk, contract_cost, scout_confidence,
+             is_stale, report_text) = report
+
+            # ---- Row 1: Confidence + date ----
+            meta_row = ctk.CTkFrame(
+                self._scouting_content, fg_color="transparent")
+            meta_row.pack(side="top", fill="x", pady=(0, 6))
+            self._scouting_widgets.append(meta_row)
+
+            confidence_label = ctk.CTkLabel(
+                meta_row,
+                text=f"Scout Confidence: {_confidence_band(scout_confidence)}",
+                font=theme.fonts.body,
+                text_color=theme.colors.gold,
+                anchor="w",
+            )
+            confidence_label.pack(side="left")
+            self._scouting_widgets.append(confidence_label)
+
+            if report_date:
+                date_label = ctk.CTkLabel(
+                    meta_row,
+                    text=f"· Reported {str(report_date)[:10]}",
+                    font=theme.fonts.caption,
+                    text_color=theme.colors.text_tertiary,
+                    anchor="e",
+                )
+                date_label.pack(side="right")
+                self._scouting_widgets.append(date_label)
+
+            # Stale warning
+            if is_stale:
+                stale_label = ctk.CTkLabel(
+                    self._scouting_content,
+                    text="⚠ This report is stale — the fighter may have "
+                         "changed since it was filed.",
+                    font=theme.fonts.caption,
+                    text_color=theme.colors.warning,
+                    anchor="w", wraplength=700, justify="left",
+                )
+                stale_label.pack(side="top", fill="x", pady=(0, 6))
+                self._scouting_widgets.append(stale_label)
+
+            # ---- Row 2: Estimated potential ----
+            if est_potential:
+                self._render_scouting_row(
+                    "Potential Estimate", title_case_phrase(est_potential))
+
+            # ---- Row 3: Estimated strengths (JSON list) ----
+            strengths = self._parse_json_list(est_strengths_json)
+            if strengths:
+                self._render_scouting_row(
+                    "Estimated Strengths",
+                    ", ".join(title_case_phrase(s) for s in strengths))
+
+            # ---- Row 4: Estimated weaknesses ----
+            weaknesses = self._parse_json_list(est_weaknesses_json)
+            if weaknesses:
+                self._render_scouting_row(
+                    "Estimated Weaknesses",
+                    ", ".join(title_case_phrase(w) for w in weaknesses))
+
+            # ---- Row 5: Marketability + injury risk ----
+            if marketability:
+                self._render_scouting_row(
+                    "Marketability", title_case_phrase(marketability))
+            if injury_risk:
+                self._render_scouting_row(
+                    "Injury Risk", title_case_phrase(injury_risk))
+
+            # ---- Row 6: Report text (the scout's narrative) ----
+            if report_text:
+                text_label = ctk.CTkLabel(
+                    self._scouting_content,
+                    text=report_text,
+                    font=theme.fonts.descriptor,
+                    text_color=theme.colors.text_primary,
+                    anchor="w", wraplength=900, justify="left",
+                )
+                text_label.pack(side="top", fill="x", pady=(8, 0))
+                self._scouting_widgets.append(text_label)
+        except Exception as e:
+            print(f"Warning: scouting refresh failed: {e}", flush=True)
+
+    def _render_scouting_row(self, label_text, value_text):
+        """Render a single label | value row in the scouting card."""
+        theme = get_theme()
+        row_frame = ctk.CTkFrame(
+            self._scouting_content, fg_color="transparent")
+        row_frame.pack(side="top", fill="x", pady=2)
+
+        lbl = ctk.CTkLabel(
+            row_frame, text=f"{label_text}:",
+            font=theme.fonts.body,
+            text_color=theme.colors.gold,
+            anchor="w", width=180,
+        )
+        lbl.pack(side="left", padx=(0, 12))
+
+        val = ctk.CTkLabel(
+            row_frame, text=value_text,
+            font=theme.fonts.body,
+            text_color=theme.colors.text_primary,
+            anchor="w", wraplength=600, justify="left",
+        )
+        val.pack(side="left", fill="x", expand=True)
+
+        self._scouting_widgets.append(row_frame)
+
+    @staticmethod
+    def _parse_json_list(json_str):
+        """Parse a JSON string that should be a list of strings.
+
+        Defensive — returns [] on any parse failure (the seed scripts
+        sometimes write NULL or malformed JSON for estimated_strengths
+        / estimated_weaknesses).
+        """
+        if not json_str:
+            return []
+        try:
+            parsed = json.loads(json_str)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed if x]
+            return []
+        except (json.JSONDecodeError, TypeError):
+            return []

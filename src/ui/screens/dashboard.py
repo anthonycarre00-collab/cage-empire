@@ -169,6 +169,7 @@ import customtkinter as ctk
 
 from ui.theme import get_theme
 from ui.state import get_state
+from ui.voice_display import title_case_phrase
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (D4).
@@ -414,8 +415,9 @@ class DashboardScreen(ctk.CTkFrame):
         theme = get_theme()
 
         # Container — two columns with equal weight, gap via padx.
+        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 15))
+        row.pack(side="top", fill="x", padx=20, pady=(0, 20))
         row.grid_columnconfigure(0, weight=1, uniform="top")
         row.grid_columnconfigure(1, weight=1, uniform="top")
 
@@ -507,7 +509,8 @@ class DashboardScreen(ctk.CTkFrame):
         """
         theme = get_theme()
 
-        # Section title (full-width)
+        # Section title (full-width). Per UI-POLISH Fix 7: section
+        # spacing bumped to 20px minimum.
         fw_section_title = ctk.CTkLabel(
             self, text="FIGHTER WATCH",
             font=theme.fonts.h2, text_color=theme.colors.gold,
@@ -517,7 +520,7 @@ class DashboardScreen(ctk.CTkFrame):
 
         # Three-column container
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 15))
+        row.pack(side="top", fill="x", padx=20, pady=(0, 20))
         row.grid_columnconfigure(0, weight=1, uniform="watch")
         row.grid_columnconfigure(1, weight=1, uniform="watch")
         row.grid_columnconfigure(2, weight=1, uniform="watch")
@@ -570,13 +573,14 @@ class DashboardScreen(ctk.CTkFrame):
         # Fixed-height scrollable frame so the list scrolls within the
         # visible area rather than growing the screen indefinitely
         # (per the UI rules: max height with scroll overflow).
+        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
         self.news_scroll = ctk.CTkScrollableFrame(
             self,
             fg_color=theme.colors.bg_surface,
             corner_radius=8,
             height=200,
         )
-        self.news_scroll.pack(side="top", fill="x", padx=20, pady=(0, 15))
+        self.news_scroll.pack(side="top", fill="x", padx=20, pady=(0, 20))
 
         # Empty-state label — shown when there's no news. Kept as an
         # attribute so _refresh can show/hide it.
@@ -602,8 +606,9 @@ class DashboardScreen(ctk.CTkFrame):
         """
         theme = get_theme()
 
+        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
         actions_row = ctk.CTkFrame(self, fg_color="transparent")
-        actions_row.pack(side="top", fill="x", padx=20, pady=(0, 15))
+        actions_row.pack(side="top", fill="x", padx=20, pady=(0, 20))
 
         # Schedule Event — gold accent (primary action).
         schedule_btn = ctk.CTkButton(
@@ -1325,11 +1330,13 @@ class DashboardScreen(ctk.CTkFrame):
             # Voice phrase — prefer narrative_phrase, fall back to
             # momentum_phrase, fall back to default_voice. Per §17.4:
             # the UI shows voice phrases, never raw labels.
+            # Per UI-POLISH Fix 5: title-case the phrase so it reads
+            # as polished prose, not lowercase voice.py output.
             voice = (data.get("narrative_phrase")
                      or data.get("momentum_phrase")
                      or default_voice)
             voice_label = ctk.CTkLabel(
-                card_frame, text=voice,
+                card_frame, text=title_case_phrase(voice),
                 font=theme.fonts.descriptor,
                 text_color=theme.colors.text_secondary,
                 anchor="w", wraplength=180, justify="left",
