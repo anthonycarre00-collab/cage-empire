@@ -310,19 +310,21 @@ COLUMN_WIDTHS = {
 # UI Fix Plan 2 — Phase 3, Fix 11b + 11c: new column set for the
 # FighterTable widget. The legacy Treeview keeps the old 6 columns
 # (Name/WC/Career Phase/Momentum/Record/Narrative); the new
-# FighterTable uses 6 columns with the renamed + restructured layout:
-#   Name | Age | WC | Stage | Form | Record
-# Changes per the plan:
+# FighterTable uses 7 columns with the renamed + restructured layout:
+#   Name | Age | Nat | WC | Stage | Form | Record
+# Changes per the plan + UI Implementation Plan v3 (P2-1):
 #   - "Career Phase" → "Stage" (short phrases, not long-form)
 #   - "Momentum" → "Form" (short phrases)
 #   - "Narrative" column removed entirely (discover on Fighter Profile)
 #   - Age added as the 2nd column (computed from DOB + sim date)
+#   - Nat added as the 3rd column (3-letter ISO code from nations.name)
 #   - WC abbreviated (HW, LHW, MW, WW, LW, FW, BW, FlyW, WSW, WBW,
 #     WFlyW, WFW, WAW) — full name still on Fighter Profile
 #   - Name column drops the nickname (first + last only) — the
 #     nickname is still on Fighter Profile
 NEW_COL_NAME = "name"
 NEW_COL_AGE = "age"
+NEW_COL_NAT = "nat"
 NEW_COL_WC = "wc"
 NEW_COL_STAGE = "stage"
 NEW_COL_FORM = "form"
@@ -331,29 +333,95 @@ NEW_COL_RECORD = "record"
 NEW_COLUMN_LABELS = {
     NEW_COL_NAME: "Name",
     NEW_COL_AGE: "Age",
+    NEW_COL_NAT: "Nat",
     NEW_COL_WC: "WC",
     NEW_COL_STAGE: "Stage",
     NEW_COL_FORM: "Form",
     NEW_COL_RECORD: "Record",
 }
 
+# Column widths rebalanced for the 7-column layout (P2-1). Total
+# ~720px — leaves room for the scrollbar + card padding without
+# blank space at the right edge. Nat is narrow (3-letter code);
+# Stage + Form are slightly narrower than v2 because the table has
+# one more column now.
 NEW_COLUMN_WIDTHS = {
     NEW_COL_NAME: 220,
     NEW_COL_AGE: 50,
+    NEW_COL_NAT: 50,
     NEW_COL_WC: 60,
-    NEW_COL_STAGE: 160,
-    NEW_COL_FORM: 130,
+    NEW_COL_STAGE: 140,
+    NEW_COL_FORM: 120,
     NEW_COL_RECORD: 80,
 }
 
 NEW_COLUMN_ANCHORS = {
     NEW_COL_NAME: "w",
     NEW_COL_AGE: "center",
+    NEW_COL_NAT: "center",
     NEW_COL_WC: "center",
     NEW_COL_STAGE: "w",
     NEW_COL_FORM: "w",
     NEW_COL_RECORD: "center",
 }
+
+
+# ============================================================
+# UI Implementation Plan v3 — P2-1: nationality abbreviation map.
+# ============================================================
+# Map nation name (lowercased) → 3-letter ISO-style code. Covers the
+# 20 nations seeded in the live DB (verified via
+# `SELECT DISTINCT name FROM nations`). Defensive — unknown nations
+# fall back to the first 3 letters of the name uppercased (so newly-
+# added nations don't break the table).
+# Nations table currently has no iso_alpha_3 column (only name +
+# language) so we maintain this lookup locally. If a future schema
+# migration adds iso_alpha_3, this map can be replaced with a DB
+# read in _query_roster.
+_NAT_ABBREVIATIONS = {
+    "argentina": "ARG",
+    "australia": "AUS",
+    "brazil": "BRA",
+    "canada": "CAN",
+    "china": "CHN",
+    "cuba": "CUB",
+    "dagestan": "DAG",
+    "france": "FRA",
+    "germany": "GER",
+    "ireland": "IRL",
+    "japan": "JPN",
+    "mexico": "MEX",
+    "netherlands": "NED",
+    "nigeria": "NGA",
+    "poland": "POL",
+    "russia": "RUS",
+    "south korea": "KOR",
+    "sweden": "SWE",
+    "united kingdom": "GBR",
+    "united states": "USA",
+}
+
+
+def _abbreviate_nat(nation_name):
+    """Abbreviate a nation name to a 3-letter ISO-style code.
+
+    Per P2-1: the Roster table shows abbreviated nationalities (USA,
+    BRA, JPN, etc.) instead of full names — saves horizontal space
+    for the new Nat column. The full nation name is still shown on
+    the Fighter Profile.
+
+    Defensive — unknown names fall back to the first 3 letters of
+    the name uppercased (so newly-added nations don't break the
+    table). Returns "" for None / empty input (renders as a blank
+    Nat cell — better than crashing on a fighter with NULL
+    birth_nation_id).
+    """
+    if not nation_name:
+        return ""
+    key = str(nation_name).strip().lower()
+    if key in _NAT_ABBREVIATIONS:
+        return _NAT_ABBREVIATIONS[key]
+    return str(nation_name).strip()[:3].upper()
 
 
 # ============================================================
@@ -915,9 +983,10 @@ class RosterScreen(ctk.CTkFrame):
         Fighter Profile) + rich per-cell content. See
         src/ui/widgets/fighter_table.py for the widget architecture.
 
-        Column layout per Fix 11b + 11c:
-          Name (220px, hyperlink) | Age (50px) | WC (60px) |
-          Stage (160px) | Form (130px) | Record (80px)
+        Column layout per Fix 11b + 11c + UI Implementation Plan v3
+        (P2-1 — added Nat column between Age and WC):
+          Name (220px, hyperlink) | Age (50px) | Nat (50px) |
+          WC (60px) | Stage (140px) | Form (120px) | Record (80px)
 
         The widget lives inside a CTkFrame "table_card" that matches
         the Dashboard's card aesthetic.
@@ -931,7 +1000,10 @@ class RosterScreen(ctk.CTkFrame):
         table_card.pack(side="top", fill="both", expand=True,
                         padx=20, pady=(0, 10))
 
-        # Build the column configs.
+        # Build the column configs. P2-1: inserted the Nat column
+        # between Age and WC so the layout is Name | Age | Nat | WC |
+        # Stage | Form | Record (matches the column order specified
+        # in the UI Implementation Plan v3).
         columns = [
             Column(NEW_COL_NAME, NEW_COLUMN_LABELS[NEW_COL_NAME],
                    NEW_COLUMN_WIDTHS[NEW_COL_NAME],
@@ -939,6 +1011,9 @@ class RosterScreen(ctk.CTkFrame):
             Column(NEW_COL_AGE, NEW_COLUMN_LABELS[NEW_COL_AGE],
                    NEW_COLUMN_WIDTHS[NEW_COL_AGE],
                    NEW_COLUMN_ANCHORS[NEW_COL_AGE]),
+            Column(NEW_COL_NAT, NEW_COLUMN_LABELS[NEW_COL_NAT],
+                   NEW_COLUMN_WIDTHS[NEW_COL_NAT],
+                   NEW_COLUMN_ANCHORS[NEW_COL_NAT]),
             Column(NEW_COL_WC, NEW_COLUMN_LABELS[NEW_COL_WC],
                    NEW_COLUMN_WIDTHS[NEW_COL_WC],
                    NEW_COLUMN_ANCHORS[NEW_COL_WC]),
@@ -1210,6 +1285,11 @@ class RosterScreen(ctk.CTkFrame):
              navigates to the selected fighter's profile.
         This makes the click-to-view affordance OBVIOUS — the player
         doesn't need to know about double-click.
+
+        UI Implementation Plan v3 — P2-1: removed the redundant hint
+        label that used to sit next to the button (it duplicated the
+        footer hint below). The footer now carries the single hint:
+        "single-click selects, double-click opens". One hint, not two.
         """
         theme = get_theme()
         button_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -1227,16 +1307,6 @@ class RosterScreen(ctk.CTkFrame):
             command=self._on_view_profile_clicked,
         )
         self._view_profile_button.pack(side="left")
-
-        hint_label = ctk.CTkLabel(
-            button_row,
-            text="Tip: single-click a fighter to select, then click View Profile "
-                 "(or double-click a row to jump straight there).",
-            font=theme.fonts.caption,
-            text_color=theme.colors.text_tertiary,
-            anchor="w",
-        )
-        hint_label.pack(side="left", padx=20)
 
     # ============================================================
     # SECTION 6 — FOOTER (click-to-view-profile hint)
@@ -1407,6 +1477,7 @@ class RosterScreen(ctk.CTkFrame):
         col_map = {
             NEW_COL_NAME: "fighter_id",  # name sort falls back to id
             NEW_COL_AGE: "age",
+            NEW_COL_NAT: "nation_name",
             NEW_COL_WC: COL_WC,
             NEW_COL_STAGE: COL_PHASE,
             NEW_COL_FORM: COL_MOMENTUM,
@@ -1850,11 +1921,14 @@ class RosterScreen(ctk.CTkFrame):
                 SELECT f.fighter_id, f.first_name, f.last_name, f.nickname,
                        f.date_of_birth,
                        wc.name AS weight_class_name,
+                       n.name AS nation_name,
                        fd.career_phase, fd.momentum, fd.narrative_family,
                        fc.record_wins, fc.record_losses, fc.record_draws
                 FROM fighters f
                 LEFT JOIN weight_classes wc
                   ON wc.weight_class_id = f.weight_class_id
+                LEFT JOIN nations n
+                  ON n.nation_id = f.birth_nation_id
                 LEFT JOIN fighter_descriptors fd
                   ON fd.fighter_id = f.fighter_id
                 LEFT JOIN fighter_career fc
@@ -1870,10 +1944,13 @@ class RosterScreen(ctk.CTkFrame):
         # Build the roster data list.
         # UI Fix Plan 2 — Phase 3, Fix 11b: also store date_of_birth
         # so _render_table_new can compute the Age column.
+        # UI Implementation Plan v3 — P2-1: also store nation_name
+        # so _render_table_new can abbreviate it to the Nat column.
         roster = []
         for r in rows:
-            (fid, first, last, nick, dob, wc_name, phase_stored, mom_stored,
-             narr_stored, wins, losses, draws) = r
+            (fid, first, last, nick, dob, wc_name, nation_name,
+             phase_stored, mom_stored, narr_stored, wins, losses,
+             draws) = r
             roster.append({
                 "fighter_id": fid,
                 "first_name": first,
@@ -1882,6 +1959,7 @@ class RosterScreen(ctk.CTkFrame):
                 "name_short": _format_name_short(first, last),
                 "date_of_birth": dob,
                 "weight_class_name": wc_name or "Unknown",
+                "nation_name": nation_name or "",
                 "career_phase_stored": phase_stored,
                 "momentum_stored": mom_stored,
                 "narrative_stored": narr_stored,
@@ -1937,6 +2015,10 @@ class RosterScreen(ctk.CTkFrame):
                     return 0
             if col == COL_WC:
                 return item["weight_class_name"].lower()
+            if col == "nation_name":
+                # P2-1: sort by nation name. Falls back to "" so
+                # fighters with NULL birth_nation_id sort consistently.
+                return (item.get("nation_name") or "").lower()
             if col == COL_PHASE:
                 return _phrase_or_fallback(
                     item["career_phase_stored"], "") or ""
@@ -2013,6 +2095,8 @@ class RosterScreen(ctk.CTkFrame):
                     fighter.get("date_of_birth"), self._sim_date_str)
                 # Per Fix 11b: abbreviate weight class.
                 wc_abbr = _abbreviate_wc(fighter["weight_class_name"])
+                # Per P2-1: abbreviate nationality to 3-letter code.
+                nat_abbr = _abbreviate_nat(fighter["nation_name"])
                 # Per Fix 11c: short Stage + Form phrases.
                 stage_phrase = _stage_short_phrase(
                     fighter["career_phase_stored"])
@@ -2027,6 +2111,7 @@ class RosterScreen(ctk.CTkFrame):
                     "fighter_id": fighter["fighter_id"],
                     NEW_COL_NAME: fighter["name_short"],
                     NEW_COL_AGE: age_str,
+                    NEW_COL_NAT: nat_abbr,
                     NEW_COL_WC: wc_abbr,
                     NEW_COL_STAGE: stage_phrase,
                     NEW_COL_FORM: form_phrase,

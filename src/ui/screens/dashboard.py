@@ -936,16 +936,37 @@ class DashboardScreen(ctk.CTkFrame):
 
             # ---- TOP STORY card content ----
             if top_story:
+                # Lazy import — needed for the headline hyperlink when
+                # fighter_id is present (P1-2). Mirrors the champions
+                # section's lazy import pattern.
+                from ui.widgets.hyperlink import HyperlinkLabel
+
                 # Headline text — Fix 4: bumped from h2 to h1 (the
                 # top story is the most prominent piece on the
                 # Dashboard; h1 makes it visually dominant).
-                head_label = ctk.CTkLabel(
-                    self.top_story_content,
-                    text=top_story["text"] or "Today's top story",
-                    font=theme.fonts.h1,
-                    text_color=theme.colors.text_primary,
-                    anchor="w", wraplength=380, justify="left",
-                )
+                # UI Implementation Plan v3 — P1-2: render the headline
+                # as a HyperlinkLabel when fighter_id is present so
+                # the player can click through to the Fighter Profile.
+                # Degrades to a plain CTkLabel when no fighter is
+                # attached (some top stories are promotion-level news,
+                # not fighter-specific).
+                headline_text = top_story["text"] or "Today's top story"
+                if top_story.get("fighter_id"):
+                    head_label = HyperlinkLabel(
+                        self.top_story_content,
+                        text=headline_text,
+                        fighter_id=top_story["fighter_id"],
+                        font=theme.fonts.h1,
+                        anchor="w", wraplength=380, justify="left",
+                    )
+                else:
+                    head_label = ctk.CTkLabel(
+                        self.top_story_content,
+                        text=headline_text,
+                        font=theme.fonts.h1,
+                        text_color=theme.colors.text_primary,
+                        anchor="w", wraplength=380, justify="left",
+                    )
                 head_label.pack(side="top", fill="x", pady=(0, 5))
                 self._headline_widgets.append(head_label)
 
@@ -984,6 +1005,12 @@ class DashboardScreen(ctk.CTkFrame):
                 empty_label.pack(side="top", fill="x")
                 self._headline_widgets.append(empty_label)
             else:
+                # Lazy import — needed for the per-headline hyperlinks
+                # when fighter_id is present (P1-3). Reuses the same
+                # import as the TOP STORY block above (cached at module
+                # level after the first load).
+                from ui.widgets.hyperlink import HyperlinkLabel
+
                 for h in others:
                     # Card title (e.g., "Upset of the Week") — small caption
                     card_title = _HEADLINE_TYPE_TO_CARD_TITLE.get(
@@ -998,14 +1025,29 @@ class DashboardScreen(ctk.CTkFrame):
                     title_label.pack(side="top", fill="x", pady=(5, 0))
                     self._headline_widgets.append(title_label)
 
-                    # Headline text — with a ▸ marker
-                    text_label = ctk.CTkLabel(
-                        self.other_headlines_content,
-                        text=f"▸ {h['text']}",
-                        font=theme.fonts.body,
-                        text_color=theme.colors.text_primary,
-                        anchor="w", wraplength=380, justify="left",
-                    )
+                    # Headline text — with a ▸ marker.
+                    # UI Implementation Plan v3 — P1-3: render the
+                    # headline as a HyperlinkLabel when fighter_id is
+                    # present so the player can click through to the
+                    # Fighter Profile. Degrades to a plain CTkLabel for
+                    # non-fighter headlines.
+                    headline_text = f"▸ {h['text']}"
+                    if h.get("fighter_id"):
+                        text_label = HyperlinkLabel(
+                            self.other_headlines_content,
+                            text=headline_text,
+                            fighter_id=h["fighter_id"],
+                            font=theme.fonts.body,
+                            anchor="w", wraplength=380, justify="left",
+                        )
+                    else:
+                        text_label = ctk.CTkLabel(
+                            self.other_headlines_content,
+                            text=headline_text,
+                            font=theme.fonts.body,
+                            text_color=theme.colors.text_primary,
+                            anchor="w", wraplength=380, justify="left",
+                        )
                     text_label.pack(side="top", fill="x")
                     self._headline_widgets.append(text_label)
         except Exception as e:
@@ -1441,8 +1483,14 @@ class DashboardScreen(ctk.CTkFrame):
         narrative_family voice phrases). The "label||phrase" storage
         is decoded via decode_phrase (D4).
 
+        UI Implementation Plan v3 — P1-1: also returns the fighter_id
+        so the card can render the name as a HyperlinkLabel (click
+        navigates to Fighter Profile) + add a "View Profile →" link.
+
         Returns:
             dict with keys:
+              fighter_id: the int fighter_id (so callers can build
+                HyperlinkLabels)
               name: "First Last" or "The fighter"
               momentum_phrase: voice phrase (e.g., "building serious
                 momentum") or None
@@ -1469,6 +1517,7 @@ class DashboardScreen(ctk.CTkFrame):
             first, last, momentum_stored, narrative_stored = row
             name = f"{first or ''} {last or ''}".strip() or "The fighter"
             return {
+                "fighter_id": fighter_id,
                 "name": name,
                 "momentum_phrase": decode_phrase(momentum_stored),
                 "narrative_phrase": decode_phrase(narrative_stored),
@@ -1538,9 +1587,18 @@ class DashboardScreen(ctk.CTkFrame):
                 talking about"). Per §17.4 — the UI shows voice
                 phrases, not raw labels.
             empty_voice: voice phrase for the empty state (per D6).
+
+        UI Implementation Plan v3 — P1-1: the fighter name is now a
+        HyperlinkLabel (click navigates to Fighter Profile) + a
+        "View Profile →" link is added at the bottom of each card.
+        The fighter_id comes from _lookup_fighter_watch_data's return
+        dict (was fetched but never used before P1-1).
         """
         try:
             theme = get_theme()
+
+            # Lazy import — mirrors the champions section's pattern.
+            from ui.widgets.hyperlink import HyperlinkLabel
 
             # Card title (gold H3, full-width)
             title_label = ctk.CTkLabel(
@@ -1563,13 +1621,28 @@ class DashboardScreen(ctk.CTkFrame):
                 self._watch_cards.append(empty_label)
                 return
 
-            # Fighter name (H3 primary)
-            name_label = ctk.CTkLabel(
-                card_frame, text=data["name"],
-                font=theme.fonts.h3,
-                text_color=theme.colors.text_primary,
-                anchor="w", wraplength=180, justify="left",
-            )
+            fighter_id = data.get("fighter_id")
+
+            # Fighter name (H3 primary). P1-1: render as HyperlinkLabel
+            # when fighter_id is present so the player can click
+            # through to the Fighter Profile. Degrades to a plain
+            # CTkLabel when fighter_id is missing (defensive — should
+            # never happen since _lookup_fighter_watch_data only
+            # returns data when fighter_id is not None).
+            if fighter_id is not None:
+                name_label = HyperlinkLabel(
+                    card_frame, text=data["name"],
+                    fighter_id=fighter_id,
+                    font=theme.fonts.h3,
+                    anchor="w", wraplength=180, justify="left",
+                )
+            else:
+                name_label = ctk.CTkLabel(
+                    card_frame, text=data["name"],
+                    font=theme.fonts.h3,
+                    text_color=theme.colors.text_primary,
+                    anchor="w", wraplength=180, justify="left",
+                )
             name_label.pack(side="top", fill="x", padx=12, pady=(0, 3))
             self._watch_cards.append(name_label)
 
@@ -1587,8 +1660,22 @@ class DashboardScreen(ctk.CTkFrame):
                 text_color=theme.colors.text_secondary,
                 anchor="w", wraplength=180, justify="left",
             )
-            voice_label.pack(side="top", fill="x", padx=12, pady=(0, 12))
+            voice_label.pack(side="top", fill="x", padx=12, pady=(0, 8))
             self._watch_cards.append(voice_label)
+
+            # P1-1: "View Profile →" HyperlinkLabel at the bottom of
+            # each card. Gives the player an explicit affordance to
+            # jump to the Fighter Profile (matches P3-1 in the plan).
+            # Only shown when fighter_id is present.
+            if fighter_id is not None:
+                view_link = HyperlinkLabel(
+                    card_frame, text="View Profile →",
+                    fighter_id=fighter_id,
+                    font=theme.fonts.caption,
+                    anchor="w",
+                )
+                view_link.pack(side="top", fill="x", padx=12, pady=(0, 12))
+                self._watch_cards.append(view_link)
         except Exception as e:
             print(f"Warning: watch-card render failed: {e}", flush=True)
 
@@ -1604,6 +1691,13 @@ class DashboardScreen(ctk.CTkFrame):
         fundamental game feature, not fighter data. We read ONLY the
         headline/topic/published_at fields — never fighter attribute
         values.
+
+        UI Implementation Plan v3 — P1-4: news_items has a fighter_id
+        column (verified via PRAGMA table_info). Added it to the
+        SELECT so we can render fighter-specific news headlines as
+        HyperlinkLabels (click → Fighter Profile). Non-fighter news
+        (promotion-level, matchup-level) keeps the plain CTkLabel
+        treatment — fighter_id is NULL for those rows.
         """
         try:
             theme = get_theme()
@@ -1616,12 +1710,15 @@ class DashboardScreen(ctk.CTkFrame):
                     pass
             self._news_widgets = []
 
-            # Query the most recent 20 news items. ORDER BY published_at
-            # DESC so the newest is at the top.
+            # P1-4: query news_items with fighter_id so we can wire
+            # HyperlinkLabels for fighter-specific items. Per
+            # PRAGMA table_info(news_items): the column exists. Some
+            # rows have NULL fighter_id (promotion-level news) —
+            # those degrade to plain CTkLabels.
             rows = []
             try:
                 rows = conn.execute(
-                    "SELECT headline, topic, published_at "
+                    "SELECT headline, topic, published_at, fighter_id "
                     "FROM news_items "
                     "ORDER BY published_at DESC LIMIT 20"
                 ).fetchall()
@@ -1648,8 +1745,11 @@ class DashboardScreen(ctk.CTkFrame):
             except Exception:
                 pass
 
+            # Lazy import — needed for fighter-specific news items (P1-4).
+            from ui.widgets.hyperlink import HyperlinkLabel
+
             # Render each news item as a row.
-            for headline, topic, published_at in rows:
+            for headline, topic, published_at, fighter_id in rows:
                 row_frame = ctk.CTkFrame(
                     self.news_scroll, fg_color="transparent")
                 row_frame.pack(side="top", fill="x", pady=3, padx=4)
@@ -1664,14 +1764,25 @@ class DashboardScreen(ctk.CTkFrame):
                 )
                 topic_label.pack(side="left", padx=(8, 6))
 
-                # Headline text (primary color)
+                # Headline text (primary color). P1-4: render as a
+                # HyperlinkLabel when fighter_id is present so the
+                # player can click through to the Fighter Profile.
+                # Degrades to a plain CTkLabel for non-fighter news.
                 headline_text = headline or "(no headline)"
-                head_label = ctk.CTkLabel(
-                    row_frame, text=headline_text,
-                    font=theme.fonts.body,
-                    text_color=theme.colors.text_primary,
-                    anchor="w",
-                )
+                if fighter_id:
+                    head_label = HyperlinkLabel(
+                        row_frame, text=headline_text,
+                        fighter_id=fighter_id,
+                        font=theme.fonts.body,
+                        anchor="w",
+                    )
+                else:
+                    head_label = ctk.CTkLabel(
+                        row_frame, text=headline_text,
+                        font=theme.fonts.body,
+                        text_color=theme.colors.text_primary,
+                        anchor="w",
+                    )
                 head_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
                 # Date (tertiary caption, right-aligned)

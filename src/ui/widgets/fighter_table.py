@@ -441,10 +441,16 @@ class FighterTable(ctk.CTkFrame):
                                    lambda e, fid=fighter_id:
                                        self._on_row_double(fid),
                                    add="+")
-                # Propagate the same bindings to the cell frames +
-                # labels so the entire row is interactive (the
-                # HyperlinkLabel's own <Button-1> still fires its
-                # navigation — add="+" preserves it).
+                # Propagate the same bindings to the cell frames AND
+                # the label widgets themselves so the entire row is
+                # interactive. CRITICAL: Tk does NOT propagate mouse
+                # events from child widgets (labels) to parent frames
+                # by default — without these label bindings, clicking
+                # on the TEXT of any non-Name cell silently does
+                # nothing (P0-2 in UI Implementation Plan v3).
+                # `add="+"` preserves the HyperlinkLabel's own
+                # <Button-1> + <Enter>/<Leave> handlers (it appends
+                # our handler rather than replacing).
                 for c in cells:
                     c["frame"].bind("<Enter>",
                                     lambda e, rf=row_frame, bg=base_bg:
@@ -463,12 +469,31 @@ class FighterTable(ctk.CTkFrame):
                                         lambda e, fid=fighter_id:
                                             self._on_row_double(fid),
                                         add="+")
-                    # Note: we don't bind on the label widgets
-                    # themselves because HyperlinkLabel already has
-                    # its own <Button-1> + <Enter>/<Leave> handlers.
-                    # Plain CTkLabels would need bindings too, but
-                    # the cell frame bindings cover them via event
-                    # propagation in Tk.
+                    # Bind on the LABEL too — Tk doesn't bubble mouse
+                    # events from child to parent, so the label would
+                    # otherwise swallow the click (hover effects + row
+                    # selection would only fire when the player clicks
+                    # the cell's padding, not the text itself). The
+                    # HyperlinkLabel's own handlers stay intact thanks
+                    # to add="+".
+                    lbl = c["label"]
+                    lbl.bind("<Enter>",
+                             lambda e, rf=row_frame, bg=base_bg:
+                                 self._on_row_enter(rf, bg),
+                             add="+")
+                    lbl.bind("<Leave>",
+                             lambda e, rf=row_frame, bg=base_bg:
+                                 self._on_row_leave(rf, bg),
+                             add="+")
+                    lbl.bind("<Button-1>",
+                             lambda e, fid=fighter_id:
+                                 self._on_row_button1(fid),
+                             add="+")
+                    if self._on_row_double_click is not None:
+                        lbl.bind("<Double-Button-1>",
+                                 lambda e, fid=fighter_id:
+                                     self._on_row_double(fid),
+                                 add="+")
 
                 self._row_widgets.append({
                     "frame": row_frame,

@@ -204,19 +204,46 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
 
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import customtkinter as ctk
 import tkinter.ttk as ttk
+
+# PIL is used for the promotion logo load + resize (mirrors the
+# Roster's logo loader). Falls back gracefully if PIL isn't installed.
+try:
+    from PIL import Image as _PIL_Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 from ui.theme import get_theme
 from ui.state import get_state
 from ui.voice_display import title_case_phrase, display_phrase, \
     display_attr_descriptor
 
+# UI Implementation Plan v3 — P0-1: the new FighterTable widget
+# replaces the ttk.Treeview. Mirrors the Roster's import pattern.
+# Imported unconditionally — the USE_TREEVIEW flag below controls
+# which path is actually built/used, but the import is safe (the
+# widget module has no side effects).
+from ui.widgets.fighter_table import FighterTable, Column
+
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
 # DashboardScreen's D4 + RosterScreen's D4).
 from interpretation.context_engine import decode_phrase
+
+
+# ============================================================
+# PROMOTION LOGO PATH (mirrors the Roster — P0-1 visual consistency)
+# ============================================================
+# Logos live at src/ui/assets/promo_logos/<promotion_id>_<slug>.png.
+# The slug is the promotion name lowercased with underscores. We
+# resolve the logo at refresh time by globbing for "<promo_id>_*.png"
+# — robust against slug renames (same approach as the Roster).
+_PROMO_LOGOS_DIR = (Path(__file__).resolve().parent.parent
+                    / "assets" / "promo_logos")
 
 
 # ============================================================
@@ -230,6 +257,14 @@ PAGE_SIZE = 20
 # sign_free_agent's docstring + the seed_data.py _seed_default_fighter_
 # contract helper). No negotiation flow yet — that's a future task.
 DEFAULT_SIGNING_SALARY = 50000.0
+
+# UI Implementation Plan v3 — P0-1:
+# USE_TREEVIEW = False → use the new FighterTable widget (CTk-based,
+# supports HyperlinkLabels + rich per-cell content, matches the Roster
+# screen's look + feel). Set to True to fall back to the legacy
+# ttk.Treeview (kept as a safety net in case the new widget has issues
+# on a specific platform). Mirrors the same flag in roster.py.
+USE_TREEVIEW = False
 
 # Treeview column identifiers. Same naming convention as the Roster
 # (D2 in roster.py) so the pattern is recognisable across screens.
@@ -264,6 +299,207 @@ COLUMN_WIDTHS = {
     COL_RECORD: 80,
     COL_MOMENTUM: 180,
 }
+
+
+# ============================================================
+# UI Implementation Plan v3 — P0-1: new column set for the
+# FighterTable widget. Mirrors the Roster's NEW_COL_* layout + adds
+# the "Ceiling" column (renamed from "Potential"). Column order:
+#   Name | Age | WC | Stage | Ceiling | Form | Record
+# Changes vs the legacy Treeview:
+#   - "Career Phase" → "Stage" (short phrases, not long-form)
+#   - "Potential" → "Ceiling" (short phrases; renamed per the plan)
+#   - "Momentum" → "Form" (short phrases)
+#   - Age added (computed from DOB + sim date, mirrors Roster)
+#   - WC abbreviated (HW, LHW, MW, WW, LW, FW, BW, FlyW, etc.)
+#   - Name column drops the nickname (first + last only)
+# ============================================================
+NEW_COL_NAME = "name"
+NEW_COL_AGE = "age"
+NEW_COL_WC = "wc"
+NEW_COL_STAGE = "stage"
+NEW_COL_CEILING = "ceiling"
+NEW_COL_FORM = "form"
+NEW_COL_RECORD = "record"
+
+NEW_COLUMN_LABELS = {
+    NEW_COL_NAME: "Name",
+    NEW_COL_AGE: "Age",
+    NEW_COL_WC: "WC",
+    NEW_COL_STAGE: "Stage",
+    NEW_COL_CEILING: "Ceiling",
+    NEW_COL_FORM: "Form",
+    NEW_COL_RECORD: "Record",
+}
+
+# Column widths rebalanced for the 7-column layout. Total ~720px —
+# matches the Roster's table so the two sister screens read as a pair.
+NEW_COLUMN_WIDTHS = {
+    NEW_COL_NAME: 220,
+    NEW_COL_AGE: 50,
+    NEW_COL_WC: 60,
+    NEW_COL_STAGE: 140,
+    NEW_COL_CEILING: 130,
+    NEW_COL_FORM: 120,
+    NEW_COL_RECORD: 80,
+}
+
+NEW_COLUMN_ANCHORS = {
+    NEW_COL_NAME: "w",
+    NEW_COL_AGE: "center",
+    NEW_COL_WC: "center",
+    NEW_COL_STAGE: "w",
+    NEW_COL_CEILING: "w",
+    NEW_COL_FORM: "w",
+    NEW_COL_RECORD: "center",
+}
+
+
+# ============================================================
+# UI Implementation Plan v3 — P0-1: WC abbreviation map.
+# Mirrors the Roster's _WC_ABBREVIATIONS — kept here so the Free
+# Agents module is self-contained (no cross-screen import).
+# ============================================================
+_WC_ABBREVIATIONS = {
+    # Men's
+    "heavyweight": "HW",
+    "light heavyweight": "LHW",
+    "middleweight": "MW",
+    "welterweight": "WW",
+    "lightweight": "LW",
+    "featherweight": "FW",
+    "bantamweight": "BW",
+    "flyweight": "FlyW",
+    # Women's
+    "women's strawweight": "WSW",
+    "women's bantamweight": "WBW",
+    "women's flyweight": "WFlyW",
+    "women's featherweight": "WFW",
+    "women's atomweight": "WAW",
+}
+
+
+def _abbreviate_wc(wc_name):
+    """Abbreviate a weight class name for compact table display.
+
+    Mirrors roster.py:_abbreviate_wc (P0-1 — Free Agents + Roster
+    must use the same abbreviation scheme so the two sister screens
+    read as a pair).
+    """
+    if not wc_name:
+        return ""
+    key = str(wc_name).strip().lower()
+    if key in _WC_ABBREVIATIONS:
+        return _WC_ABBREVIATIONS[key]
+    return str(wc_name).strip()[:3].upper()
+
+
+# ============================================================
+# UI Implementation Plan v3 — P0-1: short phrases for Stage, Ceiling,
+# Form. Mirrors the Roster's Stage + Form maps (kept locally so the
+# Free Agents module is self-contained). Ceiling is Free Agents-only
+# (replaces the Roster's "Form" mirror with the Potential column's
+# short phrase).
+# ============================================================
+
+# Map canonical career_phase label → short Stage phrase.
+_STAGE_SHORT_PHRASES = {
+    "prospect": "Prospect",
+    "rising_contender": "Rising Contender",
+    "champion": "Champion",
+    "veteran": "Veteran",
+    "gatekeeper": "Gatekeeper",
+    "declining": "Declining",
+}
+
+# Map canonical momentum label → short Form phrase.
+_FORM_SHORT_PHRASES = {
+    "very_high": "Blazing Hot",
+    "high": "Heating Up",
+    "stable": "Steady",
+    "falling": "Cooling Off",
+    "collapsing": "Free Fall",
+}
+
+# Map canonical potential_desc label → short Ceiling phrase. The
+# interpretation layer hasn't been extended to populate
+# fighter_descriptors.potential_desc as of schema 3.12.0 (the column
+# is NULL across the seeded DB) — so the default fallback "(Uncached)"
+# is the most common display until that extension lands. The map
+# covers the labels the future interpretation extension will use
+# (mirrors the band-threshold approach used by the other descriptors).
+_CEILING_SHORT_PHRASES = {
+    "elite": "Elite",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "bust_risk": "Bust Risk",
+}
+
+
+def _stage_short_phrase(stored_value):
+    """Decode a career_phase cache value to a short Stage phrase.
+
+    Mirrors roster.py:_stage_short_phrase. Defensive — NULL /
+    unrecognized values render as "(Uncached)".
+    """
+    if not stored_value or "||" not in str(stored_value):
+        return "(Uncached)"
+    label = str(stored_value).split("||", 1)[0]
+    return _STAGE_SHORT_PHRASES.get(label, "(Uncached)")
+
+
+def _form_short_phrase(stored_value):
+    """Decode a momentum cache value to a short Form phrase.
+
+    Mirrors roster.py:_form_short_phrase. Defensive — NULL /
+    unrecognized values render as "(Uncached)".
+    """
+    if not stored_value or "||" not in str(stored_value):
+        return "(Uncached)"
+    label = str(stored_value).split("||", 1)[0]
+    return _FORM_SHORT_PHRASES.get(label, "(Uncached)")
+
+
+def _ceiling_short_phrase(stored_value):
+    """Decode a potential_desc cache value to a short Ceiling phrase.
+
+    P0-1: the Free Agents screen renames the "Potential" column to
+    "Ceiling" + uses short phrases (e.g., "Elite", "High") instead of
+    the long-form voice phrase. Per D1: as of schema 3.12.0 the
+    potential_desc column is NULL across the seeded DB — the
+    interpretation layer hasn't been extended to populate it yet. The
+    fallback "(Uncached)" surfaces this so the player sees the same
+    information asymmetry WMMA5 + EWMMA use: the player can't see a
+    free agent's ceiling until they scout them.
+    """
+    if not stored_value or "||" not in str(stored_value):
+        return "(Uncached)"
+    label = str(stored_value).split("||", 1)[0]
+    return _CEILING_SHORT_PHRASES.get(label, "(Uncached)")
+
+
+# ============================================================
+# UI Implementation Plan v3 — P0-1: age computation (mirrors Roster).
+# ============================================================
+def _compute_age_from_dob(dob_str, sim_date_str):
+    """Compute a fighter's age as of the sim date.
+
+    Mirrors roster.py:_compute_age_from_dob. Lives here so the Free
+    Agents module is self-contained (no cross-screen import).
+    """
+    if not dob_str or not sim_date_str:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        dob = _dt.strptime(str(dob_str)[:10], "%Y-%m-%d")
+        cur = _dt.strptime(str(sim_date_str)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return ""
+    age = cur.year - dob.year
+    if (cur.month, cur.day) < (dob.month, dob.day):
+        age -= 1
+    return str(age)
 
 
 # ============================================================
@@ -321,6 +557,50 @@ def _phrase_or_fallback(stored_value, fallback):
     """
     phrase = decode_phrase(stored_value)
     return phrase if phrase else fallback
+
+
+# ============================================================
+# UI Implementation Plan v3 — P0-1: promotion logo loader + name
+# formatting helpers (mirrors roster.py).
+# ============================================================
+
+def _format_name_short(first, last):
+    """Format a fighter's name as 'First Last' (no nickname).
+
+    Mirrors roster.py:_format_name_short. P0-1: the new FighterTable's
+    Name column drops the nickname (the table is data-dense; nicknames
+    clutter the column). The nickname is still shown on the Fighter
+    Profile.
+    """
+    parts = []
+    if first:
+        parts.append(str(first).strip())
+    if last:
+        parts.append(str(last).strip())
+    return " ".join(parts).strip() or "Unknown"
+
+
+def _load_promo_logo(promo_id, promo_name, size=60):
+    """Load + resize a promotion logo for the Free Agents header.
+
+    Mirrors roster.py:_load_promo_logo. P0-1: the Free Agents screen
+    now has a 60x60 promo logo at the top, matching the Roster, so
+    the two sister screens read as a pair.
+    """
+    if not HAS_PIL or promo_id is None:
+        return None
+    try:
+        matches = list(_PROMO_LOGOS_DIR.glob(f"{int(promo_id)}_*.png"))
+        if not matches:
+            return None
+        img = _PIL_Image.open(str(matches[0]))
+        img = img.convert("RGBA")
+        img = img.resize((size, size), _PIL_Image.LANCZOS)
+        return img
+    except Exception as e:
+        print(f"Warning: promo logo load failed for promo {promo_id}: {e}",
+              flush=True)
+        return None
 
 
 # ============================================================
@@ -385,6 +665,26 @@ class FreeAgentsScreen(ctk.CTkFrame):
         self._sign_button = None
         self._status_label = None
 
+        # UI Implementation Plan v3 — P0-1: the new FighterTable
+        # widget. Built by _build_table when USE_TREEVIEW is False.
+        # Holds the row data the FighterTable renders (replaces the
+        # Treeview's insert/clear cycle with set_rows).
+        self._fighter_table = None
+
+        # UI Implementation Plan v3 — P0-1: promotion logo image
+        # reference. Kept as an attribute so the GC doesn't drop the
+        # underlying Tk image (Tk images are referenced by name, not
+        # Python refcount). Built by _refresh_subtitle (which has the
+        # promo_id needed to resolve the logo file).
+        self._promo_logo_ctk_image = None
+        # Per-Fix-9 promotion name cache (mirrors roster.py).
+        self._cached_promo_name = None
+
+        # UI Implementation Plan v3 — P0-1: cached sim date string
+        # (used for age computation in _render_table_new). Refreshed
+        # by _refresh before rendering the table.
+        self._sim_date_str = None
+
         # Build the static structure. Dynamic content (Treeview rows,
         # pagination label, weight-class dropdown values) is rendered
         # by _refresh.
@@ -411,23 +711,49 @@ class FreeAgentsScreen(ctk.CTkFrame):
         name + the plan's Voice Recommendations table. The screen-name
         key 'free_agents' is unchanged so state.set_active_screen +
         refresh registrations still work.
+
+        UI Implementation Plan v3 — P0-1: added a 60x60 promotion logo
+        at the top (mirrors the Roster's header). The Free Agents + the
+        Roster are sister screens — they should look like a pair.
         """
         theme = get_theme()
 
+        # Header row: title + optional promotion logo (P0-1).
+        header_row = ctk.CTkFrame(self, fg_color="transparent")
+        header_row.pack(side="top", fill="x", padx=20, pady=(10, 0))
+
+        # ---- Promotion logo (P0-1 — mirrors the Roster) ----
+        # Small 60x60 logo loaded from src/ui/assets/promo_logos/.
+        # Falls back to text initials if the logo isn't found. Set on
+        # self._promo_logo_label by _refresh_subtitle (which has the
+        # promo_id needed to resolve the right file).
+        self._promo_logo_label = ctk.CTkLabel(
+            header_row, text="",
+            width=60, height=60,
+            fg_color=theme.colors.bg_surface_elevated,
+            corner_radius=8,
+            anchor="center",
+        )
+        self._promo_logo_label.pack(side="left", padx=(0, 12))
+
+        # Title + subtitle stack on the right of the logo.
+        title_subtitle_stack = ctk.CTkFrame(header_row, fg_color="transparent")
+        title_subtitle_stack.pack(side="left", fill="x", expand=True)
+
         title = ctk.CTkLabel(
-            self, text="OPEN MARKET",
+            title_subtitle_stack, text="OPEN MARKET",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
             anchor="w",
         )
-        title.pack(side="top", fill="x", padx=20, pady=(10, 0))
+        title.pack(side="top", fill="x")
 
         # Subtitle populated by _refresh (needs the count from the DB).
         self._subtitle_label = ctk.CTkLabel(
-            self, text="Loading free agents...",
+            title_subtitle_stack, text="Loading free agents...",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
             anchor="w",
         )
-        self._subtitle_label.pack(side="top", fill="x", padx=20, pady=(0, 10))
+        self._subtitle_label.pack(side="top", fill="x", pady=(2, 0))
 
     # ============================================================
     # SECTION 2 — FILTER ROW (weight-class dropdown + search entry)
@@ -515,10 +841,86 @@ class FreeAgentsScreen(ctk.CTkFrame):
         self._search_entry.bind("<KeyRelease>", self._on_search_change)
 
     # ============================================================
-    # SECTION 3 — TABLE (ttk.Treeview — D9)
+    # SECTION 3 — TABLE (ttk.Treeview — D9, OR FighterTable — P0-1)
     # ============================================================
 
     def _build_table(self):
+        """Build the free-agents table.
+
+        UI Implementation Plan v3 — P0-1: branches on USE_TREEVIEW.
+        When False (default), builds the new FighterTable widget
+        (CTk-based, supports HyperlinkLabels + matches the Roster's
+        look + feel). When True, falls back to the legacy ttk.Treeview
+        (kept as a safety net — mirrors the same flag in roster.py).
+        """
+        if USE_TREEVIEW:
+            self._build_table_treeview()
+        else:
+            self._build_table_new()
+
+    def _build_table_new(self):
+        """Build the new FighterTable-based free-agents table (P0-1).
+
+        Mirrors the Roster's _build_table_new — same column layout +
+        same widget config so the two sister screens read as a pair.
+        The only column-set difference: Free Agents shows "Ceiling"
+        (the renamed Potential column) where the Roster shows nothing
+        equivalent (the Roster doesn't display potential — the player
+        already signed those fighters + knows their ceiling).
+
+        Column layout per P0-1:
+          Name (220px, hyperlink) | Age (50px) | WC (60px) |
+          Stage (140px) | Ceiling (130px) | Form (120px) | Record (80px)
+        """
+        theme = get_theme()
+
+        # Container card — gives the FighterTable a framed surface.
+        table_card = ctk.CTkFrame(
+            self, fg_color=theme.colors.bg_surface, corner_radius=8,
+        )
+        table_card.pack(side="top", fill="both", expand=True,
+                        padx=20, pady=(0, 10))
+
+        # Build the column configs.
+        columns = [
+            Column(NEW_COL_NAME, NEW_COLUMN_LABELS[NEW_COL_NAME],
+                   NEW_COLUMN_WIDTHS[NEW_COL_NAME],
+                   NEW_COLUMN_ANCHORS[NEW_COL_NAME], hyperlink=True),
+            Column(NEW_COL_AGE, NEW_COLUMN_LABELS[NEW_COL_AGE],
+                   NEW_COLUMN_WIDTHS[NEW_COL_AGE],
+                   NEW_COLUMN_ANCHORS[NEW_COL_AGE]),
+            Column(NEW_COL_WC, NEW_COLUMN_LABELS[NEW_COL_WC],
+                   NEW_COLUMN_WIDTHS[NEW_COL_WC],
+                   NEW_COLUMN_ANCHORS[NEW_COL_WC]),
+            Column(NEW_COL_STAGE, NEW_COLUMN_LABELS[NEW_COL_STAGE],
+                   NEW_COLUMN_WIDTHS[NEW_COL_STAGE],
+                   NEW_COLUMN_ANCHORS[NEW_COL_STAGE]),
+            Column(NEW_COL_CEILING, NEW_COLUMN_LABELS[NEW_COL_CEILING],
+                   NEW_COLUMN_WIDTHS[NEW_COL_CEILING],
+                   NEW_COLUMN_ANCHORS[NEW_COL_CEILING]),
+            Column(NEW_COL_FORM, NEW_COLUMN_LABELS[NEW_COL_FORM],
+                   NEW_COLUMN_WIDTHS[NEW_COL_FORM],
+                   NEW_COLUMN_ANCHORS[NEW_COL_FORM]),
+            Column(NEW_COL_RECORD, NEW_COLUMN_LABELS[NEW_COL_RECORD],
+                   NEW_COLUMN_WIDTHS[NEW_COL_RECORD],
+                   NEW_COLUMN_ANCHORS[NEW_COL_RECORD]),
+        ]
+
+        # The FighterTable widget itself.
+        self._fighter_table = FighterTable(
+            table_card,
+            columns=columns,
+            on_row_click=self._on_row_click_new,
+            on_row_double_click=self._on_row_double_click_new,
+            on_sort_click=self._on_sort_click_new,
+            page_size=PAGE_SIZE,
+            empty_message="No free agents available.",
+            fg_color=theme.colors.bg_surface, corner_radius=0,
+        )
+        self._fighter_table.pack(side="top", fill="both", expand=True,
+                                  padx=1, pady=1)
+
+    def _build_table_treeview(self):
         """Build the free-agents table.
 
         Same structure as the Roster (D2 in roster.py). 6 columns,
@@ -884,11 +1286,32 @@ class FreeAgentsScreen(ctk.CTkFrame):
     def _navigate_to_selected_profile(self):
         """Shared navigation helper — used by double-click + View Profile.
 
-        Reads the selected fighter_id from the Treeview, calls
-        set_fighter_id on the Fighter Profile screen, then navigates
-        via state.set_active_screen. Defensive against missing
-        selection / unregistered screen.
+        UI Implementation Plan v3 — P0-1: when using FighterTable, the
+        selected fighter_id is read from the widget (not the Treeview
+        selection). Falls back to the Treeview path when USE_TREEVIEW
+        is True. Defensive against missing selection / unregistered
+        screen.
         """
+        # FighterTable path (new — P0-1).
+        if not USE_TREEVIEW and self._fighter_table is not None:
+            fighter_id = self._fighter_table.get_selected_fighter_id()
+            if fighter_id is None:
+                return
+            try:
+                state = get_state()
+                profile_screen = state.get_screen("fighter_profile")
+                if profile_screen is not None and hasattr(
+                        profile_screen, "set_fighter_id"):
+                    profile_screen.set_fighter_id(fighter_id)
+                state.set_active_screen("fighter_profile")
+            except ValueError as e:
+                print(f"Warning: navigation to fighter_profile failed: {e}",
+                      flush=True)
+            except Exception as e:
+                print(f"Warning: navigation handler failed: {e}", flush=True)
+            return
+
+        # Treeview path (legacy).
         try:
             selection = self._treeview.selection()
             if not selection:
@@ -926,7 +1349,8 @@ class FreeAgentsScreen(ctk.CTkFrame):
         """Handle Sign Selected Fighter button click (D2, D3, D4).
 
         Per D3:
-          1. Read the selected fighter_id from the Treeview selection.
+          1. Read the selected fighter_id (from the Treeview selection
+             OR the FighterTable widget, depending on USE_TREEVIEW).
           2. Read the current sim date from simulation_clock.
           3. Call services.contracts.sign_free_agent(...).
           4. Commit the conn.
@@ -936,15 +1360,25 @@ class FreeAgentsScreen(ctk.CTkFrame):
           7. self._refresh() to update the Free Agents table.
         """
         try:
-            selection = self._treeview.selection()
-            if not selection:
-                self._set_status("No fighter selected.", "warning")
-                return
-            try:
-                fighter_id = int(selection[0])
-            except (ValueError, IndexError):
-                self._set_status("Invalid selection.", "warning")
-                return
+            # UI Implementation Plan v3 — P0-1: branch on the widget
+            # that's actually built. FighterTable stores the selected
+            # fighter_id internally; the Treeview stores it as the
+            # item iid.
+            if not USE_TREEVIEW and self._fighter_table is not None:
+                fighter_id = self._fighter_table.get_selected_fighter_id()
+                if fighter_id is None:
+                    self._set_status("No fighter selected.", "warning")
+                    return
+            else:
+                selection = self._treeview.selection()
+                if not selection:
+                    self._set_status("No fighter selected.", "warning")
+                    return
+                try:
+                    fighter_id = int(selection[0])
+                except (ValueError, IndexError):
+                    self._set_status("Invalid selection.", "warning")
+                    return
 
             state = get_state()
             conn = state.get_conn()
@@ -1056,6 +1490,77 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._set_status(f"Sign failed: {e}", "danger")
 
     # ============================================================
+    # UI Implementation Plan v3 — P0-1: FighterTable handlers.
+    # ============================================================
+
+    def _on_sort_click_new(self, column_id, reverse):
+        """Handle sort header click from the FighterTable (P0-1).
+
+        Maps the new column ids (NEW_COL_NAME, NEW_COL_AGE, etc.) to
+        the underlying sort_column value used by _sort_data. Then
+        triggers _refresh which re-sorts + re-renders.
+        """
+        col_map = {
+            NEW_COL_NAME: "fighter_id",  # name sort falls back to id
+            NEW_COL_AGE: "age",
+            NEW_COL_WC: COL_WC,
+            NEW_COL_STAGE: COL_PHASE,
+            NEW_COL_CEILING: COL_POTENTIAL,
+            NEW_COL_FORM: COL_MOMENTUM,
+            NEW_COL_RECORD: COL_RECORD,
+        }
+        new_sort = col_map.get(column_id, "fighter_id")
+        if self._sort_column == new_sort:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = new_sort
+            self._sort_reverse = reverse
+        # The FighterTable already updated its sort indicator via
+        # set_sort_state (called internally before on_sort_click).
+        self._refresh()
+
+    def _on_row_click_new(self, fighter_id):
+        """Handle single-click on a FighterTable row (P0-1).
+
+        Enables the Sign + View Profile buttons so the player can
+        act on the selected fighter. The fighter name is also a
+        HyperlinkLabel that fires its own navigation independently
+        on direct click.
+        """
+        try:
+            if fighter_id is not None:
+                self._sign_button.configure(state="normal")
+                self._view_profile_button.configure(state="normal")
+            else:
+                self._sign_button.configure(state="disabled")
+                self._view_profile_button.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _on_row_double_click_new(self, fighter_id):
+        """Handle double-click on a FighterTable row — navigate to profile.
+
+        Per P0-1: the fighter name is already a hyperlink that
+        navigates on single-click. Double-click anywhere in the row
+        ALSO navigates (covers players who don't realize the name is
+        a link). Mirrors roster.py:_on_row_double_click_new.
+        """
+        if fighter_id is None:
+            return
+        try:
+            state = get_state()
+            profile_screen = state.get_screen("fighter_profile")
+            if profile_screen is not None and hasattr(
+                    profile_screen, "set_fighter_id"):
+                profile_screen.set_fighter_id(fighter_id)
+            state.set_active_screen("fighter_profile")
+        except ValueError as e:
+            print(f"Warning: navigation to fighter_profile failed: {e}",
+                  flush=True)
+        except Exception as e:
+            print(f"Warning: navigation handler failed: {e}", flush=True)
+
+    # ============================================================
     # REFRESH CALLBACK (registered with GameState)
     # ============================================================
 
@@ -1070,18 +1575,32 @@ class FreeAgentsScreen(ctk.CTkFrame):
           - On refresh_all() (after Advance Day, Save, Load, theme
             toggle, fighter-signed).
 
-        Safe to call repeatedly — clears old Treeview rows, re-queries,
+        Safe to call repeatedly — clears old rows, re-queries,
         re-renders. Defensive against DB errors.
+
+        UI Implementation Plan v3 — P0-1: branches on USE_TREEVIEW.
+        The FighterTable path skips the Treeview style re-application
+        (the FighterTable reads colors at render time) + calls
+        _render_table_new instead of _render_table.
         """
         try:
             state = get_state()
             conn = state.get_conn()
             if conn is None:
                 return
+            promo_id = state.get_player_promotion_id()
+
+            # UI Implementation Plan v3 — P0-1: cache the sim date
+            # string for age computation in _render_table_new. Read
+            # once per refresh — used for every row's Age column.
+            self._sim_date_str = self._read_sim_date(conn)
 
             # Re-apply the Treeview style on every refresh so theme-
-            # change refresh picks up new colors (D9).
-            self._apply_treeview_style()
+            # change refresh picks up new colors (D9). Only applies
+            # when USE_TREEVIEW is True (the FighterTable reads colors
+            # at render time, no global style needed).
+            if USE_TREEVIEW:
+                self._apply_treeview_style()
 
             # Populate the weight-class dropdown (D5). Done on every
             # refresh so newly-signed/cut fighters' weight classes
@@ -1100,9 +1619,12 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 self._current_page = max(1, total_pages)
 
             # Render the current page of rows.
-            self._render_table()
+            if USE_TREEVIEW:
+                self._render_table()
+            else:
+                self._render_table_new()
             self._refresh_pagination(total_pages)
-            self._refresh_subtitle(len(self._fa_data))
+            self._refresh_subtitle(len(self._fa_data), conn, promo_id)
 
             # After a re-render, the selection is gone — disable the
             # Sign + View Profile buttons until the player picks a new
@@ -1118,23 +1640,110 @@ class FreeAgentsScreen(ctk.CTkFrame):
             print(f"Warning: FreeAgentsScreen._refresh failed: {e}",
                   flush=True)
 
+    def _read_sim_date(self, conn):
+        """Read the current sim date from simulation_clock.
+
+        P0-1: used for age computation in _render_table_new. Mirrors
+        roster.py:_read_sim_date. Defensive — returns None on any
+        query failure (the Age column will show blank for all rows,
+        not a crash).
+        """
+        try:
+            row = conn.execute(
+                "SELECT current_date FROM simulation_clock WHERE clock_id=1"
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except sqlite3.Error:
+            pass
+        return None
+
     # ------------------------------------------------------------
     # Subtitle — "N free agents available"
     # ------------------------------------------------------------
 
-    def _refresh_subtitle(self, total_count):
-        """Update the subtitle label with the count."""
+    def _refresh_subtitle(self, total_count, conn=None, promo_id=None):
+        """Update the subtitle label with the count + promo logo (P0-1).
+
+        P0-1: now also loads the promotion logo into
+        self._promo_logo_label (60x60 PNG from
+        src/ui/assets/promo_logos/). Mirrors the Roster's logo loader.
+        Falls back to text initials if the logo isn't found or PIL
+        isn't available.
+        """
         try:
             theme = get_theme()
+            promo_name = "Your Promotion"
+            if conn is not None and promo_id is not None:
+                try:
+                    promo_row = conn.execute(
+                        "SELECT name FROM promotions WHERE promotion_id=?",
+                        (promo_id,),
+                    ).fetchone()
+                    if promo_row and promo_row[0]:
+                        promo_name = promo_row[0]
+                except sqlite3.Error:
+                    pass
+
             text = f"{total_count:,} unsigned fighters available"
             self._subtitle_label.configure(
                 text=text,
                 font=theme.fonts.body,
                 text_color=theme.colors.text_secondary,
             )
+
+            # ---- Promotion logo (P0-1 — mirrors the Roster) ----
+            self._cached_promo_name = promo_name
+            if conn is not None and promo_id is not None:
+                self._refresh_promo_logo(promo_id, promo_name)
         except Exception as e:
             print(f"Warning: free agents subtitle refresh failed: {e}",
                   flush=True)
+
+    def _refresh_promo_logo(self, promo_id, promo_name):
+        """Load the promotion logo into the header logo label (P0-1).
+
+        Mirrors roster.py:_refresh_promo_logo. Tries _load_promo_logo
+        (PIL image resize). On success, wraps in CTkImage + sets on
+        self._promo_logo_label. On failure, shows the promotion's
+        initials (first letter of each word, up to 3 chars) as text.
+        """
+        try:
+            theme = get_theme()
+            pil_img = _load_promo_logo(promo_id, promo_name, size=60)
+            if pil_img is not None:
+                self._promo_logo_ctk_image = ctk.CTkImage(
+                    light_image=pil_img, dark_image=pil_img,
+                    size=(60, 60),
+                )
+                self._promo_logo_label.configure(
+                    image=self._promo_logo_ctk_image, text="")
+            else:
+                # Text-initials fallback.
+                initials = self._promo_initials(promo_name)
+                self._promo_logo_label.configure(
+                    image=None, text=initials,
+                    font=(theme.fonts.h2[0], 22, "bold"),
+                    text_color=theme.colors.gold,
+                )
+        except Exception as e:
+            print(f"Warning: free agents promo logo refresh failed: {e}",
+                  flush=True)
+
+    @staticmethod
+    def _promo_initials(promo_name):
+        """Compute up to 3-letter initials from a promotion name.
+
+        Mirrors roster.py:_promo_initials. "Alpha Combat Federation"
+        → "ACF". Defensive — returns "?" if the name is empty.
+        """
+        if not promo_name:
+            return "?"
+        words = str(promo_name).strip().split()
+        if not words:
+            return "?"
+        initials = "".join(w[0].upper() for w in words if w)[:3]
+        return initials or "?"
 
     # ------------------------------------------------------------
     # Weight-class dropdown
@@ -1281,6 +1890,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
             #   - weight_classes: name (game state)
             sql = f"""
                 SELECT f.fighter_id, f.first_name, f.last_name, f.nickname,
+                       f.date_of_birth,
                        wc.name AS weight_class_name,
                        fd.career_phase, fd.momentum, fd.potential_desc,
                        fc.record_wins, fc.record_losses, fc.record_draws
@@ -1301,11 +1911,13 @@ class FreeAgentsScreen(ctk.CTkFrame):
 
         fa_list = []
         for r in rows:
-            (fid, first, last, nick, wc_name, phase_stored, mom_stored,
+            (fid, first, last, nick, dob, wc_name, phase_stored, mom_stored,
              pot_stored, wins, losses, draws) = r
             fa_list.append({
                 "fighter_id": fid,
                 "name": _format_name(first, last, nick),
+                "name_short": _format_name_short(first, last),
+                "date_of_birth": dob,
                 "weight_class_name": wc_name or "Unknown",
                 "career_phase_stored": phase_stored,
                 "momentum_stored": mom_stored,
@@ -1345,6 +1957,15 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 if col == "fighter_id":
                     return item["fighter_id"]
                 return item["name"].lower()
+            if col == "age":
+                # P0-1: sort by computed age. Defensive — fighters
+                # with bad DOB get age 0 (sorts first ascending).
+                age_str = _compute_age_from_dob(
+                    item.get("date_of_birth"), self._sim_date_str)
+                try:
+                    return int(age_str) if age_str else 0
+                except (TypeError, ValueError):
+                    return 0
             if col == COL_WC:
                 return item["weight_class_name"].lower()
             if col == COL_PHASE:
@@ -1373,6 +1994,75 @@ class FreeAgentsScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
     # Render the table (current page of rows)
     # ------------------------------------------------------------
+
+    def _render_table_new(self):
+        """Render the current page of rows into the FighterTable (P0-1).
+
+        Mirrors roster.py:_render_table_new. Builds a list of row
+        dicts (one per fighter on the current page) + passes them to
+        FighterTable.set_rows. The widget handles the actual widget
+        creation (HyperlinkLabel for the Name column, plain CTkLabel
+        for the others).
+
+        Per P0-1: computes Age from date_of_birth + sim date, applies
+        the short Stage / Ceiling / Form phrases, abbreviates WC.
+
+        Per D6: empty-state handling — if no rows match the current
+        filter/search, pass an empty list + the appropriate empty
+        message to set_rows.
+        """
+        try:
+            if self._fighter_table is None:
+                return
+
+            # Compute the page slice.
+            start = (self._current_page - 1) * PAGE_SIZE
+            end = start + PAGE_SIZE
+            page_rows = self._fa_data[start:end]
+
+            if not page_rows:
+                # Empty state (D6). Pass an empty list + the
+                # appropriate empty message based on WHY the pool
+                # is empty.
+                empty_msg = self._empty_state_message()
+                self._fighter_table.set_rows([], empty_message=empty_msg)
+                return
+
+            # Build the row dicts for the FighterTable.
+            rows = []
+            for fighter in page_rows:
+                # Per P0-1: compute age from DOB + sim date.
+                age_str = _compute_age_from_dob(
+                    fighter.get("date_of_birth"), self._sim_date_str)
+                # Per P0-1: abbreviate weight class.
+                wc_abbr = _abbreviate_wc(fighter["weight_class_name"])
+                # Per P0-1: short Stage / Ceiling / Form phrases.
+                stage_phrase = _stage_short_phrase(
+                    fighter["career_phase_stored"])
+                ceiling_phrase = _ceiling_short_phrase(
+                    fighter["potential_stored"])
+                form_phrase = _form_short_phrase(
+                    fighter["momentum_stored"])
+                record_str = _format_record(
+                    fighter["record_wins"],
+                    fighter["record_losses"],
+                    fighter["record_draws"],
+                )
+                rows.append({
+                    "fighter_id": fighter["fighter_id"],
+                    NEW_COL_NAME: fighter["name_short"],
+                    NEW_COL_AGE: age_str,
+                    NEW_COL_WC: wc_abbr,
+                    NEW_COL_STAGE: stage_phrase,
+                    NEW_COL_CEILING: ceiling_phrase,
+                    NEW_COL_FORM: form_phrase,
+                    NEW_COL_RECORD: record_str,
+                })
+
+            self._fighter_table.set_rows(rows)
+        except Exception as e:
+            print(f"Warning: free-agent table render (new) failed: {e}",
+                  flush=True)
 
     def _render_table(self):
         """Render the current page of rows into the Treeview.
