@@ -417,7 +417,12 @@ class CageEmpireApp(ctk.CTk):
         # can take the full window. Note: the sidebar is now wrapped
         # in sidebar_wrapper (per UI-POLISH Fix 6 — the 2px separator),
         # so we unpack the WRAPPER, not the sidebar itself.
+        # P2-2: also unpack the top_bar_accent line (created in
+        # _build_top_bar) so the promo-select screen takes the full
+        # window without a stray crimson line at the top.
         self.top_bar.pack_forget()
+        if hasattr(self, "top_bar_accent") and self.top_bar_accent is not None:
+            self.top_bar_accent.pack_forget()
         self.sidebar_wrapper.pack_forget()
         self.bottom_bar.pack_forget()
         self.main_content.pack_forget()
@@ -446,7 +451,12 @@ class CageEmpireApp(ctk.CTk):
         # Per UI-POLISH Fix 6: sidebar is now inside sidebar_wrapper
         # (2px separator on the right edge), so we pack the wrapper
         # instead of the sidebar directly.
+        # P2-2: the top_bar_accent line is re-packed immediately after
+        # the top bar so the 2px crimson accent stays between the
+        # chrome and the content area.
         self.top_bar.pack_forget()
+        if hasattr(self, "top_bar_accent") and self.top_bar_accent is not None:
+            self.top_bar_accent.pack_forget()
         self.sidebar_wrapper.pack_forget()
         self.bottom_bar.pack_forget()
         self.main_content.pack_forget()
@@ -454,6 +464,8 @@ class CageEmpireApp(ctk.CTk):
 
         # Re-pack in correct order
         self.top_bar.pack(side="top", fill="x")
+        if hasattr(self, "top_bar_accent") and self.top_bar_accent is not None:
+            self.top_bar_accent.pack(side="top", fill="x")
         self.bottom_bar.pack(side="bottom", fill="x")
         self.sidebar_wrapper.pack(side="left", fill="y")
         self.main_content.pack(side="left", fill="both", expand=True)
@@ -477,6 +489,14 @@ class CageEmpireApp(ctk.CTk):
         at 40x40px on the far left, instead of the text "CAGE EMPIRE".
         Falls back to the text label if the image can't be loaded
         (PIL missing, file deleted, etc.).
+
+        UI Implementation Plan v3 — P2-2: a 2px crimson accent line is
+        packed immediately BELOW the top bar (between it and the main
+        content area). This separates the chrome from the workspace —
+        the Bloomberg Terminal / ESPN scoreboard aesthetic uses crisp
+        accent edges, not floating surfaces. The accent is sparing
+        (2px, one brand color) so it stays "calm, data-dense,
+        institutional" per the design docs.
         """
         theme = get_theme()
         self.top_bar = ctk.CTkFrame(self, height=60,
@@ -484,6 +504,19 @@ class CageEmpireApp(ctk.CTk):
                                      fg_color=theme.colors.bg_surface)
         self.top_bar.pack(side="top", fill="x")
         self.top_bar.pack_propagate(False)
+
+        # ---- 2px crimson accent line under the top bar (P2-2) ----
+        # Packed immediately after the top_bar (side="top") so Tk's
+        # packer places it just below the 60px top bar, before the
+        # sidebar/main content area claims the remaining space.
+        # Tracked as self.top_bar_accent so _on_promotion_selected's
+        # re-pack loop can include it (otherwise the promo-select →
+        # dashboard transition would drop the accent line).
+        self.top_bar_accent = ctk.CTkFrame(
+            self, height=2, corner_radius=0,
+            fg_color=theme.colors.crimson,
+        )
+        self.top_bar_accent.pack(side="top", fill="x")
 
         # ---- LOGO (image, with text fallback) ----
         # The compact logo is a square mark — 40x40 reads well at the

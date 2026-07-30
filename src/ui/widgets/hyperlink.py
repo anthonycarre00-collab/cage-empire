@@ -54,11 +54,45 @@ from ui.theme import get_theme
 from ui.state import get_state
 
 
-# A brighter gold for hover state. Computed once at module load —
-# avoids re-parsing hex on every <Enter> event. Slightly lighter +
-# more saturated than theme.colors.gold (#d4a55a) so the hover reads
-# as "active" without leaving the brand palette.
-_HOVER_GOLD = "#f0c878"
+# Hover-color lookup keyed by theme name (P2-4 — UI Implementation
+# Plan v3). Each theme gets its own hover shade — slightly lighter +
+# more saturated than that theme's resting gold so the hover reads
+# as "active" without leaving the brand palette. Computed once at
+# module load (avoids re-parsing hex on every <Enter> event).
+#
+# - Office mode: resting gold #d4a55a → hover #f0c878 (warmer, brighter)
+# - Fight Night mode: resting gold #f0c060 → hover #ffd700 (full gold)
+#   The Fight Night palette is already brighter/saturated, so the
+#   hover pushes into a richer gold rather than a lighter wash.
+_HOVER_GOLD_BY_THEME = {
+    "office": "#f0c878",
+    "fight_night": "#ffd700",
+}
+
+# Default fallback if a future theme adds a new name we don't know
+# about — keeps the widget functional without crashing on theme lookup.
+_HOVER_GOLD_DEFAULT = "#f0c878"
+
+
+def _hover_gold_for_current_theme():
+    """Resolve the hover gold color for the currently active theme.
+
+    P2-4: previously this was a module-level constant hardcoded to
+    "#f0c878". Now it's a lookup so the hover color tracks the theme
+    (Office vs Fight Night). Called from the <Enter> handler on every
+    hover — cheap (dict lookup + get_theme() returns a cached global).
+
+    Returns:
+        Hex color string suitable for CTk's text_color configure.
+    """
+    try:
+        theme = get_theme()
+        return _HOVER_GOLD_BY_THEME.get(theme.name, _HOVER_GOLD_DEFAULT)
+    except Exception:
+        # Defensive — if get_theme() somehow fails (e.g. imported
+        # before theme system is initialized), fall back to the
+        # Office hover shade. The hover effect is cosmetic.
+        return _HOVER_GOLD_DEFAULT
 
 
 class HyperlinkLabel(ctk.CTkLabel):
@@ -126,12 +160,16 @@ class HyperlinkLabel(ctk.CTkLabel):
     def _on_enter(self, event=None):
         """<Enter> handler — lighten the text colour to indicate hover.
 
+        P2-4: hover color now resolves via _hover_gold_for_current_theme()
+        so it tracks the active theme (Office vs Fight Night) rather
+        than being a hardcoded constant.
+
         Defensive — if the configure fails (headless test, destroyed
         widget), swallow silently. The hover effect is cosmetic; a
         failure here shouldn't crash the click handler.
         """
         try:
-            self.configure(text_color=_HOVER_GOLD)
+            self.configure(text_color=_hover_gold_for_current_theme())
         except Exception:
             pass
 

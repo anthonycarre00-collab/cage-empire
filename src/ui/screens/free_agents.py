@@ -207,7 +207,6 @@ from datetime import datetime
 from pathlib import Path
 
 import customtkinter as ctk
-import tkinter.ttk as ttk
 
 # PIL is used for the promotion logo load + resize (mirrors the
 # Roster's logo loader). Falls back gracefully if PIL isn't installed.
@@ -219,14 +218,13 @@ except ImportError:
 
 from ui.theme import get_theme
 from ui.state import get_state
-from ui.voice_display import title_case_phrase, display_phrase, \
+from ui.voice_display import title_case_phrase, \
     display_attr_descriptor
 
 # UI Implementation Plan v3 — P0-1: the new FighterTable widget
-# replaces the ttk.Treeview. Mirrors the Roster's import pattern.
-# Imported unconditionally — the USE_TREEVIEW flag below controls
-# which path is actually built/used, but the import is safe (the
-# widget module has no side effects).
+# replaces the ttk.Treeview (the legacy Treeview code was deleted in
+# UI Implementation Plan v3 — P2-3, ~600 LOC of dead code removed).
+# Mirrors the Roster's import pattern.
 from ui.widgets.fighter_table import FighterTable, Column
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
@@ -258,47 +256,16 @@ PAGE_SIZE = 20
 # contract helper). No negotiation flow yet — that's a future task.
 DEFAULT_SIGNING_SALARY = 50000.0
 
-# UI Implementation Plan v3 — P0-1:
-# USE_TREEVIEW = False → use the new FighterTable widget (CTk-based,
-# supports HyperlinkLabels + rich per-cell content, matches the Roster
-# screen's look + feel). Set to True to fall back to the legacy
-# ttk.Treeview (kept as a safety net in case the new widget has issues
-# on a specific platform). Mirrors the same flag in roster.py.
-USE_TREEVIEW = False
-
-# Treeview column identifiers. Same naming convention as the Roster
-# (D2 in roster.py) so the pattern is recognisable across screens.
-COL_NAME = "name"
+# Sort-column identifiers used by _sort_data + the FighterTable's
+# on_sort_click callback. These were originally Treeview column IDs
+# (UI Implementation Plan v3 — P0-1); the Treeview was deleted in
+# P2-3, but the identifiers survive as the sort_column values the
+# FighterTable path maps to. Mirrors roster.py's pattern.
 COL_WC = "weight_class"
 COL_PHASE = "career_phase"
 COL_POTENTIAL = "potential"
 COL_RECORD = "record"
 COL_MOMENTUM = "momentum"
-
-# Column display labels (heading text).
-COLUMN_LABELS = {
-    COL_NAME: "Name",
-    COL_WC: "Weight Class",
-    COL_PHASE: "Career Phase",
-    COL_POTENTIAL: "Potential",
-    COL_RECORD: "Record",
-    COL_MOMENTUM: "Momentum",
-}
-
-# Column widths (in px). Tuned for a 1400px-wide main content area
-# (~1360px after the sidebar). The Name column is widest (fighters
-# have long names + nicknames); the Record column is narrowest
-# ("18-5-0" is 7 chars). The Potential column is wider than the
-# Roster's Narrative column because voice phrases can be long
-# ("high-end potential with room to grow").
-COLUMN_WIDTHS = {
-    COL_NAME: 220,
-    COL_WC: 130,
-    COL_PHASE: 220,
-    COL_POTENTIAL: 220,
-    COL_RECORD: 80,
-    COL_MOMENTUM: 180,
-}
 
 
 # ============================================================
@@ -648,9 +615,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
         # re-sort without re-querying the DB.
         self._fa_data = []
 
-        # Treeview widget — built once in _build_table. Re-themed on
-        # every _refresh() so theme-change refresh picks up new colors.
-        self._treeview = None
         self._pagination_label = None
         self._prev_button = None
         self._next_button = None
@@ -661,14 +625,15 @@ class FreeAgentsScreen(ctk.CTkFrame):
         # Per UI-POLISH Fix 3: View Profile button (alongside Sign).
         self._view_profile_button = None
         self._search_entry = None
-        self._empty_label = None
         self._sign_button = None
         self._status_label = None
 
         # UI Implementation Plan v3 — P0-1: the new FighterTable
-        # widget. Built by _build_table when USE_TREEVIEW is False.
-        # Holds the row data the FighterTable renders (replaces the
-        # Treeview's insert/clear cycle with set_rows).
+        # widget. Built by _build_table. Holds the row data the
+        # FighterTable renders (set_rows replaces the Treeview's
+        # insert/clear cycle).
+        # P2-3: the legacy ttk.Treeview path + USE_TREEVIEW flag were
+        # deleted — FighterTable is now the only table implementation.
         self._fighter_table = None
 
         # UI Implementation Plan v3 — P0-1: promotion logo image
@@ -847,16 +812,13 @@ class FreeAgentsScreen(ctk.CTkFrame):
     def _build_table(self):
         """Build the free-agents table.
 
-        UI Implementation Plan v3 — P0-1: branches on USE_TREEVIEW.
-        When False (default), builds the new FighterTable widget
-        (CTk-based, supports HyperlinkLabels + matches the Roster's
-        look + feel). When True, falls back to the legacy ttk.Treeview
-        (kept as a safety net — mirrors the same flag in roster.py).
+        UI Implementation Plan v3 — P2-3: the legacy ttk.Treeview
+        path + USE_TREEVIEW flag were deleted. FighterTable is now
+        the only table implementation. This method is kept as a thin
+        wrapper around _build_table_new so existing call sites stay
+        valid (mirrors roster.py's pattern).
         """
-        if USE_TREEVIEW:
-            self._build_table_treeview()
-        else:
-            self._build_table_new()
+        self._build_table_new()
 
     def _build_table_new(self):
         """Build the new FighterTable-based free-agents table (P0-1).
@@ -919,128 +881,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
         )
         self._fighter_table.pack(side="top", fill="both", expand=True,
                                   padx=1, pady=1)
-
-    def _build_table_treeview(self):
-        """Build the free-agents table.
-
-        Same structure as the Roster (D2 in roster.py). 6 columns,
-        headings only (no tree column), height=20 rows. Themed via
-        a separate `FreeAgents.Treeview` style name so the two
-        screens can be themed independently if a future task needs it.
-        """
-        theme = get_theme()
-
-        table_card = ctk.CTkFrame(
-            self, fg_color=theme.colors.bg_surface, corner_radius=8,
-        )
-        table_card.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 10))
-
-        self._apply_treeview_style()
-
-        self._treeview = ttk.Treeview(
-            table_card,
-            columns=(COL_NAME, COL_WC, COL_PHASE, COL_POTENTIAL,
-                     COL_RECORD, COL_MOMENTUM),
-            show="headings",
-            style="FreeAgents.Treeview",
-            height=PAGE_SIZE,
-            selectmode="browse",
-        )
-
-        # Configure columns: width, anchor, heading text + sort command.
-        # Name + WC + Phase + Potential + Momentum are left-anchored
-        # (text); Record is center-anchored (short numeric-ish string).
-        for col in (COL_NAME, COL_WC, COL_PHASE, COL_POTENTIAL,
-                    COL_RECORD, COL_MOMENTUM):
-            self._treeview.heading(
-                col, text=COLUMN_LABELS[col],
-                command=lambda c=col: self._on_heading_click(c),
-            )
-            anchor = "center" if col == COL_RECORD else "w"
-            self._treeview.column(
-                col, width=COLUMN_WIDTHS[col], anchor=anchor,
-                stretch=False,
-            )
-
-        self._treeview.pack(side="left", fill="both", expand=True, padx=(1, 0), pady=1)
-
-        scrollbar = ctk.CTkScrollbar(
-            table_card, command=self._treeview.yview,
-            fg_color=theme.colors.bg_surface,
-        )
-        scrollbar.pack(side="right", fill="y", padx=(0, 1), pady=1)
-        self._treeview.configure(yscrollcommand=scrollbar.set)
-
-        # Bind double-click → navigate to Fighter Profile (D8).
-        self._treeview.bind("<Double-1>", self._on_row_double_click)
-        # Bind single-click selection → enable the Sign button (D2).
-        self._treeview.bind("<<TreeviewSelect>>", self._on_row_select)
-
-        # Empty-state label — shown when no free agents match the
-        # filter/search. Packed into the table_card so it overlays the
-        # Treeview area. Hidden by _refresh when rows exist.
-        self._empty_label = ctk.CTkLabel(
-            table_card,
-            text="No free agents available.",
-            font=theme.fonts.body,
-            text_color=theme.colors.text_tertiary,
-            justify="center",
-        )
-        # Note: _empty_label is NOT packed here. _refresh decides.
-
-    def _apply_treeview_style(self):
-        """Apply the dark Office theme to the FreeAgents.Treeview style.
-
-        Mirrors RosterScreen._apply_treeview_style (D2 in roster.py).
-        Separate style name so the two screens can be themed
-        independently. Idempotent — safe to call multiple times.
-
-        Per UI-POLISH Fix 5 + Fix 6: row font bumped from 12px to
-        14px (theme.fonts.body_small) for readability, heading font
-        bumped from 13 to 15 (theme.fonts.body) for visual hierarchy.
-        Hover effect on rows added (Fix 6).
-        """
-        theme = get_theme()
-        try:
-            style = ttk.Style()
-            try:
-                style.theme_use("clam")
-            except Exception:
-                pass  # clam may already be in use; that's fine
-
-            body_font = theme.fonts.body_small
-            heading_font = (body_font[0], body_font[1] + 1, "bold")
-
-            style.configure(
-                "FreeAgents.Treeview",
-                background=theme.colors.bg_surface,
-                foreground=theme.colors.text_primary,
-                fieldbackground=theme.colors.bg_surface,
-                bordercolor=theme.colors.bg_border,
-                rowheight=30,
-                font=body_font,
-            )
-            style.map(
-                "FreeAgents.Treeview",
-                background=[("selected", theme.colors.bg_surface_elevated),
-                            ("active", theme.colors.bg_surface_elevated)],
-                foreground=[("selected", theme.colors.text_primary),
-                            ("active", theme.colors.gold)],
-            )
-            style.configure(
-                "FreeAgents.Treeview.Heading",
-                background=theme.colors.bg_surface_elevated,
-                foreground=theme.colors.gold,
-                bordercolor=theme.colors.bg_border,
-                relief="flat",
-                font=heading_font,
-            )
-            style.map(
-                "FreeAgents.Treeview.Heading",
-                background=[("active", theme.colors.steel)],
-            )
-        except Exception as e:
-            print(f"Warning: Treeview style setup failed: {e}", flush=True)
 
     # ============================================================
     # SECTION 4 — PAGINATION (Prev / Next + page indicator)
@@ -1231,15 +1071,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._current_page = 1
             self._refresh()
 
-    def _on_heading_click(self, col):
-        """Handle heading click — sort by that column (D10)."""
-        if self._sort_column == col:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_column = col
-            self._sort_reverse = False
-        self._refresh()
-
     def _on_prev_page(self):
         """Handle Prev button — go to previous page."""
         if self._current_page > 1:
@@ -1253,26 +1084,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._current_page += 1
             self._refresh()
 
-    def _on_row_select(self, event=None):
-        """Handle single-click row selection — enable Sign + View Profile.
-
-        Per D2: the Sign button reads the Treeview selection to
-        recover the fighter_id. Disabled when no row is selected
-        (e.g., after _refresh clears the selection).
-        Per UI-POLISH Fix 3: View Profile button enabled alongside
-        Sign — the player can inspect before committing to sign.
-        """
-        try:
-            selection = self._treeview.selection()
-            if selection:
-                self._sign_button.configure(state="normal")
-                self._view_profile_button.configure(state="normal")
-            else:
-                self._sign_button.configure(state="disabled")
-                self._view_profile_button.configure(state="disabled")
-        except Exception:
-            pass
-
     def _on_view_profile_clicked(self):
         """Handle View Profile button click (UI-POLISH Fix 3).
 
@@ -1283,67 +1094,34 @@ class FreeAgentsScreen(ctk.CTkFrame):
         """
         self._navigate_to_selected_profile()
 
+    # `View Profile` button click helper stays — used by both
+    # _on_view_profile_clicked + _on_row_double_click_new.
+
     def _navigate_to_selected_profile(self):
         """Shared navigation helper — used by double-click + View Profile.
 
-        UI Implementation Plan v3 — P0-1: when using FighterTable, the
-        selected fighter_id is read from the widget (not the Treeview
-        selection). Falls back to the Treeview path when USE_TREEVIEW
-        is True. Defensive against missing selection / unregistered
-        screen.
+        UI Implementation Plan v3 — P2-3: the Treeview fallback path
+        was deleted (USE_TREEVIEW flag gone). The FighterTable is the
+        only table implementation; the selected fighter_id is read
+        directly from the widget.
         """
-        # FighterTable path (new — P0-1).
-        if not USE_TREEVIEW and self._fighter_table is not None:
-            fighter_id = self._fighter_table.get_selected_fighter_id()
-            if fighter_id is None:
-                return
-            try:
-                state = get_state()
-                profile_screen = state.get_screen("fighter_profile")
-                if profile_screen is not None and hasattr(
-                        profile_screen, "set_fighter_id"):
-                    profile_screen.set_fighter_id(fighter_id)
-                state.set_active_screen("fighter_profile")
-            except ValueError as e:
-                print(f"Warning: navigation to fighter_profile failed: {e}",
-                      flush=True)
-            except Exception as e:
-                print(f"Warning: navigation handler failed: {e}", flush=True)
+        if self._fighter_table is None:
             return
-
-        # Treeview path (legacy).
+        fighter_id = self._fighter_table.get_selected_fighter_id()
+        if fighter_id is None:
+            return
         try:
-            selection = self._treeview.selection()
-            if not selection:
-                return
-            try:
-                fighter_id = int(selection[0])
-            except (ValueError, IndexError):
-                return
-
             state = get_state()
             profile_screen = state.get_screen("fighter_profile")
             if profile_screen is not None and hasattr(
-                profile_screen, "set_fighter_id"
-            ):
+                    profile_screen, "set_fighter_id"):
                 profile_screen.set_fighter_id(fighter_id)
-
             state.set_active_screen("fighter_profile")
         except ValueError as e:
             print(f"Warning: navigation to fighter_profile failed: {e}",
                   flush=True)
         except Exception as e:
             print(f"Warning: navigation handler failed: {e}", flush=True)
-
-    def _on_row_double_click(self, event=None):
-        """Handle double-click on a Treeview row — navigate to profile.
-
-        Mirrors RosterScreen._on_row_double_click (D7 in roster.py).
-        Reads the selected row's fighter_id (stored as the Treeview
-        item's iid), calls set_fighter_id() on the Fighter Profile
-        screen, then navigates via state.set_active_screen.
-        """
-        self._navigate_to_selected_profile()
 
     def _on_sign_clicked(self):
         """Handle Sign Selected Fighter button click (D2, D3, D4).
@@ -1360,25 +1138,16 @@ class FreeAgentsScreen(ctk.CTkFrame):
           7. self._refresh() to update the Free Agents table.
         """
         try:
-            # UI Implementation Plan v3 — P0-1: branch on the widget
-            # that's actually built. FighterTable stores the selected
-            # fighter_id internally; the Treeview stores it as the
-            # item iid.
-            if not USE_TREEVIEW and self._fighter_table is not None:
-                fighter_id = self._fighter_table.get_selected_fighter_id()
-                if fighter_id is None:
-                    self._set_status("No fighter selected.", "warning")
-                    return
-            else:
-                selection = self._treeview.selection()
-                if not selection:
-                    self._set_status("No fighter selected.", "warning")
-                    return
-                try:
-                    fighter_id = int(selection[0])
-                except (ValueError, IndexError):
-                    self._set_status("Invalid selection.", "warning")
-                    return
+            # UI Implementation Plan v3 — P2-3: the Treeview fallback
+            # was deleted. FighterTable is the only path — reads the
+            # selected fighter_id directly from the widget.
+            if self._fighter_table is None:
+                self._set_status("Table not initialized.", "warning")
+                return
+            fighter_id = self._fighter_table.get_selected_fighter_id()
+            if fighter_id is None:
+                self._set_status("No fighter selected.", "warning")
+                return
 
             state = get_state()
             conn = state.get_conn()
@@ -1578,10 +1347,9 @@ class FreeAgentsScreen(ctk.CTkFrame):
         Safe to call repeatedly — clears old rows, re-queries,
         re-renders. Defensive against DB errors.
 
-        UI Implementation Plan v3 — P0-1: branches on USE_TREEVIEW.
-        The FighterTable path skips the Treeview style re-application
-        (the FighterTable reads colors at render time) + calls
-        _render_table_new instead of _render_table.
+        UI Implementation Plan v3 — P2-3: the legacy ttk.Treeview
+        render path was deleted. FighterTable.set_rows is the only
+        render call (no USE_TREEVIEW branch needed).
         """
         try:
             state = get_state()
@@ -1594,13 +1362,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
             # string for age computation in _render_table_new. Read
             # once per refresh — used for every row's Age column.
             self._sim_date_str = self._read_sim_date(conn)
-
-            # Re-apply the Treeview style on every refresh so theme-
-            # change refresh picks up new colors (D9). Only applies
-            # when USE_TREEVIEW is True (the FighterTable reads colors
-            # at render time, no global style needed).
-            if USE_TREEVIEW:
-                self._apply_treeview_style()
 
             # Populate the weight-class dropdown (D5). Done on every
             # refresh so newly-signed/cut fighters' weight classes
@@ -1619,10 +1380,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
                 self._current_page = max(1, total_pages)
 
             # Render the current page of rows.
-            if USE_TREEVIEW:
-                self._render_table()
-            else:
-                self._render_table_new()
+            self._render_table_new()
             self._refresh_pagination(total_pages)
             self._refresh_subtitle(len(self._fa_data), conn, promo_id)
 
@@ -1953,10 +1711,8 @@ class FreeAgentsScreen(ctk.CTkFrame):
         reverse = self._sort_reverse
 
         def sort_key(item):
-            if col == "fighter_id" or col == COL_NAME:
-                if col == "fighter_id":
-                    return item["fighter_id"]
-                return item["name"].lower()
+            if col == "fighter_id":
+                return item["fighter_id"]
             if col == "age":
                 # P0-1: sort by computed age. Defensive — fighters
                 # with bad DOB get age 0 (sorts first ascending).
@@ -2062,95 +1818,6 @@ class FreeAgentsScreen(ctk.CTkFrame):
             self._fighter_table.set_rows(rows)
         except Exception as e:
             print(f"Warning: free-agent table render (new) failed: {e}",
-                  flush=True)
-
-    def _render_table(self):
-        """Render the current page of rows into the Treeview.
-
-        Per D7: shows PAGE_SIZE (20) rows per page. The Treeview
-        item's iid IS the fighter_id (so the double-click + sign
-        handlers can recover it without a separate lookup).
-
-        Per D6: empty-state handling — if no rows match the current
-        filter/search, show the empty-state label.
-        """
-        try:
-            try:
-                self._treeview.delete(*self._treeview.get_children())
-            except Exception:
-                pass
-
-            start = (self._current_page - 1) * PAGE_SIZE
-            end = start + PAGE_SIZE
-            page_rows = self._fa_data[start:end]
-
-            if not page_rows:
-                # Empty state (D6). Show the appropriate message
-                # based on WHY the free-agent pool is empty.
-                empty_msg = self._empty_state_message()
-                self._empty_label.configure(text=empty_msg)
-                self._empty_label.pack(
-                    expand=True, fill="both", padx=20, pady=40,
-                    in_=self._treeview.master,
-                )
-                return
-
-            try:
-                self._empty_label.pack_forget()
-            except Exception:
-                pass
-
-            # Alternate row colors for readability.
-            try:
-                self._treeview.tag_configure(
-                    "even", background=get_theme().colors.bg_surface)
-                self._treeview.tag_configure(
-                    "odd", background=get_theme().colors.bg_surface_elevated)
-            except Exception:
-                pass
-
-            for i, fighter in enumerate(page_rows):
-                # Per UI-POLISH Fix 5: title-case the voice phrases so
-                # they read as polished prose, not lowercase voice.py
-                # output. display_phrase handles the "label||phrase"
-                # cache decode + title-case in one call.
-                phase_phrase = display_phrase(
-                    fighter["career_phase_stored"], "(Uncached)")
-                momentum_phrase = display_phrase(
-                    fighter["momentum_stored"], "(Uncached)")
-                # Potential phrase. Per D1: reads from
-                # fighter_descriptors.potential_desc (the interpretation-
-                # layer projection of the raw potential number). NULL
-                # across the seeded DB at schema 3.12.0 — fall back to
-                # a sensible voice phrase that explains WHY the player
-                # can't see a potential: they haven't scouted this
-                # fighter yet. (Per the Soul doc, this information
-                # asymmetry is the intended design.)
-                potential_phrase = display_phrase(
-                    fighter["potential_stored"],
-                    "(No Scouting Report Yet)")
-                record_str = _format_record(
-                    fighter["record_wins"],
-                    fighter["record_losses"],
-                    fighter["record_draws"],
-                )
-
-                tag = "even" if i % 2 == 0 else "odd"
-                self._treeview.insert(
-                    "", "end",
-                    iid=str(fighter["fighter_id"]),
-                    values=(
-                        fighter["name"],
-                        fighter["weight_class_name"],
-                        phase_phrase,
-                        potential_phrase,
-                        record_str,
-                        momentum_phrase,
-                    ),
-                    tags=(tag,),
-                )
-        except Exception as e:
-            print(f"Warning: free-agent table render failed: {e}",
                   flush=True)
 
     def _empty_state_message(self):

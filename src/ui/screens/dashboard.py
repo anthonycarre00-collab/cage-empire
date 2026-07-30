@@ -434,6 +434,22 @@ class DashboardScreen(ctk.CTkFrame):
             "The Empire" (Fix 6). "── YOUR CHAMPIONS ──" renamed
             "Your Champions".
 
+        UI Implementation Plan v3 — P2-2 (Visual Texture):
+          - Both cards now use bg_surface_elevated + a 1px bg_border
+            for a subtle framed-surface look (matches the Bloomberg
+            Terminal / ESPN scoreboard aesthetic — calm, data-dense,
+            institutional).
+          - Card spacing between sections tightened to 16px (was 20px)
+            for a more rhythmically consistent vertical cadence.
+          - Internal card padding bumped from 15px → 20px horizontal
+            so content has more breathing room inside the frame.
+          - Each section title (TOP STORY, THE EMPIRE) gets a 3px
+            gold left-accent bar — a subtle brand-color cue that
+            reads as a marquee divider, not a fight poster.
+          - The promo_card gets a 200x200 promotion-logo watermark
+            at 10% opacity, placed behind the content via place()+
+            lower(). Loaded by _refresh_promotion_status.
+
         Layout:
           ┌──────────────────────────┬───────────────────────────────┐
           │█ TOP STORY (elevated)    │  THE EMPIRE                   │
@@ -442,7 +458,7 @@ class DashboardScreen(ctk.CTkFrame):
           │█                         │  Fan Trust: Strong            │
           │█ More Headlines          │  Roster: 1,002 fighters       │
           │█ ▸ headline 2            │  Champions: 5                 │
-          │█ ▸ headline 3            │                               │
+          │█ ▸ headline 3            │  [faded promo logo watermark] │
           │█ ▸ headline 4            │  Your Champions               │
           │█                         │  Heavyweight: J. Cardoso      │
           │█                         │  ...                          │
@@ -451,11 +467,12 @@ class DashboardScreen(ctk.CTkFrame):
         theme = get_theme()
 
         # Container — two columns with equal weight, gap via padx.
-        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
+        # P2-2: section spacing set to 16px (was 20) for a tighter,
+        # more institutional cadence per the design docs.
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
         # the top row scrolls with the rest of the dashboard.
         row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 20))
+        row.pack(side="top", fill="x", padx=20, pady=(0, 16))
         row.grid_columnconfigure(0, weight=1, uniform="top")
         row.grid_columnconfigure(1, weight=1, uniform="top")
 
@@ -464,9 +481,13 @@ class DashboardScreen(ctk.CTkFrame):
         # (pops above other headlines) + a crimson accent bar on the
         # left edge. The crimson bar is a 2px-wide CTkFrame packed
         # left inside the card.
+        # P2-2: added 1px bg_border around the card for the framed-
+        # surface look.
         self.top_story_card = ctk.CTkFrame(
             row, fg_color=theme.colors.bg_surface_elevated,
             corner_radius=8,
+            border_width=1,
+            border_color=theme.colors.bg_border,
         )
         self.top_story_card.grid(row=0, column=0, sticky="nsew",
                                   padx=(0, 8))
@@ -483,21 +504,31 @@ class DashboardScreen(ctk.CTkFrame):
         ts_main = ctk.CTkFrame(self.top_story_card, fg_color="transparent")
         ts_main.pack(side="left", fill="both", expand=True)
 
-        # Card title (gold H2) — kept as "TOP STORY" label (the
-        # headline below is the H1 per Fix 4).
+        # Card title (gold caption) — kept as "TOP STORY" label (the
+        # headline below is the H1 per Fix 4). P2-2: wrapped in a
+        # title_row with a 3px gold left-accent bar so the section
+        # header reads as a marquee divider, not just floating text.
+        ts_title_row = ctk.CTkFrame(ts_main, fg_color="transparent")
+        ts_title_row.pack(side="top", fill="x", padx=20, pady=(12, 4))
+        ts_title_accent = ctk.CTkFrame(
+            ts_title_row, width=3, corner_radius=0,
+            fg_color=theme.colors.gold,
+        )
+        ts_title_accent.pack(side="left", fill="y", padx=(0, 8))
         ts_title = ctk.CTkLabel(
-            ts_main, text="TOP STORY",
+            ts_title_row, text="TOP STORY",
             font=theme.fonts.caption, text_color=theme.colors.gold,
             anchor="w",
         )
-        ts_title.pack(side="top", fill="x", padx=15, pady=(12, 4))
+        ts_title.pack(side="left")
 
         # Container for the top-story content (headline + body).
         # Populated by _refresh. Fix 4 bumps headline from h2 to h1.
+        # P2-2: padx bumped 15 → 20 for more internal breathing room.
         self.top_story_content = ctk.CTkFrame(
             ts_main, fg_color="transparent",
         )
-        self.top_story_content.pack(side="top", fill="x", padx=15, pady=(0, 5))
+        self.top_story_content.pack(side="top", fill="x", padx=20, pady=(0, 5))
 
         # "More Headlines" sub-title (Fix 4 — was "── OTHER HEADLINES ──")
         oh_title = ctk.CTkLabel(
@@ -505,14 +536,14 @@ class DashboardScreen(ctk.CTkFrame):
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
-        oh_title.pack(side="top", fill="x", padx=15, pady=(10, 5))
+        oh_title.pack(side="top", fill="x", padx=20, pady=(10, 5))
 
         # Container for the other-headlines list. Populated by _refresh.
         self.other_headlines_content = ctk.CTkFrame(
             ts_main, fg_color="transparent",
         )
         self.other_headlines_content.pack(
-            side="top", fill="x", padx=15, pady=(0, 12))
+            side="top", fill="x", padx=20, pady=(0, 12))
 
         # ---- RIGHT: The Empire + Your Champions ----
         # UI Fix Plan 2 — Phase 3, Fix 7: restructured layout. The
@@ -520,16 +551,45 @@ class DashboardScreen(ctk.CTkFrame):
         # "The Empire" H2 title, then business stats, then a
         # "Your Champions" sub-section with gold-bordered champion
         # rows whose names are HyperlinkLabels (Fix 7).
+        # P2-2: card upgraded from bg_surface → bg_surface_elevated +
+        # 1px bg_border so it visually matches the Top Story card.
+        #   Both top-row cards now read as a matched pair on the
+        #   dashboard (elevated surfaces framed by subtle borders).
         self.promo_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_surface, corner_radius=8,
+            row, fg_color=theme.colors.bg_surface_elevated, corner_radius=8,
+            border_width=1,
+            border_color=theme.colors.bg_border,
         )
         self.promo_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        # P2-2: promotion logo watermark — a 200x200 label placed
+        # center+behind the promo_card content. The image is loaded
+        # at 10% opacity by _refresh_promotion_status (uses PIL to
+        # multiply the alpha channel by 0.10). The label is created
+        # here (before the content widgets) + lowered to the bottom
+        # of the stacking order so the content renders on top.
+        # Defensive — if PIL isn't available, the label stays empty
+        # (no watermark shown; the card still works).
+        self._promo_watermark_label = ctk.CTkLabel(
+            self.promo_card, text="",
+        )
+        self._promo_watermark_label.place(relx=0.5, rely=0.5, anchor="center")
+        try:
+            self._promo_watermark_label.lower()
+        except Exception:
+            # .lower() can fail in some headless test envs. The
+            # watermark is cosmetic — the card still works without it.
+            pass
+        # Image reference (kept so GC doesn't drop the underlying
+        # Tk image). Populated by _refresh_promotion_status.
+        self._promo_watermark_image = None
 
         # Top section: promotion logo + "THE EMPIRE" title side-by-side.
         # Fix 7 + Fix 6: logo at top, title renamed "PROMOTION STATUS"
         # → "THE EMPIRE".
+        # P2-2: padx bumped 15 → 20.
         ps_header = ctk.CTkFrame(self.promo_card, fg_color="transparent")
-        ps_header.pack(side="top", fill="x", padx=15, pady=(12, 5))
+        ps_header.pack(side="top", fill="x", padx=20, pady=(12, 5))
 
         # Logo label (60x60). Loaded by _refresh_promotion_status from
         # src/ui/assets/promo_logos/. Falls back to initials.
@@ -542,19 +602,29 @@ class DashboardScreen(ctk.CTkFrame):
         )
         self._dashboard_promo_logo_label.pack(side="left", padx=(0, 10))
 
+        # P2-2: THE EMPIRE title wrapped in a title_row with a 3px
+        # gold left-accent bar — matches the TOP STORY title treatment
+        # so the two columns read as a matched pair of section headers.
+        ps_title_row = ctk.CTkFrame(ps_header, fg_color="transparent")
+        ps_title_row.pack(side="left", fill="x", expand=True)
+        ps_title_accent = ctk.CTkFrame(
+            ps_title_row, width=3, corner_radius=0,
+            fg_color=theme.colors.gold,
+        )
+        ps_title_accent.pack(side="left", fill="y", padx=(0, 8))
         ps_title = ctk.CTkLabel(
-            ps_header, text="THE EMPIRE",
+            ps_title_row, text="THE EMPIRE",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
-        ps_title.pack(side="left", fill="x", expand=True)
+        ps_title.pack(side="left")
 
         # Container for the status rows (cash/rep/trust/roster/champions).
         self.promo_status_content = ctk.CTkFrame(
             self.promo_card, fg_color="transparent",
         )
         self.promo_status_content.pack(
-            side="top", fill="x", padx=15, pady=(0, 5))
+            side="top", fill="x", padx=20, pady=(0, 5))
 
         # "Your Champions" sub-title (Fix 4 — was "── YOUR CHAMPIONS ──")
         yc_title = ctk.CTkLabel(
@@ -562,14 +632,14 @@ class DashboardScreen(ctk.CTkFrame):
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
-        yc_title.pack(side="top", fill="x", padx=15, pady=(10, 5))
+        yc_title.pack(side="top", fill="x", padx=20, pady=(10, 5))
 
         # Container for the champion rows. Populated by _refresh.
         self.champions_content = ctk.CTkFrame(
             self.promo_card, fg_color="transparent",
         )
         self.champions_content.pack(
-            side="top", fill="x", padx=15, pady=(0, 12))
+            side="top", fill="x", padx=20, pady=(0, 12))
 
         # Dashboard promo logo image reference (kept as attribute so
         # the GC doesn't drop the underlying Tk image). Loaded by
@@ -589,39 +659,63 @@ class DashboardScreen(ctk.CTkFrame):
           │ [name]          │ │ [name]          │ │ [name]          │
           │ [voice phrase]  │ │ [voice phrase]  │ │ [voice phrase]  │
           └─────────────────┘ └─────────────────┘ └─────────────────┘
+
+        UI Implementation Plan v3 — P2-2 (Visual Texture):
+          - Section title (FIGHTER WATCH) now wrapped in a title_row
+            with a 3px gold left-accent bar.
+          - Each watch card upgraded from bg_surface → bg_surface_
+            elevated + 1px bg_border so they match the Top Story /
+            Empire cards (matched-pair aesthetic across the whole
+            dashboard).
+          - Section spacing tightened 20 → 16px.
         """
         theme = get_theme()
 
-        # Section title (full-width). Per UI-POLISH Fix 7: section
-        # spacing bumped to 20px minimum.
+        # Section title (full-width). P2-2: wrapped in a title_row
+        # with a 3px gold left-accent bar so the section header reads
+        # as a marquee divider — matches the TOP STORY + THE EMPIRE
+        # title treatment. The accent + title sit on a single row.
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
+        fw_title_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        fw_title_row.pack(side="top", fill="x", padx=20, pady=(0, 8))
+        fw_title_accent = ctk.CTkFrame(
+            fw_title_row, width=3, corner_radius=0,
+            fg_color=theme.colors.gold,
+        )
+        fw_title_accent.pack(side="left", fill="y", padx=(0, 8))
         fw_section_title = ctk.CTkLabel(
-            self._scroll, text="FIGHTER WATCH",
+            fw_title_row, text="FIGHTER WATCH",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
-        fw_section_title.pack(side="top", fill="x", padx=20, pady=(0, 5))
+        fw_section_title.pack(side="left")
 
         # Three-column container
+        # P2-2: section spacing tightened 20 → 16px.
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
         row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 20))
+        row.pack(side="top", fill="x", padx=20, pady=(0, 16))
         row.grid_columnconfigure(0, weight=1, uniform="watch")
         row.grid_columnconfigure(1, weight=1, uniform="watch")
         row.grid_columnconfigure(2, weight=1, uniform="watch")
 
         # Card containers — kept as attributes so _refresh can populate
         # them (and so theme-change refresh picks up the new colors).
+        # P2-2: upgraded from bg_surface → bg_surface_elevated + 1px
+        # bg_border for the framed-surface look.
         self.watch_card_top = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_surface, corner_radius=8)
+            row, fg_color=theme.colors.bg_surface_elevated, corner_radius=8,
+            border_width=1, border_color=theme.colors.bg_border)
         self.watch_card_top.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         self.watch_card_streak = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_surface, corner_radius=8)
+            row, fg_color=theme.colors.bg_surface_elevated, corner_radius=8,
+            border_width=1, border_color=theme.colors.bg_border)
         self.watch_card_streak.grid(row=0, column=1, sticky="nsew", padx=3)
 
         self.watch_card_fall = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_surface, corner_radius=8)
+            row, fg_color=theme.colors.bg_surface_elevated, corner_radius=8,
+            border_width=1, border_color=theme.colors.bg_border)
         self.watch_card_fall.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
 
     # ============================================================
@@ -645,30 +739,53 @@ class DashboardScreen(ctk.CTkFrame):
 
         The list is rendered by _refresh() (called once on init via
         after(50, ...) and again whenever the screen is shown).
+
+        UI Implementation Plan v3 — P2-2 (Visual Texture):
+          - Section title (RECENT NEWS) wrapped in a title_row with
+            a 3px gold left-accent bar — matches the FIGHTER WATCH
+            + THE EMPIRE + TOP STORY treatment.
+          - news_scroll upgraded from bg_surface → bg_surface_
+            elevated + 1px bg_border so it matches the rest of the
+            dashboard's framed-surface cards.
+          - Section spacing tightened 20 → 16px.
         """
         theme = get_theme()
 
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll
-        # so the news section scrolls with the rest of the dashboard.
+        # P2-2: RECENT NEWS title wrapped in a title_row with a 3px
+        # gold left-accent bar — same pattern as the other section
+        # titles for visual consistency.
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
+        # the news section scrolls with the rest of the dashboard.
+        news_title_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        news_title_row.pack(side="top", fill="x", padx=20, pady=(0, 8))
+        news_title_accent = ctk.CTkFrame(
+            news_title_row, width=3, corner_radius=0,
+            fg_color=theme.colors.gold,
+        )
+        news_title_accent.pack(side="left", fill="y", padx=(0, 8))
         news_section_title = ctk.CTkLabel(
-            self._scroll, text="RECENT NEWS",
+            news_title_row, text="RECENT NEWS",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
-        news_section_title.pack(side="top", fill="x", padx=20, pady=(0, 5))
+        news_section_title.pack(side="left")
 
         # Fixed-height scrollable frame so the list scrolls within the
         # visible area rather than growing the screen indefinitely
         # (per the UI rules: max height with scroll overflow).
-        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
+        # P2-2: upgraded from bg_surface → bg_surface_elevated + 1px
+        # bg_border to match the other dashboard cards. Section
+        # spacing tightened 20 → 16px.
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
         self.news_scroll = ctk.CTkScrollableFrame(
             self._scroll,
-            fg_color=theme.colors.bg_surface,
+            fg_color=theme.colors.bg_surface_elevated,
             corner_radius=8,
+            border_width=1,
+            border_color=theme.colors.bg_border,
             height=200,
         )
-        self.news_scroll.pack(side="top", fill="x", padx=20, pady=(0, 20))
+        self.news_scroll.pack(side="top", fill="x", padx=20, pady=(0, 16))
 
         # Empty-state label — shown when there's no news. Kept as an
         # attribute so _refresh can show/hide it.
@@ -694,11 +811,12 @@ class DashboardScreen(ctk.CTkFrame):
         """
         theme = get_theme()
 
-        # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
+        # P2-2: section spacing tightened 20 → 16px for consistency
+        # with the rest of the dashboard's section cadence.
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
         # the action buttons scroll with the rest of the dashboard.
         actions_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        actions_row.pack(side="top", fill="x", padx=20, pady=(0, 20))
+        actions_row.pack(side="top", fill="x", padx=20, pady=(0, 16))
 
         # Schedule Event — gold accent (primary action).
         schedule_btn = ctk.CTkButton(
@@ -1134,6 +1252,11 @@ class DashboardScreen(ctk.CTkFrame):
             # smaller dashboard card slot.
             self._refresh_dashboard_promo_logo(conn, promo_id)
 
+            # UI Implementation Plan v3 — P2-2: load the promotion-logo
+            # watermark (10% opacity, 200x200) into the promo_card's
+            # background. Sits behind the content via place()+lower().
+            self._refresh_promo_watermark(conn, promo_id)
+
             # Render the five status rows. Fix 7: each row gets a
             # small colored dot indicator on the left (cash=gold,
             # reputation=gold, fan_trust=success green, roster=steel,
@@ -1253,6 +1376,100 @@ class DashboardScreen(ctk.CTkFrame):
             return "?"
         initials = "".join(w[0].upper() for w in words if w)[:3]
         return initials or "?"
+
+    # ------------------------------------------------------------
+    # Promotion logo watermark (P2-2 — Visual Texture)
+    # ------------------------------------------------------------
+
+    def _refresh_promo_watermark(self, conn, promo_id):
+        """Load the promotion-logo watermark behind the promo_card.
+
+        UI Implementation Plan v3 — P2-2: a 200x200 promotion logo
+        rendered at 10% opacity, centered behind the promo_card's
+        content (cash/rep/trust/roster/champions rows). The watermark
+        gives the section visual depth without being OTT or garish —
+        the player should barely notice it, but it reinforces the
+        "your promotion" identity of the section.
+
+        Implementation:
+          1. Load the promo logo via _load_promo_logo (Roster's helper,
+             returns a PIL.Image RGBA at 200x200).
+          2. Multiply the alpha channel by 0.10 (so a fully opaque
+             pixel becomes 25/255 alpha — barely visible against the
+             bg_surface_elevated card surface).
+          3. Wrap the modified PIL image in a CTkImage.
+          4. Configure self._promo_watermark_label with the image.
+
+        Defensive — if PIL isn't available or the logo file is
+        missing, the watermark label is cleared (image=None) and the
+        card still renders normally. This mirrors the existing
+        _refresh_dashboard_promo_logo pattern.
+
+        Per the design docs (GUI_PLAN.md §3): "Bloomberg Terminal
+        meets ESPN scoreboard" — the watermark is a subtle texture,
+        not a fight-poster backdrop.
+        """
+        try:
+            # Reuse the Roster's logo loader (returns PIL.Image at the
+            # requested size). Lazy import keeps the dashboard module
+            # independent of roster.py at module load time.
+            try:
+                from ui.screens.roster import _load_promo_logo
+                pil_img = _load_promo_logo(promo_id, "", size=200)
+            except Exception:
+                pil_img = None
+
+            if pil_img is None:
+                # No logo available — clear the watermark label.
+                try:
+                    self._promo_watermark_label.configure(image=None)
+                except Exception:
+                    pass
+                self._promo_watermark_image = None
+                return
+
+            # Reduce the alpha channel to 10%. PIL's .point() with a
+            # lambda multiplies each pixel's alpha value by 0.10 —
+            # 255 becomes 25, 128 becomes 12, etc. The result is a
+            # barely-visible ghost of the logo behind the card's
+            # content.
+            try:
+                pil_img = pil_img.convert("RGBA")
+                alpha = pil_img.split()[3]
+                alpha = alpha.point(lambda p: int(p * 0.10))
+                pil_img.putalpha(alpha)
+            except Exception as e:
+                # Alpha manipulation failed — skip the watermark
+                # rather than risk showing a fully-opaque logo behind
+                # the card content.
+                print(f"Warning: watermark alpha manipulation failed: {e}",
+                      flush=True)
+                try:
+                    self._promo_watermark_label.configure(image=None)
+                except Exception:
+                    pass
+                self._promo_watermark_image = None
+                return
+
+            # Wrap in CTkImage + store as attribute so the GC doesn't
+            # drop the underlying Tk image (Tk images are referenced
+            # by name, not Python refcount).
+            self._promo_watermark_image = ctk.CTkImage(
+                light_image=pil_img, dark_image=pil_img,
+                size=(200, 200),
+            )
+            self._promo_watermark_label.configure(
+                image=self._promo_watermark_image, text="")
+        except Exception as e:
+            print(f"Warning: promo watermark refresh failed: {e}",
+                  flush=True)
+            # Defensive — clear the watermark on any failure so we
+            # don't leave a stale image on the label.
+            try:
+                self._promo_watermark_label.configure(image=None)
+            except Exception:
+                pass
+            self._promo_watermark_image = None
 
     # ------------------------------------------------------------
     # Champions list (titles + weight_classes + fighters — game state)
@@ -1606,7 +1823,7 @@ class DashboardScreen(ctk.CTkFrame):
                 font=theme.fonts.h3, text_color=theme.colors.gold,
                 anchor="w",
             )
-            title_label.pack(side="top", fill="x", padx=12, pady=(10, 5))
+            title_label.pack(side="top", fill="x", padx=20, pady=(10, 5))
             self._watch_cards.append(title_label)
 
             if data is None:
@@ -1617,7 +1834,7 @@ class DashboardScreen(ctk.CTkFrame):
                     text_color=theme.colors.text_tertiary,
                     anchor="w", wraplength=180, justify="left",
                 )
-                empty_label.pack(side="top", fill="x", padx=12, pady=(0, 12))
+                empty_label.pack(side="top", fill="x", padx=20, pady=(0, 12))
                 self._watch_cards.append(empty_label)
                 return
 
@@ -1643,7 +1860,7 @@ class DashboardScreen(ctk.CTkFrame):
                     text_color=theme.colors.text_primary,
                     anchor="w", wraplength=180, justify="left",
                 )
-            name_label.pack(side="top", fill="x", padx=12, pady=(0, 3))
+            name_label.pack(side="top", fill="x", padx=20, pady=(0, 3))
             self._watch_cards.append(name_label)
 
             # Voice phrase — prefer narrative_phrase, fall back to
@@ -1660,7 +1877,7 @@ class DashboardScreen(ctk.CTkFrame):
                 text_color=theme.colors.text_secondary,
                 anchor="w", wraplength=180, justify="left",
             )
-            voice_label.pack(side="top", fill="x", padx=12, pady=(0, 8))
+            voice_label.pack(side="top", fill="x", padx=20, pady=(0, 8))
             self._watch_cards.append(voice_label)
 
             # P1-1: "View Profile →" HyperlinkLabel at the bottom of
@@ -1674,7 +1891,7 @@ class DashboardScreen(ctk.CTkFrame):
                     font=theme.fonts.caption,
                     anchor="w",
                 )
-                view_link.pack(side="top", fill="x", padx=12, pady=(0, 12))
+                view_link.pack(side="top", fill="x", padx=20, pady=(0, 12))
                 self._watch_cards.append(view_link)
         except Exception as e:
             print(f"Warning: watch-card render failed: {e}", flush=True)
