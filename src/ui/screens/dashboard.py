@@ -1,165 +1,121 @@
-"""CAGE EMPIRE — Dashboard screen (Stage 6 — Task 6.3).
+"""CAGE EMPIRE — Dashboard screen (Phase 2.5 — Visual Richness Library showcase).
 
-The player's home screen — the FIRST real screen in CAGE EMPIRE
-(every prior screen is a placeholder). Sets the pattern for all
-subsequent Office Mode screens.
+The player's home screen — the FIRST real screen in CAGE EMPIRE.
+Phase 2.5 REWRITES the rendering layer to use the 24-component Visual
+Richness Library from Phase 2 (GradientHeader, GradientCard, StatTile,
+TrendIndicator, Sparkline, MomentumRing, FormMeter, NewsCard,
+SectionHeader, DataChip, EmptyState, Button, HyperlinkLabel,
+PortraitFrame, WatchCard-style layout, Card). This is the proof-of-
+concept that proves the new components work in a real screen — if the
+user likes what they see, Phases 3-6 follow the same pattern for the
+other 3 screens (Roster, Fighter Profile, Free Agents).
 
-Shows:
-  1. Top Story + Other Headlines (today's narrative)
-  2. Promotion Status (cash, reputation, fan trust, roster, champions)
-  3. Fighter Watch (Top Prospect / Hottest Streak / Biggest Fall)
-  4. Recent News (the news_items feed)
-  5. Quick-action buttons (Schedule Event / View Roster / Free Agents)
-
-Per docs/GUI_PLAN.md §5.1: "What's happening now" — today's date,
-key alerts, finance snapshot, recent news, next event card.
+Per docs/UI_REDESIGN_VISUAL_PLAN.md §6.1 (Dashboard wireframe + spec):
+  Top to bottom:
+    1. GradientHeader — gold banner with "THE EMPIRE" + sim-date subtitle
+    2. Top Story — GradientCard(gold) with eyebrow + headline + body +
+       topic chips + "Read full story" hyperlink
+    3. Promotion Status — 5 StatTiles in a row (Cash with Sparkline +
+       TrendIndicator, Reputation voice phrase, Fan Trust voice phrase,
+       Roster count with TrendIndicator, Champions count with
+       TrendIndicator)
+    4. Next Event — Card with event details + Build Card / Matchmaking
+       buttons (EmptyState if no event)
+    5. Fighter Watch — 3 cards in a row, each = GradientCard wrapper
+       (gold for Top Prospect + Hottest Streak, crimson for Biggest
+       Fall) + PortraitFrame + name (HyperlinkLabel) + MomentumRing +
+       voice phrase + FormMeter (last 5 fights W/L blocks)
+    6. Champions — horizontal strip of DataChip(champion) + HyperlinkLabel
+       per champion (EmptyState if none)
+    7. Recent News — 5 NewsCards + "View all" hyperlink
 
 Per docs/CONVENTIONS.md §17 (UI Snapshot Rule — CRITICAL):
   Office Mode UI screens MUST read from `*_descriptors` and
-  `daily_headlines` cache tables only. Direct reads of simulation
-  tables (fighter_attributes, fighter_personality, fighter_career,
-  contracts, etc.) are a §14-class violation.
+  `daily_headlines` cache tables only for fighter INTERPRETATION data.
+  Game-state tables (promotions, fighters, titles, events, fights,
+  fight_history, news_items, finance_transactions, simulation_clock,
+  weight_classes) are fair game — they hold non-attribute data the
+  player needs to see (cash, champion names, roster count, event
+  schedule, news feed, recent fight results for the FormMeter).
 
   This screen reads from:
-    - daily_headlines (cache — top story, other headlines, fighter
-      watch subjects via fighter_id) — §17.3 cache table.
-    - fighter_descriptors (cache — momentum + narrative_family
-      voice phrases for Fighter Watch) — §17.3 cache table.
-    - promotions (game state — cash, reputation, fan_trust. NOT a
-      fighter attribute table. Per the Task 6.3 brief + §14, this
-      is game-state data, not fighter data. The player needs to
-      see their cash on the home screen.)
-    - titles + weight_classes + fighters (game state — champion
-      names. Names are NOT raw attribute values per §14.)
-    - fighters (game state — first_name/last_name for champion +
-      roster count. Count is game state, not a fighter attribute.)
-    - news_items (game state — the news feed. Per Task 6.3 brief:
-      "news_items is OK for display since it doesn't expose raw
-      attribute values." Listed in §17.3 as a simulation table
-      but the news feed is a fundamental game feature, not fighter
-      data. Used here ONLY for the headline/topic/published_at
-      fields — never for fighter attribute values.)
-
-  This screen NEVER reads from:
-    - fighter_attributes (raw 0-100 values)
-    - fighter_personality (raw trait values)
-    - fighter_career (raw potential, career_health numbers)
+    - daily_headlines (cache — top story, fighter watch subjects)
+    - fighter_descriptors (cache — momentum + narrative_family voice
+      phrases for Fighter Watch)
+    - promotions (game state — cash, reputation, fan_trust)
+    - titles + weight_classes + fighters (game state — champion names)
+    - fighters (game state — first/last name, weight_class_id)
+    - news_items (game state — news feed)
+    - events + fights (game state — Next Event section)
+    - fight_history (game state — last 5 fights for FormMeter)
+    - finance_transactions (game state — 7-day cash history for Sparkline)
+    - simulation_clock (game state — sim date for subtitle)
 
 Per docs/CONVENTIONS.md §14 (Interpretation Layer):
   No raw attribute values appear in the player-facing UI.
-    - Cash displays as "$50.0M" (game-state money, formatted).
-    - Reputation displays as "Highly Respected" (voice band), NOT
-      the raw 0-100 integer (e.g., 85).
-    - Fan trust displays as "Strong" (voice band), NOT raw 75.
-    - Roster count is a game-state integer — OK to display as
-      "1,002 fighters" (it is NOT a fighter attribute).
-    - Champion count is a game-state integer — OK.
-    - Fighter Watch voice phrases come from fighter_descriptors
-      (already voice-banded by the interpretation layer).
+    - Cash: "$50.0M" (game-state money, formatted) — OK.
+    - Reputation: "Highly Respected" (voice band, NOT raw 0-100) — OK.
+    - Fan Trust: "Strong" (voice band) — OK.
+    - Roster count: "1,002 fighters" (game-state count) — OK.
+    - Champion count: "3 of 8 belts" (game-state count) — OK.
+    - Fighter Watch voice phrases: from fighter_descriptors cache — OK.
+    - MomentumRing tier: maps the fighter_descriptors.momentum LABEL
+      (very_high/high/stable/falling/collapsing) to a visual ring fill
+      percentage + short voice phrase ("Scorching"/"Hot"/"Steady"/
+      "Sliding"/"Collapsing"). Never shows the raw momentum number.
+    - FormMeter: shows W/L/D result codes from fight_history (career
+      stats, allowed per §14).
 
-  The reputation/fan_trust band translation lives HERE as a local
-  shim because the interpretation layer hasn't fully populated
-  promotion_descriptors yet (the table exists per §17.3 but is
-  empty in the current world DB). When Task 6.x lands the
-  promotion_descriptors writer, this screen can switch to reading
-  the voice phrases from there. Until then, the local bands
-  enforce §14 (no raw numbers displayed). See D2 below.
-
-Per docs/CONVENTIONS.md §15 (Event Bus):
-  The screen does NOT publish events. The Advance Day button is
-  in the top bar (src/ui/app.py); it calls services.clock.advance_
-  day + state.refresh_all(). The Dashboard's _refresh() is called
-  by GameState as part of refresh_all() — every screen re-queries
-  + re-renders.
-
-Architecture (mirrors SaveLoadScreen):
+Architecture (Phase 2.5 — destroy + recreate refresh):
   - DashboardScreen(ctk.CTkFrame) — the screen widget.
-  - _build_header() — H1 title + sim-date subtitle.
-  - _build_top_row() — Top Story (left) | Promotion Status (right).
-  - _build_fighter_watch() — 3 cards (Top Prospect / Hottest Streak
-    / Biggest Fall).
-  - _build_news_section() — scrollable recent-news list.
-  - _build_actions() — Schedule Event / View Roster / Free Agents.
-  - _refresh() — registered with GameState; re-queries every data
-    source + re-renders. Safe to call repeatedly (destroys old
-    dynamic widgets first, then renders new ones).
+  - __init__ builds the STATIC structure: scrollable root + 7
+    SectionHeaders + 7 section containers (empty CTkFrames that get
+    populated on _refresh).
+  - _refresh() (registered with GameState) calls _refresh_subtitle +
+    _refresh_top_story + _refresh_promotion_status + _refresh_next_event
+    + _refresh_champions + _refresh_fighter_watch + _refresh_news.
+  - Each _refresh_* method destroys the old section content + rebuilds
+    it from the new query results using the Phase 2 components.
+  - Data queries are PRESERVED from the pre-Phase-2.5 dashboard
+    (the SQL is correct — only the rendering changed).
+  - New queries added for Phase 2.5:
+      * _query_cash_history — 7-day cash for Sparkline.
+      * _query_yesterday_cash — previous-value for TrendIndicator.
+      * _query_last_5_fights — W/L/D codes for FormMeter.
+      * _query_next_event — event + main event fight for Next Event.
 
-DESIGN DECISIONS (D-numbers — referenced from the worklog):
-  D1  Source-of-truth map. See the §17 comment block above. The
-      rule: fighter INTERPRETATION data (momentum, narrative
-      family, career phase) comes from cache tables ONLY. Game-
-      state data (cash, champions, roster count, news feed) comes
-      from the simulation tables that hold it. The Dashboard never
-      touches fighter_attributes / fighter_personality /
-      fighter_career.
-  D2  Local reputation/fan_trust voice bands. The interpretation
-      layer has not yet populated promotion_descriptors (the table
-      is empty in the current world DB). To honor §14 ("no raw
-      attribute values in the player-facing UI") WITHOUT waiting
-      for that population, the Dashboard applies its own voice
-      bands to the raw 0-100 reputation + fan_trust columns. This
-      is a transitional shim — when promotion_descriptors is
-      populated by a future interpretation task, the Dashboard
-      will switch to reading the voice phrases from there. The
-      bands themselves mirror §14.3's threshold approach (banded
-      descriptors that change only on band-boundary crossings).
-      Bands (reputation): 90-95 Legendary / 75-89 Highly Respected
-      / 60-74 Well Respected / 40-59 Established / 25-39
-      Up-and-Coming / 10-24 Struggling. Bands (fan_trust):
-      85+ Devoted / 70-84 Strong / 55-69 Loyal / 40-54 Wavering /
-      25-39 Restless / 10-24 Alienated.
-  D3  "Hottest Streak" card query. The other two Fighter Watch
-      cards (Top Prospect / Biggest Fall) come straight from the
-      daily_headlines rows (fastest_rising / biggest_fall). The
-      Hottest Streak card queries fighter_descriptors directly for
-      momentum='very_high' (or 'high' as fallback), EXCLUDING the
-      fastest_rising fighter so the card shows a different face
-      when possible. The voice phrase is decoded from the "label||
-      phrase" storage format via interpretation.context_engine.
-      decode_phrase (the canonical interpretation-layer helper).
-  D4  Voice-phrase decoding. The fighter_descriptors cache columns
-      store "canonical_label||voice_phrase" (per §17.4 + the
-      interpretation engines' bulk-load pattern). The Dashboard
-      uses interpretation.context_engine.decode_phrase to extract
-      the player-facing voice phrase. This is the SAME helper the
-      interpretation engines use — single source of truth, no
-      duplicate parsing logic.
-  D5  Scrollable root. The Dashboard's content can exceed the
-      viewport (esp. on the Recent News list when news_items has
-      many rows). The root container is a CTkScrollableFrame so
-      the whole screen scrolls naturally. Cards inside keep their
-      own bg_surface background so they read as discrete panels.
-  D6  Empty-state handling. Every section degrades gracefully:
-      - No daily_headlines → "A quiet day across the promotions."
-      - No fighter with very_high/high momentum → "No one's on a
-        hot streak right now."
-      - No champions → "No champions yet — go win some belts."
-      - No news_items → "The newswire is quiet."
-      - No fighters in roster → "Your roster is empty."
-      Defensive: a missing table or query error doesn't crash the
-      screen — the section shows its empty-state + the warning is
-      logged.
-  D7  Action-button navigation. The three quick-action buttons
-      call state.set_active_screen() to navigate. They target
-      screens that are not yet implemented (event_builder, roster,
-      free_agents) — those screens show the placeholder label via
-      CageEmpireApp._navigate until their own tasks land. This is
-      intentional: the Dashboard is the navigation hub, even when
-      destinations are placeholders.
-  D8  Refresh pattern. Following SaveLoadScreen: dynamic widgets
-      are tracked in instance lists (_headline_widgets,
-      _champion_widgets, _news_widgets, _watch_cards). _refresh()
-      destroys them, re-queries, re-renders. Static structure
-      (titles, action buttons, scrollable frames) is built once
-      in __init__. Theme-change refresh (state.refresh_all after
-      set_theme) re-renders with the new theme's colors/fonts.
-  D9  Champion ordering. Champions are ordered by weight_class
-      weight ascending (heavyweight first, strawweight last) —
-      mirrors how fight sports display title hierarchies (the
-      biggest weight class is the marquee). Joined through
-      weight_classes.display_order which the seed scripts
-      populate. Falls back to weight_class_id ordering if
-      display_order is NULL.
+DESIGN DECISIONS (D-numbers — carried forward from pre-Phase-2.5):
+  D1  Source-of-truth map (see §17 comment block above).
+  D2  Local reputation/fan_trust voice bands (transitional shim — kept).
+  D3  Hottest Streak card query (excludes Top Prospect fighter_id).
+  D4  Voice-phrase decoding via interpretation.context_engine.decode_phrase.
+  D5  Scrollable root (CTkScrollableFrame) — content can exceed viewport.
+  D6  Empty-state handling — every section degrades gracefully.
+  D7  Action-button navigation via state.set_active_screen().
+  D8  Refresh pattern — destroy dynamic widgets, re-query, re-render.
+  D9  Champion ordering by weight_class display_order (heavyweight first).
+  D10 (Phase 2.5) Destroy + recreate refresh. Each _refresh_* method
+      destroys the section's children + rebuilds from the new query
+      results. Approach (a) per the Phase 2.5 spec — simplest, works
+      for all components. Refresh is infrequent (on navigation + Advance
+      Day) so the rebuild cost is acceptable. Phase 3+ can optimize
+      with component update() methods if needed.
+  D11 (Phase 2.5) MomentumRing tier mapping. The fighter_descriptors
+      .momentum column stores "label||phrase". The label is one of
+      very_high/high/stable/falling/collapsing. MomentumRing accepts
+      the tier directly — we extract the label via decode_phrase's
+      label extraction + pass it to MomentumRing(tier=label).
+  D12 (Phase 2.5) FormMeter data source. fight_history.outcome holds
+      'win'/'loss'/'draw'/'nc'. We map win→W, loss→L, draw→D, nc→D
+      (treat no-contest as draw for form visualization). Query the
+      last 5 fight_history rows for the fighter ordered by event_date
+      DESC. If fewer than 5, show what we have.
+  D13 (Phase 2.5) Next Event query. The events table holds scheduled
+      events. We query the earliest event with status='scheduled' and
+      event_date >= today's sim date. Join with fights (card_slot=
+      'main_event') + fighters for the main event matchup. If the
+      fight is a title fight (is_title_fight=1), show a DataChip
+      (champion variant) "TITLE FIGHT" indicator.
 """
 
 import sqlite3
@@ -168,7 +124,7 @@ from datetime import datetime
 
 import customtkinter as ctk
 
-from ui.theme import get_theme
+from ui.theme import get_theme, SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL
 from ui.state import get_state
 from ui.voice_display import title_case_phrase
 
@@ -181,6 +137,28 @@ from ui.perf import query_cached
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (D4).
 from interpretation.context_engine import decode_phrase
+
+# Phase 2 — Visual Richness Library (24 components). Phase 2.5 uses 16
+# of them on the Dashboard: GradientHeader, GradientCard, SectionHeader,
+# DataChip, StatTile, TrendIndicator, Sparkline, FormMeter, MomentumRing,
+# NewsCard, EmptyState, Button, HyperlinkLabel, PortraitFrame, Card,
+# (and WatchCard is referenced via the spec but we compose its layout
+# manually inside GradientCard to slot in MomentumRing + FormMeter).
+from ui.widgets.components import (
+    GradientHeader,
+    GradientCard,
+    Card,
+    SectionHeader,
+    DataChip,
+    StatTile,
+    NewsCard,
+    EmptyState,
+    Button,
+    HyperlinkLabel,
+    PortraitFrame,
+    MomentumRing,
+    FormMeter,
+)
 
 
 # ============================================================
@@ -198,6 +176,21 @@ _HEADLINE_TYPE_TO_CARD_TITLE = {
 }
 
 
+# Momentum label (from fighter_descriptors.momentum "label||phrase") →
+# MomentumRing tier. The momentum label is one of very_high / high /
+# stable / falling / collapsing (per the interpretation engines). The
+# MomentumRing accepts these directly as its tier argument. We fall
+# back to "stable" for unknown labels (defensive — should never happen
+# but guards against future interpretation-engine changes).
+_MOMENTUM_LABEL_TO_TIER = {
+    "very_high": "very_high",
+    "high": "high",
+    "stable": "stable",
+    "falling": "falling",
+    "collapsing": "collapsing",
+}
+
+
 # ============================================================
 # LOCAL VOICE BANDS (D2 — transitional shim, removed when
 # promotion_descriptors is populated by the interpretation layer)
@@ -210,14 +203,6 @@ def _reputation_band(raw_value):
     bands mirror §14.3's threshold approach (changes only on band-
     boundary crossings, so the descriptor is stable across small
     fluctuations).
-
-    Args:
-        raw_value: int/float/str — the raw reputation column from
-            promotions.reputation. Defensive — any unparseable
-            value returns "Unknown".
-
-    Returns:
-        Voice phrase like "Highly Respected" — never the raw number.
     """
     try:
         v = float(raw_value)
@@ -239,18 +224,7 @@ def _reputation_band(raw_value):
 
 
 def _fan_trust_band(raw_value):
-    """Translate a raw 0-100 fan_trust value to a voice phrase.
-
-    Per §14: no raw attribute values in the player-facing UI.
-
-    Args:
-        raw_value: int/float/str — the raw fan_trust column from
-            promotions.fan_trust. Defensive — any unparseable value
-            returns "Unknown".
-
-    Returns:
-        Voice phrase like "Strong" — never the raw number.
-    """
+    """Translate a raw 0-100 fan_trust value to a voice phrase."""
     try:
         v = float(raw_value)
     except (TypeError, ValueError):
@@ -277,10 +251,9 @@ def _fan_trust_band(raw_value):
 def _format_cash(cash):
     """Format a cash value as $X.XM / $XK / $X,XXX.
 
-    Matches the top bar's _update_top_bar formatting (src/ui/app.py
-    lines 333-338) + SaveLoadScreen._format_cash so the Dashboard
-    displays cash consistently with the rest of the UI. This is
-    game-state money, not a fighter attribute — OK per §14.
+    Matches the top bar's _update_top_bar formatting (src/ui/app.py)
+    + SaveLoadScreen._format_cash so the Dashboard displays cash
+    consistently with the rest of the UI. Game-state money, OK per §14.
     """
     if cash is None:
         return "—"
@@ -296,15 +269,10 @@ def _format_cash(cash):
 
 
 def _format_date(iso_date_str):
-    """Format an ISO date string ('2026-12-23') for display.
-
-    Returns '2026-12-23' unchanged on parse failure (defensive —
-    news_items.published_at is a TEXT column the seed scripts write).
-    """
+    """Format an ISO date string ('2026-12-23') for display."""
     if not iso_date_str:
         return ""
     try:
-        # Truncate to date portion (handles 'YYYY-MM-DD HH:MM:SS').
         s = str(iso_date_str)[:10]
         dt = datetime.fromisoformat(s)
         return dt.strftime("%Y-%m-%d")
@@ -312,16 +280,50 @@ def _format_date(iso_date_str):
         return str(iso_date_str)
 
 
+def _format_event_date_long(iso_date_str):
+    """Format an event date as 'Sat 19 Sep 2026' (long form for Next Event)."""
+    if not iso_date_str:
+        return ""
+    try:
+        s = str(iso_date_str)[:10]
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%a %d %b %Y")
+    except (ValueError, TypeError):
+        return str(iso_date_str)
+
+
 def _topic_label(topic):
-    """Render a news_items.topic as a bracketed display label.
+    """Render a news_items.topic as a clean display label.
 
     The seed scripts sometimes store 'milestone' with a leading
     space (' ilestone') — defensive strip + upper-case so the news
     feed reads cleanly.
     """
     if not topic:
-        return "news"
-    return str(topic).strip() or "news"
+        return "NEWS"
+    return str(topic).strip().upper() or "NEWS"
+
+
+def _decode_momentum_label(stored_value):
+    """Extract the canonical momentum LABEL from a "label||phrase" string.
+
+    Used to map the stored momentum to a MomentumRing tier. Per D4,
+    the storage format is "label||phrase" (or just "label" if no
+    phrase was stored). decode_phrase returns the PHRASE (or the label
+    if no phrase); we need the LABEL itself for the tier lookup.
+
+    Returns:
+        The canonical label (e.g., "very_high"), or "stable" if the
+        stored value is empty / unparseable.
+    """
+    if not stored_value:
+        return "stable"
+    s = str(stored_value).strip()
+    if "||" in s:
+        label = s.split("||", 1)[0].strip().lower()
+    else:
+        label = s.lower()
+    return _MOMENTUM_LABEL_TO_TIER.get(label, "stable")
 
 
 # ============================================================
@@ -329,14 +331,14 @@ def _topic_label(topic):
 # ============================================================
 
 class DashboardScreen(ctk.CTkFrame):
-    """Dashboard — the player's home screen.
+    """Dashboard — the player's home screen (Phase 2.5 redesign).
 
-    The first real screen in CAGE EMPIRE. Office Mode only (it is
-    NOT a Fight Night screen). Registered with GameState as
-    'dashboard'. The refresh callback (`_refresh`) re-queries every
-    data source + re-renders.
+    The first real screen in CAGE EMPIRE. Office Mode only. Registered
+    with GameState as 'dashboard'. The refresh callback (`_refresh`)
+    re-queries every data source + re-renders using the Phase 2
+    component library.
 
-    Usage:
+    Usage (unchanged from pre-Phase-2.5):
         screen = DashboardScreen(parent_frame)
         state.register_screen("dashboard", screen, screen._refresh)
         state.set_active_screen("dashboard")
@@ -351,37 +353,36 @@ class DashboardScreen(ctk.CTkFrame):
         self.configure(fg_color=theme.colors.bg_base)
 
         # Dynamic-widget tracking. _refresh destroys these before
-        # re-rendering. See D8.
-        self._headline_widgets = []        # Top Story + Other Headlines rows
-        self._champion_widgets = []        # Champion rows in Promotion Status
-        self._promotion_status_widgets = []  # Cash/Rep/Trust/Roster/Champions rows
-        self._watch_cards = []             # Three Fighter Watch cards
-        self._news_widgets = []            # Recent News rows
-        self._subtitle_label = None        # The "Month Year · Promo" subtitle
+        # re-rendering. Per D8 + D10.
+        self._top_story_widgets = []
+        self._promotion_status_widgets = []
+        self._next_event_widgets = []
+        self._champion_widgets = []
+        self._watch_cards = []
+        self._news_widgets = []
+        self._gradient_header = None  # The GradientHeader (built once)
 
         # UI Fix Plan 2 — Phase 1, Fix 8: scrollable root container.
-        # The Dashboard's content (header + top row + fighter watch +
-        # news + actions) can exceed the viewport height — especially
-        # the Recent News list when news_items has many rows + the
-        # Fighter Watch cards when their voice phrases wrap. Wrapping
-        # everything in a CTkScrollableFrame ensures the player can
-        # always reach the sections below the fold (per the UI rules:
-        # max height with scroll overflow). Cards inside keep their
-        # own bg_surface background so they read as discrete panels
-        # on top of the transparent scroll frame. The screen's own
-        # fg_color (bg_base) shows through the transparent scroll.
+        # The Dashboard's content can exceed the viewport height —
+        # especially with the new Promotion Status StatTile row (5
+        # tiles side-by-side need horizontal room) + the Recent News
+        # list. Wrapping everything in a CTkScrollableFrame ensures
+        # the player can always reach the sections below the fold.
         self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._scroll.pack(fill="both", expand=True)
 
-        # Build the static structure (titles, scrollable containers,
-        # action buttons). Dynamic content is rendered by _refresh.
-        # All _build_* methods parent their widgets to self._scroll
-        # (NOT self) so they live inside the scrollable frame.
+        # Build the static structure (GradientHeader + 7 SectionHeaders
+        # + 7 empty section containers). Dynamic content is rendered
+        # by _refresh. All _build_* methods parent their widgets to
+        # self._scroll (NOT self) so they live inside the scrollable
+        # frame.
         self._build_header()
-        self._build_top_row()
+        self._build_top_story()
+        self._build_promotion_status()
+        self._build_next_event()
         self._build_fighter_watch()
-        self._build_news_section()
-        self._build_actions()
+        self._build_champions()
+        self._build_news()
 
         # Initial render. Use after(50, ...) so the widget is fully
         # laid out before we query (matches SaveLoadScreen pattern).
@@ -390,488 +391,119 @@ class DashboardScreen(ctk.CTkFrame):
         self.after(50, self._refresh)
 
     # ============================================================
-    # SECTION 1 — HEADER (H1 title + sim-date subtitle)
+    # STATIC STRUCTURE — built once in __init__
     # ============================================================
 
     def _build_header(self):
-        """Build the H1 title + subtitle ('THE EMPIRE' + sim-date).
+        """Build the GradientHeader banner (Section 1).
 
-        UI Fix Plan 2 — Phase 3, Fix 2 + Fix 6: the screen H1 title is
-        renamed from 'DASHBOARD' to 'THE EMPIRE' (matches the NAV_GROUPS
-        display name + the Promotion Status card title per the Voice
-        Recommendations table). Screen-name key 'dashboard' is unchanged
-        so state.set_active_screen + refresh registrations still work.
+        Phase 2.5: replaces the plain "THE EMPIRE" CTkLabel with a
+        GradientHeader(gold) banner — the gold gradient + Oswald
+        display_small title gives the "stadium scoreboard" feel the
+        user asked for. The subtitle (sim date + promotion name) is
+        populated by _refresh_subtitle via set_subtitle().
         """
-        theme = get_theme()
-
-        # UI Fix Plan 2 — Phase 1, Fix 8: title parents to
-        # self._scroll (the scrollable root) so it scrolls with the
-        # rest of the dashboard content when the window is short.
-        title = ctk.CTkLabel(
-            self._scroll, text="THE EMPIRE",
-            font=theme.fonts.display_small, text_color=theme.colors.text_primary,
-            anchor="w",
+        self._gradient_header = GradientHeader(
+            self._scroll,
+            title="THE EMPIRE",
+            subtitle="",
+            variant="gold",
+            height=64,
         )
-        title.pack(side="top", fill="x", padx=20, pady=(10, 0))
+        self._gradient_header.pack(side="top", fill="x", padx=SPACE_LG,
+                                    pady=(SPACE_MD, SPACE_LG))
 
-        # Subtitle populated by _refresh (needs sim-date + promotion
-        # name from the DB). Kept as an attribute so _refresh can
-        # call .configure() on it without recreating.
-        self._subtitle_label = ctk.CTkLabel(
-            self._scroll, text="",
-            font=theme.fonts.body, text_color=theme.colors.text_secondary,
-            anchor="w",
-        )
-        self._subtitle_label.pack(side="top", fill="x", padx=20, pady=(0, 10))
+    def _build_top_story(self):
+        """Build the Top Story section header + empty container (Section 2).
 
-    # ============================================================
-    # SECTION 2 — TOP ROW (Top Story | Promotion Status)
-    # ============================================================
-
-    def _build_top_row(self):
-        """Build the two-column top row.
-
-        UI Fix Plan 2 — Phase 3, Fix 4 + Fix 6:
-          - Top Story card gets a crimson accent bar (2px) on the
-            left edge + bg_surface_elevated (pops above other
-            headlines). Headline bumped from h2 to h1. "── OTHER
-            HEADLINES ──" renamed to "More Headlines".
-          - Promotion Status card renamed "PROMOTION STATUS" →
-            "The Empire" (Fix 6). "── YOUR CHAMPIONS ──" renamed
-            "Your Champions".
-
-        UI Implementation Plan v3 — P2-2 (Visual Texture):
-          - Both cards now use bg_surface_elevated + a 1px bg_border
-            for a subtle framed-surface look (matches the Bloomberg
-            Terminal / ESPN scoreboard aesthetic — calm, data-dense,
-            institutional).
-          - Card spacing between sections tightened to 16px (was 20px)
-            for a more rhythmically consistent vertical cadence.
-          - Internal card padding bumped from 15px → 20px horizontal
-            so content has more breathing room inside the frame.
-          - Each section title (TOP STORY, THE EMPIRE) gets a 3px
-            gold left-accent bar — a subtle brand-color cue that
-            reads as a marquee divider, not a fight poster.
-          - The promo_card gets a 200x200 promotion-logo watermark
-            at 10% opacity, placed behind the content via place()+
-            lower(). Loaded by _refresh_promotion_status.
-
-        Layout:
-          ┌──────────────────────────┬───────────────────────────────┐
-          │█ TOP STORY (elevated)    │  THE EMPIRE                   │
-          │█ [h1 headline]           │  Cash: $50.0M                 │
-          │█ [body_text]             │  Reputation: Highly Respected │
-          │█                         │  Fan Trust: Strong            │
-          │█ More Headlines          │  Roster: 1,002 fighters       │
-          │█ ▸ headline 2            │  Champions: 5                 │
-          │█ ▸ headline 3            │  [faded promo logo watermark] │
-          │█ ▸ headline 4            │  Your Champions               │
-          │█                         │  Heavyweight: J. Cardoso      │
-          │█                         │  ...                          │
-          └──────────────────────────┴───────────────────────────────┘
+        The GradientCard + content are built per-refresh by
+        _refresh_top_story (D10 — destroy + recreate).
         """
-        theme = get_theme()
-
-        # Container — two columns with equal weight, gap via padx.
-        # P2-2: section spacing set to 16px (was 20) for a tighter,
-        # more institutional cadence per the design docs.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
-        # the top row scrolls with the rest of the dashboard.
-        row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 16))
-        row.grid_columnconfigure(0, weight=1, uniform="top")
-        row.grid_columnconfigure(1, weight=1, uniform="top")
-
-        # ---- LEFT: Top Story + More Headlines ----
-        # UI Fix Plan 2 — Phase 3, Fix 4: card uses bg_surface_elevated
-        # (pops above other headlines) + a crimson accent bar on the
-        # left edge. The crimson bar is a 2px-wide CTkFrame packed
-        # left inside the card.
-        # P2-2: added 1px bg_border around the card for the framed-
-        # surface look.
-        self.top_story_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card_elevated,
-            corner_radius=6,
-            border_width=2,
-            border_color=theme.colors.gold,
+        header = SectionHeader(
+            self._scroll, title="TOP STORY",
+            accent_color=get_theme().colors.gold,
         )
-        self.top_story_card.grid(row=0, column=0, sticky="nsew",
-                                  padx=(0, 8))
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        # Keep a reference so _refresh can destroy + rebuild content.
+        self._top_story_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._top_story_container.pack(side="top", fill="x",
+                                        padx=SPACE_LG, pady=(0, SPACE_LG))
 
-        # Inner content layout: crimson accent bar (2px) | main content.
-        # The bar spans the full height of the card.
-        self._top_story_accent_bar = ctk.CTkFrame(
-            self.top_story_card, fg_color=theme.colors.crimson,
-            corner_radius=0, width=4,
+    def _build_promotion_status(self):
+        """Build the Promotion Status section header + empty container (Section 3).
+
+        The 5 StatTiles are built per-refresh by _refresh_promotion_status.
+        """
+        header = SectionHeader(
+            self._scroll, title="PROMOTION STATUS",
+            accent_color=get_theme().colors.gold,
         )
-        self._top_story_accent_bar.pack(side="left", fill="y")
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self._promo_status_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._promo_status_container.pack(side="top", fill="x",
+                                           padx=SPACE_LG, pady=(0, SPACE_LG))
+        # Configure the 5-column grid (equal weight per StatTile).
+        for i in range(5):
+            self._promo_status_container.grid_columnconfigure(i, weight=1, uniform="stat")
 
-        # Main content container (sits to the right of the accent bar).
-        ts_main = ctk.CTkFrame(self.top_story_card, fg_color="transparent")
-        ts_main.pack(side="left", fill="both", expand=True)
-
-        # Card title (gold caption) — kept as "TOP STORY" label (the
-        # headline below is the H1 per Fix 4). P2-2: wrapped in a
-        # title_row with a 3px gold left-accent bar so the section
-        # header reads as a marquee divider, not just floating text.
-        ts_title_row = ctk.CTkFrame(ts_main, fg_color="transparent")
-        ts_title_row.pack(side="top", fill="x", padx=20, pady=(12, 4))
-        ts_title_accent = ctk.CTkFrame(
-            ts_title_row, width=3, corner_radius=0,
-            fg_color=theme.colors.gold,
+    def _build_next_event(self):
+        """Build the Next Event section header + empty container (Section 4)."""
+        header = SectionHeader(
+            self._scroll, title="NEXT EVENT",
+            accent_color=get_theme().colors.gold,
         )
-        ts_title_accent.pack(side="left", fill="y", padx=(0, 8))
-        ts_title = ctk.CTkLabel(
-            ts_title_row, text="TOP STORY",
-            font=theme.fonts.caption, text_color=theme.colors.gold,
-            anchor="w",
-        )
-        ts_title.pack(side="left")
-
-        # Container for the top-story content (headline + body).
-        # Populated by _refresh. Fix 4 bumps headline from h2 to h1.
-        # P2-2: padx bumped 15 → 20 for more internal breathing room.
-        self.top_story_content = ctk.CTkFrame(
-            ts_main, fg_color="transparent",
-        )
-        self.top_story_content.pack(side="top", fill="x", padx=20, pady=(0, 5))
-
-        # "More Headlines" sub-title (Fix 4 — was "── OTHER HEADLINES ──")
-        oh_title = ctk.CTkLabel(
-            ts_main, text="More Headlines",
-            font=theme.fonts.h3, text_color=theme.colors.text_secondary,
-            anchor="w",
-        )
-        oh_title.pack(side="top", fill="x", padx=20, pady=(10, 5))
-
-        # Container for the other-headlines list. Populated by _refresh.
-        self.other_headlines_content = ctk.CTkFrame(
-            ts_main, fg_color="transparent",
-        )
-        self.other_headlines_content.pack(
-            side="top", fill="x", padx=20, pady=(0, 12))
-
-        # ---- RIGHT: The Empire + Your Champions ----
-        # UI Fix Plan 2 — Phase 3, Fix 7: restructured layout. The
-        # promotion logo sits at the top of the card, then the
-        # "The Empire" H2 title, then business stats, then a
-        # "Your Champions" sub-section with gold-bordered champion
-        # rows whose names are HyperlinkLabels (Fix 7).
-        # P2-2: card upgraded from bg_surface → bg_surface_elevated +
-        # 1px bg_border so it visually matches the Top Story card.
-        #   Both top-row cards now read as a matched pair on the
-        #   dashboard (elevated surfaces framed by subtle borders).
-        self.promo_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
-            border_width=1,
-            border_color=theme.colors.border_subtle,
-        )
-        self.promo_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
-        # P2-2: promotion logo watermark — a 200x200 label placed
-        # center+behind the promo_card content. The image is loaded
-        # at 10% opacity by _refresh_promotion_status (uses PIL to
-        # multiply the alpha channel by 0.10). The label is created
-        # here (before the content widgets) + lowered to the bottom
-        # of the stacking order so the content renders on top.
-        # Defensive — if PIL isn't available, the label stays empty
-        # (no watermark shown; the card still works).
-        self._promo_watermark_label = ctk.CTkLabel(
-            self.promo_card, text="",
-        )
-        self._promo_watermark_label.place(relx=0.5, rely=0.5, anchor="center")
-        try:
-            self._promo_watermark_label.lower()
-        except Exception:
-            # .lower() can fail in some headless test envs. The
-            # watermark is cosmetic — the card still works without it.
-            pass
-        # Image reference (kept so GC doesn't drop the underlying
-        # Tk image). Populated by _refresh_promotion_status.
-        self._promo_watermark_image = None
-
-        # Top section: promotion logo + "THE EMPIRE" title side-by-side.
-        # Fix 7 + Fix 6: logo at top, title renamed "PROMOTION STATUS"
-        # → "THE EMPIRE".
-        # P2-2: padx bumped 15 → 20.
-        ps_header = ctk.CTkFrame(self.promo_card, fg_color="transparent")
-        ps_header.pack(side="top", fill="x", padx=20, pady=(12, 5))
-
-        # Logo label (60x60). Loaded by _refresh_promotion_status from
-        # src/ui/assets/promo_logos/. Falls back to initials.
-        self._dashboard_promo_logo_label = ctk.CTkLabel(
-            ps_header, text="",
-            width=44, height=44,
-            fg_color=theme.colors.bg_surface_elevated,
-            corner_radius=6,
-            anchor="center",
-        )
-        self._dashboard_promo_logo_label.pack(side="left", padx=(0, 10))
-
-        # P2-2: THE EMPIRE title wrapped in a title_row with a 3px
-        # gold left-accent bar — matches the TOP STORY title treatment
-        # so the two columns read as a matched pair of section headers.
-        ps_title_row = ctk.CTkFrame(ps_header, fg_color="transparent")
-        ps_title_row.pack(side="left", fill="x", expand=True)
-        ps_title_accent = ctk.CTkFrame(
-            ps_title_row, width=3, corner_radius=0,
-            fg_color=theme.colors.gold,
-        )
-        ps_title_accent.pack(side="left", fill="y", padx=(0, 8))
-        ps_title = ctk.CTkLabel(
-            ps_title_row, text="THE EMPIRE",
-            font=theme.fonts.h2, text_color=theme.colors.gold,
-            anchor="w",
-        )
-        ps_title.pack(side="left")
-
-        # Container for the status rows (cash/rep/trust/roster/champions).
-        self.promo_status_content = ctk.CTkFrame(
-            self.promo_card, fg_color="transparent",
-        )
-        self.promo_status_content.pack(
-            side="top", fill="x", padx=20, pady=(0, 5))
-
-        # "Your Champions" sub-title (Fix 4 — was "── YOUR CHAMPIONS ──")
-        yc_title = ctk.CTkLabel(
-            self.promo_card, text="Your Champions",
-            font=theme.fonts.h3, text_color=theme.colors.text_secondary,
-            anchor="w",
-        )
-        yc_title.pack(side="top", fill="x", padx=20, pady=(10, 5))
-
-        # Container for the champion rows. Populated by _refresh.
-        self.champions_content = ctk.CTkFrame(
-            self.promo_card, fg_color="transparent",
-        )
-        self.champions_content.pack(
-            side="top", fill="x", padx=20, pady=(0, 12))
-
-        # Dashboard promo logo image reference (kept as attribute so
-        # the GC doesn't drop the underlying Tk image). Loaded by
-        # _refresh_promotion_status.
-        self._dashboard_promo_logo_image = None
-
-    # ============================================================
-    # SECTION 3 — FIGHTER WATCH (3 cards)
-    # ============================================================
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self._next_event_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._next_event_container.pack(side="top", fill="x",
+                                         padx=SPACE_LG, pady=(0, SPACE_LG))
 
     def _build_fighter_watch(self):
-        """Build the Fighter Watch section: 3 cards in a row.
+        """Build the Fighter Watch section header + empty container (Section 5).
 
-        Layout:
-          ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-          │ TOP PROSPECT    │ │ HOTTEST STREAK  │ │ BIGGEST FALL    │
-          │ [name]          │ │ [name]          │ │ [name]          │
-          │ [voice phrase]  │ │ [voice phrase]  │ │ [voice phrase]  │
-          └─────────────────┘ └─────────────────┘ └─────────────────┘
-
-        UI Implementation Plan v3 — P2-2 (Visual Texture):
-          - Section title (FIGHTER WATCH) now wrapped in a title_row
-            with a 3px gold left-accent bar.
-          - Each watch card upgraded from bg_surface → bg_surface_
-            elevated + 1px bg_border so they match the Top Story /
-            Empire cards (matched-pair aesthetic across the whole
-            dashboard).
-          - Section spacing tightened 20 → 16px.
+        The 3 GradientCard watch cards are built per-refresh by
+        _refresh_fighter_watch.
         """
-        theme = get_theme()
-
-        # Section title (full-width). P2-2: wrapped in a title_row
-        # with a 3px gold left-accent bar so the section header reads
-        # as a marquee divider — matches the TOP STORY + THE EMPIRE
-        # title treatment. The accent + title sit on a single row.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
-        fw_title_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        fw_title_row.pack(side="top", fill="x", padx=20, pady=(0, 8))
-        fw_title_accent = ctk.CTkFrame(
-            fw_title_row, width=3, corner_radius=0,
-            fg_color=theme.colors.gold,
+        header = SectionHeader(
+            self._scroll, title="FIGHTER WATCH",
+            accent_color=get_theme().colors.gold,
         )
-        fw_title_accent.pack(side="left", fill="y", padx=(0, 8))
-        fw_section_title = ctk.CTkLabel(
-            fw_title_row, text="FIGHTER WATCH",
-            font=theme.fonts.h2, text_color=theme.colors.gold,
-            anchor="w",
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self._watch_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._watch_container.pack(side="top", fill="x",
+                                    padx=SPACE_LG, pady=(0, SPACE_LG))
+        # 3-column grid (equal weight per watch card).
+        for i in range(3):
+            self._watch_container.grid_columnconfigure(i, weight=1, uniform="watch")
+
+    def _build_champions(self):
+        """Build the Champions section header + empty container (Section 6)."""
+        header = SectionHeader(
+            self._scroll, title="YOUR CHAMPIONS",
+            accent_color=get_theme().colors.gold,
         )
-        fw_section_title.pack(side="left")
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self._champions_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._champions_container.pack(side="top", fill="x",
+                                        padx=SPACE_LG, pady=(0, SPACE_LG))
 
-        # Three-column container
-        # P2-2: section spacing tightened 20 → 16px.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
-        row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(side="top", fill="x", padx=20, pady=(0, 16))
-        row.grid_columnconfigure(0, weight=1, uniform="watch")
-        row.grid_columnconfigure(1, weight=1, uniform="watch")
-        row.grid_columnconfigure(2, weight=1, uniform="watch")
-
-        # Card containers — kept as attributes so _refresh can populate
-        # them (and so theme-change refresh picks up the new colors).
-        # P2-2: upgraded from bg_surface → bg_surface_elevated + 1px
-        # bg_border for the framed-surface look.
-        # QW7: accent cards — Top Prospect + Hottest Streak get 2px gold
-        # accent borders (the "rising" brand color). Biggest Fall gets
-        # a 2px crimson accent border (the "falling" brand color).
-        self.watch_card_top = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
-            border_width=2, border_color=theme.colors.gold)
-        self.watch_card_top.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-
-        self.watch_card_streak = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
-            border_width=2, border_color=theme.colors.gold)
-        self.watch_card_streak.grid(row=0, column=1, sticky="nsew", padx=3)
-
-        self.watch_card_fall = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
-            border_width=2, border_color=theme.colors.crimson)
-        self.watch_card_fall.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
-
-    # ============================================================
-    # SECTION 4 — RECENT NEWS (scrollable list)
-    # ============================================================
-
-    def _build_news_section(self):
-        """Build the Recent News section with a scrollable list.
-
-        Layout:
-          ┌─────────────────────────────────────────────────────────┐
-          │  RECENT NEWS                                            │
-          │  ┌───────────────────────────────────────────────────┐  │
-          │  │ [debut] Pawel Krawczyk makes professional debut  │  │
-          │  │         · 2026-12-23                              │  │
-          │  │ [upset] Jerry Roberts stuns John Rodriguez...    │  │
-          │  │         · 2026-11-27                              │  │
-          │  │ ...                                               │  │
-          │  └───────────────────────────────────────────────────┘  │
-          └─────────────────────────────────────────────────────────┘
-
-        The list is rendered by _refresh() (called once on init via
-        after(50, ...) and again whenever the screen is shown).
-
-        UI Implementation Plan v3 — P2-2 (Visual Texture):
-          - Section title (RECENT NEWS) wrapped in a title_row with
-            a 3px gold left-accent bar — matches the FIGHTER WATCH
-            + THE EMPIRE + TOP STORY treatment.
-          - news_scroll upgraded from bg_surface → bg_surface_
-            elevated + 1px bg_border so it matches the rest of the
-            dashboard's framed-surface cards.
-          - Section spacing tightened 20 → 16px.
-        """
-        theme = get_theme()
-
-        # P2-2: RECENT NEWS title wrapped in a title_row with a 3px
-        # gold left-accent bar — same pattern as the other section
-        # titles for visual consistency.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
-        # the news section scrolls with the rest of the dashboard.
-        news_title_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        news_title_row.pack(side="top", fill="x", padx=20, pady=(0, 8))
-        news_title_accent = ctk.CTkFrame(
-            news_title_row, width=3, corner_radius=0,
-            fg_color=theme.colors.gold,
+    def _build_news(self):
+        """Build the Recent News section header + empty container (Section 7)."""
+        header = SectionHeader(
+            self._scroll, title="RECENT NEWS",
+            accent_color=get_theme().colors.gold,
+            metadata="View all ▶",
         )
-        news_title_accent.pack(side="left", fill="y", padx=(0, 8))
-        news_section_title = ctk.CTkLabel(
-            news_title_row, text="RECENT NEWS",
-            font=theme.fonts.h2, text_color=theme.colors.gold,
-            anchor="w",
-        )
-        news_section_title.pack(side="left")
-
-        # Fixed-height scrollable frame so the list scrolls within the
-        # visible area rather than growing the screen indefinitely
-        # (per the UI rules: max height with scroll overflow).
-        # P2-2: upgraded from bg_surface → bg_surface_elevated + 1px
-        # bg_border to match the other dashboard cards. Section
-        # spacing tightened 20 → 16px.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
-        self.news_scroll = ctk.CTkScrollableFrame(
-            self._scroll,
-            fg_color=theme.colors.bg_card_elevated,
-            corner_radius=6,
-            border_width=1,
-            border_color=theme.colors.border_subtle,
-            height=200,
-        )
-        self.news_scroll.pack(side="top", fill="x", padx=20, pady=(0, 16))
-
-        # Empty-state label — shown when there's no news. Kept as an
-        # attribute so _refresh can show/hide it.
-        self.news_empty_label = ctk.CTkLabel(
-            self.news_scroll,
-            text="The newswire is quiet.",
-            font=theme.fonts.body,
-            text_color=theme.colors.text_tertiary,
-            justify="center",
-        )
-        self.news_empty_label.pack(fill="x", padx=20, pady=30)
-
-    # ============================================================
-    # SECTION 5 — ACTIONS (Schedule Event / View Roster / Free Agents)
-    # ============================================================
-
-    def _build_actions(self):
-        """Build the quick-action button row at the bottom.
-
-        Per D7: these navigate via state.set_active_screen(). Target
-        screens may be placeholders until their own tasks land — that
-        is intentional. The Dashboard is the navigation hub.
-        """
-        theme = get_theme()
-
-        # P2-2: section spacing tightened 20 → 16px for consistency
-        # with the rest of the dashboard's section cadence.
-        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
-        # the action buttons scroll with the rest of the dashboard.
-        actions_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        actions_row.pack(side="top", fill="x", padx=20, pady=(0, 16))
-
-        # Schedule Event — gold accent (primary action).
-        schedule_btn = ctk.CTkButton(
-            actions_row, text="+ Schedule Event",
-            font=theme.fonts.h3,
-            width=160, height=34,
-            corner_radius=6,
-            fg_color=theme.colors.gold,
-            hover_color=theme.colors.crimson,
-            text_color=theme.colors.bg_base,
-            command=self._on_schedule_event,
-        )
-        schedule_btn.pack(side="left", padx=(0, 10))
-
-        # View Roster — neutral elevated surface.
-        roster_btn = ctk.CTkButton(
-            actions_row, text="View Roster",
-            font=theme.fonts.h3,
-            width=140, height=34,
-            corner_radius=6,
-            fg_color=theme.colors.bg_surface_elevated,
-            hover_color=theme.colors.steel,
-            text_color=theme.colors.text_primary,
-            command=self._on_view_roster,
-        )
-        roster_btn.pack(side="left", padx=(0, 10))
-
-        # View Free Agents — neutral elevated surface.
-        free_agents_btn = ctk.CTkButton(
-            actions_row, text="View Free Agents",
-            font=theme.fonts.h3,
-            width=160, height=34,
-            corner_radius=6,
-            fg_color=theme.colors.bg_surface_elevated,
-            hover_color=theme.colors.steel,
-            text_color=theme.colors.text_primary,
-            command=self._on_view_free_agents,
-        )
-        free_agents_btn.pack(side="left")
+        header.pack(side="top", fill="x", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self._news_container = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        self._news_container.pack(side="top", fill="x",
+                                   padx=SPACE_LG, pady=(0, SPACE_LG))
 
     # ============================================================
     # HANDLERS — navigation (D7)
     # ============================================================
 
     def _on_schedule_event(self):
-        """Navigate to the Event Builder screen."""
+        """Navigate to the Event Builder screen (Build Card button)."""
         try:
             get_state().set_active_screen("event_builder")
         except (ValueError, Exception) as e:
@@ -887,7 +519,7 @@ class DashboardScreen(ctk.CTkFrame):
                   flush=True)
 
     def _on_view_free_agents(self):
-        """Navigate to the Free Agents screen."""
+        """Navigate to the Free Agents screen (Matchmaking button)."""
         try:
             get_state().set_active_screen("free_agents")
         except (ValueError, Exception) as e:
@@ -895,7 +527,7 @@ class DashboardScreen(ctk.CTkFrame):
                   flush=True)
 
     # ============================================================
-    # REFRESH CALLBACK (registered with GameState)
+    # REFRESH CALLBACK (registered with GameState — signature PRESERVED)
     # ============================================================
 
     def _refresh(self):
@@ -911,8 +543,8 @@ class DashboardScreen(ctk.CTkFrame):
           - When the player clicks the Refresh button (if added).
 
         Safe to call repeatedly — destroys the old dynamic widgets
-        before rendering the new ones. Defensive against DB errors
-        (if a query throws, the section shows its empty-state).
+        before rendering the new ones (D8 + D10). Defensive against
+        DB errors (if a query throws, the section shows its empty-state).
         """
         try:
             state = get_state()
@@ -926,6 +558,7 @@ class DashboardScreen(ctk.CTkFrame):
             self._refresh_subtitle(conn, promo_id)
             self._refresh_top_story(conn)
             self._refresh_promotion_status(conn, promo_id)
+            self._refresh_next_event(conn, promo_id)
             self._refresh_champions(conn, promo_id)
             self._refresh_fighter_watch(conn)
             self._refresh_news(conn)
@@ -936,22 +569,14 @@ class DashboardScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
     # Subtitle — "Month Year · Promotion Name"
     # ------------------------------------------------------------
+    # PRESERVED from pre-Phase-2.5. Only the rendering target changed:
+    # instead of configuring a plain CTkLabel, we call
+    # GradientHeader.set_subtitle().
 
     def _refresh_subtitle(self, conn, promo_id):
-        """Update the subtitle label with sim-date + promotion name.
-
-        UI Fix Plan 2 — Phase 1, Fix 3 (AD-6): the subtitle now shows
-        "Month Year · Promotion" (e.g., "July 2026 · Alpha Combat
-        Federation") instead of "Week N, Year N · Promotion". Reads
-        current_month + current_year directly from simulation_clock
-        (the same columns services.clock.get_clock returns at indices
-        3 + 4) + formats via calendar.month_name for the human-
-        readable month name.
-        """
+        """Update the GradientHeader subtitle with sim-date + promotion name."""
         try:
-            theme = get_theme()
-            # Sim date from the clock — query month + year directly
-            # so we don't depend on get_clock's index ordering.
+            # Sim date from the clock — query month + year directly.
             month = None
             year = "?"
             try:
@@ -965,14 +590,10 @@ class DashboardScreen(ctk.CTkFrame):
             except sqlite3.Error:
                 pass
 
-            # Resolve month name (1-12 → "January".."December").
-            # calendar.month_name[0] == '' so guard against None /
-            # out-of-range defensively.
             month_name = ""
             if isinstance(month, int) and 1 <= month <= 12:
                 month_name = calendar.month_name[month]
 
-            # Promotion name
             promo_name = "Your Promotion"
             try:
                 promo_row = conn.execute(
@@ -984,50 +605,39 @@ class DashboardScreen(ctk.CTkFrame):
             except sqlite3.Error:
                 pass
 
-            # Format: "July 2026  ·  Alpha Combat Federation"
-            # Falls back to "2026  ·  ..." if month is missing/invalid
-            # so the subtitle still reads sensibly.
             if month_name:
                 date_part = f"{month_name} {year}"
             else:
                 date_part = f"{year}"
             text = f"{date_part}  ·  {promo_name}"
-            self._subtitle_label.configure(
-                text=text,
-                font=theme.fonts.body,
-                text_color=theme.colors.text_secondary,
-            )
+            if self._gradient_header is not None:
+                self._gradient_header.set_subtitle(text)
         except Exception as e:
             print(f"Warning: subtitle refresh failed: {e}", flush=True)
 
     # ------------------------------------------------------------
-    # Top Story + Other Headlines (daily_headlines cache — §17)
+    # Top Story (daily_headlines cache — §17)
     # ------------------------------------------------------------
+    # PRESERVED query. NEW rendering: GradientCard(gold) + DataChip
+    # topic chips + HyperlinkLabel "Read full story" link.
 
     def _refresh_top_story(self, conn):
-        """Render the Top Story card + the Other Headlines list.
+        """Render the Top Story card using GradientCard + components.
 
-        Reads from daily_headlines (per §17 — this is a cache table,
-        the interpretation layer is the only writer). The top_story
-        row populates the TOP STORY card; the other 3 types populate
-        the OTHER HEADLINES list.
+        Reads from daily_headlines (per §17 — cache table). The
+        top_story row populates a GradientCard(gold) with:
+          - Eyebrow: "TOP STORY" (caption, gold)
+          - Headline: h2 (HyperlinkLabel if fighter_id, else CTkLabel)
+          - Body: 2-line summary (body font, text_secondary)
+          - Topic chips: DataChip for headline_type + fighter's WC
+          - "Read full story →" hyperlink (HyperlinkLabel with fighter_id)
         """
         try:
-            theme = get_theme()
+            # Destroy old dynamic widgets (D8 + D10).
+            self._destroy_widgets(self._top_story_widgets)
+            self._top_story_widgets = []
 
-            # Destroy old dynamic widgets (D8).
-            for w in self._headline_widgets:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
-            self._headline_widgets = []
-
-            # Query all headlines for the latest headline_date. We
-            # don't filter by date here — the daily pass writes 4 rows
-            # per day with INSERT OR REPLACE, so the latest set is
-            # always the most recent. ORDER BY headline_type so the
-            # display order is deterministic.
+            # PRESERVED query — daily_headlines for top_story.
             rows = []
             try:
                 rows = conn.execute(
@@ -1056,154 +666,161 @@ class DashboardScreen(ctk.CTkFrame):
                     "fighter_id": r[3],
                 })
 
-            # Separate top_story from the rest.
             top_story = next(
                 (h for h in headlines if h["type"] == "top_story"), None)
-            others = [h for h in headlines if h["type"] != "top_story"]
 
-            # ---- TOP STORY card content ----
-            if top_story:
-                # Lazy import — needed for the headline hyperlink when
-                # fighter_id is present (P1-2). Mirrors the champions
-                # section's lazy import pattern.
-                from ui.widgets.hyperlink import HyperlinkLabel
+            # ---- Build the GradientCard(gold) ----
+            # Phase 2.5: the gold gradient + 2px gold accent border
+            # signals "this is the marquee story" per the spec.
+            card = GradientCard(
+                self._top_story_container, variant="gold",
+                padding=SPACE_LG, corner_radius=6,
+            )
+            card.pack(side="top", fill="x")
+            self._top_story_widgets.append(card)
 
-                # Headline text — Fix 4: bumped from h2 to h1 (the
-                # top story is the most prominent piece on the
-                # Dashboard; h1 makes it visually dominant).
-                # UI Implementation Plan v3 — P1-2: render the headline
-                # as a HyperlinkLabel when fighter_id is present so
-                # the player can click through to the Fighter Profile.
-                # Degrades to a plain CTkLabel when no fighter is
-                # attached (some top stories are promotion-level news,
-                # not fighter-specific).
-                headline_text = top_story["text"] or "Today's top story"
-                if top_story.get("fighter_id"):
-                    head_label = HyperlinkLabel(
-                        self.top_story_content,
-                        text=headline_text,
-                        fighter_id=top_story["fighter_id"],
-                        font=theme.fonts.h1,
-                        anchor="w", wraplength=380, justify="left",
-                    )
-                else:
-                    head_label = ctk.CTkLabel(
-                        self.top_story_content,
-                        text=headline_text,
-                        font=theme.fonts.h1,
-                        text_color=theme.colors.text_primary,
-                        anchor="w", wraplength=380, justify="left",
-                    )
-                head_label.pack(side="top", fill="x", pady=(0, 5))
-                self._headline_widgets.append(head_label)
-
-                # Body text (smaller, secondary color)
-                if top_story["body"]:
-                    body_label = ctk.CTkLabel(
-                        self.top_story_content,
-                        text=top_story["body"],
-                        font=theme.fonts.body,
-                        text_color=theme.colors.text_secondary,
-                        anchor="w", wraplength=380, justify="left",
-                    )
-                    body_label.pack(side="top", fill="x")
-                    self._headline_widgets.append(body_label)
-            else:
-                # Empty state (D6)
-                empty_label = ctk.CTkLabel(
-                    self.top_story_content,
+            if top_story is None:
+                # Empty state (D6) — still inside the GradientCard so
+                # the gold frame is visible (signals "this slot exists,
+                # just empty today").
+                empty = ctk.CTkLabel(
+                    card.content_frame,
                     text="A quiet day across the promotions.",
-                    font=theme.fonts.body,
-                    text_color=theme.colors.text_tertiary,
-                    anchor="w", wraplength=380, justify="left",
+                    font=get_theme().fonts.body,
+                    text_color=get_theme().colors.text_tertiary,
+                    anchor="w", justify="left", wraplength=560,
                 )
-                empty_label.pack(side="top", fill="x")
-                self._headline_widgets.append(empty_label)
+                empty.pack(side="top", fill="x", pady=SPACE_MD)
+                self._top_story_widgets.append(empty)
+                return
 
-            # ---- OTHER HEADLINES list ----
-            if not others:
-                empty_label = ctk.CTkLabel(
-                    self.other_headlines_content,
-                    text="No other headlines today.",
-                    font=theme.fonts.body_small,
-                    text_color=theme.colors.text_tertiary,
-                    anchor="w",
+            theme = get_theme()
+            fighter_id = top_story.get("fighter_id")
+
+            # Eyebrow: "TOP STORY" (caption, gold).
+            eyebrow = ctk.CTkLabel(
+                card.content_frame, text="TOP STORY",
+                font=theme.fonts.caption, text_color=theme.colors.gold,
+                anchor="w",
+            )
+            eyebrow.pack(side="top", fill="x", pady=(0, SPACE_SM))
+            self._top_story_widgets.append(eyebrow)
+
+            # Headline (h2). HyperlinkLabel if fighter_id, else plain.
+            headline_text = top_story["text"] or "Today's top story"
+            if fighter_id:
+                head_label = HyperlinkLabel(
+                    card.content_frame, text=headline_text,
+                    fighter_id=fighter_id,
+                    font=theme.fonts.h2,
+                    anchor="w", wraplength=560, justify="left",
                 )
-                empty_label.pack(side="top", fill="x")
-                self._headline_widgets.append(empty_label)
             else:
-                # Lazy import — needed for the per-headline hyperlinks
-                # when fighter_id is present (P1-3). Reuses the same
-                # import as the TOP STORY block above (cached at module
-                # level after the first load).
-                from ui.widgets.hyperlink import HyperlinkLabel
+                head_label = ctk.CTkLabel(
+                    card.content_frame, text=headline_text,
+                    font=theme.fonts.h2,
+                    text_color=theme.colors.text_primary,
+                    anchor="w", wraplength=560, justify="left",
+                )
+            head_label.pack(side="top", fill="x", pady=(0, SPACE_SM))
+            self._top_story_widgets.append(head_label)
 
-                for h in others:
-                    # Card title (e.g., "Upset of the Week") — small caption
-                    card_title = _HEADLINE_TYPE_TO_CARD_TITLE.get(
-                        h["type"], h["type"].replace("_", " ").title())
-                    title_label = ctk.CTkLabel(
-                        self.other_headlines_content,
-                        text=card_title,
-                        font=theme.fonts.caption,
-                        text_color=theme.colors.gold,
-                        anchor="w",
-                    )
-                    title_label.pack(side="top", fill="x", pady=(5, 0))
-                    self._headline_widgets.append(title_label)
+            # Body (2-line summary).
+            body_text = top_story["body"] or ""
+            if body_text:
+                body_label = ctk.CTkLabel(
+                    card.content_frame, text=body_text,
+                    font=theme.fonts.body,
+                    text_color=theme.colors.text_secondary,
+                    anchor="w", wraplength=560, justify="left",
+                )
+                body_label.pack(side="top", fill="x", pady=(0, SPACE_SM))
+                self._top_story_widgets.append(body_label)
 
-                    # Headline text — with a ▸ marker.
-                    # UI Implementation Plan v3 — P1-3: render the
-                    # headline as a HyperlinkLabel when fighter_id is
-                    # present so the player can click through to the
-                    # Fighter Profile. Degrades to a plain CTkLabel for
-                    # non-fighter headlines.
-                    headline_text = f"▸ {h['text']}"
-                    if h.get("fighter_id"):
-                        text_label = HyperlinkLabel(
-                            self.other_headlines_content,
-                            text=headline_text,
-                            fighter_id=h["fighter_id"],
-                            font=theme.fonts.body,
-                            anchor="w", wraplength=380, justify="left",
+            # Topic chips row: headline_type chip + fighter's WC chip
+            # (if fighter_id present). Aligned left.
+            chips_row = ctk.CTkFrame(card.content_frame, fg_color="transparent")
+            chips_row.pack(side="top", fill="x", pady=(0, SPACE_SM))
+            self._top_story_widgets.append(chips_row)
+
+            type_chip = DataChip(
+                chips_row, text=_HEADLINE_TYPE_TO_CARD_TITLE.get(
+                    top_story["type"], top_story["type"].replace("_", " ")),
+                variant="default",
+            )
+            type_chip.pack(side="left", padx=(0, SPACE_SM))
+            self._top_story_widgets.append(type_chip)
+
+            # Fighter's weight class chip (if applicable).
+            if fighter_id:
+                try:
+                    wc_row = conn.execute(
+                        "SELECT wc.name FROM fighters f "
+                        "JOIN weight_classes wc "
+                        "  ON wc.weight_class_id = f.weight_class_id "
+                        "WHERE f.fighter_id=?",
+                        (fighter_id,),
+                    ).fetchone()
+                    if wc_row and wc_row[0]:
+                        wc_chip = DataChip(
+                            chips_row, text=wc_row[0], variant="info",
                         )
-                    else:
-                        text_label = ctk.CTkLabel(
-                            self.other_headlines_content,
-                            text=headline_text,
-                            font=theme.fonts.body,
-                            text_color=theme.colors.text_primary,
-                            anchor="w", wraplength=380, justify="left",
-                        )
-                    text_label.pack(side="top", fill="x")
-                    self._headline_widgets.append(text_label)
+                        wc_chip.pack(side="left", padx=(0, SPACE_SM))
+                        self._top_story_widgets.append(wc_chip)
+                except sqlite3.Error:
+                    pass  # Defensive — skip the WC chip on query failure.
+
+            # "Read full story →" hyperlink at bottom-right.
+            # Only shown if fighter_id is present (the link navigates
+            # to the Fighter Profile — without a fighter_id there's
+            # nowhere to navigate).
+            if fighter_id:
+                link_row = ctk.CTkFrame(card.content_frame, fg_color="transparent")
+                link_row.pack(side="top", fill="x")
+                self._top_story_widgets.append(link_row)
+                read_link = HyperlinkLabel(
+                    link_row, text="Read full story →",
+                    fighter_id=fighter_id,
+                    font=theme.fonts.caption,
+                    anchor="e",
+                )
+                read_link.pack(side="right")
+                self._top_story_widgets.append(read_link)
         except Exception as e:
             print(f"Warning: top-story refresh failed: {e}", flush=True)
 
     # ------------------------------------------------------------
     # Promotion Status (promotions + fighters — game state, §14 OK)
     # ------------------------------------------------------------
+    # PRESERVED query for cash/reputation/fan_trust/roster/champions.
+    # NEW: 7-day cash history query (Sparkline) + yesterday's cash
+    # query (TrendIndicator previous). NEW rendering: 5 StatTiles.
 
     def _refresh_promotion_status(self, conn, promo_id):
-        """Render the Promotion Status rows (cash/rep/trust/roster/count).
+        """Render the 5 Promotion Status StatTiles.
 
-        Per D1: reads from promotions (game state — cash, reputation,
-        fan_trust) + fighters (roster count — game state). Per D2:
-        reputation + fan_trust pass through local voice bands before
-        display.
+        Per D1+D2: reads from promotions (cash/rep/trust) + fighters
+        (roster count) + titles (champion count). Reputation + fan_trust
+        pass through local voice bands (D2) before display.
+
+        Per Phase 2.5 spec: 5 StatTiles in a row, each 2-col width:
+          1. CASH — value=cash_str, TrendIndicator(current=cash,
+             previous=yesterday_cash), Sparkline(last 7 days).
+          2. REPUTATION — value=voice phrase (no trend).
+          3. FAN TRUST — value=voice phrase (no trend).
+          4. ROSTER — value=count_str, TrendIndicator (current=roster,
+             previous=roster — no historical data, shows ●).
+          5. CHAMPIONS — value=count_str, TrendIndicator (current=champs,
+             previous=champs — no historical data, shows ●).
         """
         try:
-            theme = get_theme()
-
-            # Destroy old dynamic widgets (D8).
-            for w in self._promotion_status_widgets:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+            # Destroy old dynamic widgets (D8 + D10).
+            self._destroy_widgets(self._promotion_status_widgets)
             self._promotion_status_widgets = []
 
-            # Query the player's promotion.
+            theme = get_theme()
+
+            # ---- PRESERVED: query promotions for cash/rep/trust ----
             cash = None
             reputation_raw = None
             fan_trust_raw = None
@@ -1221,8 +838,7 @@ class DashboardScreen(ctk.CTkFrame):
                 print(f"Warning: promotions query failed: {e}",
                       flush=True)
 
-            # Query roster count (game state, OK per §14 — it's a count,
-            # not a fighter attribute).
+            # ---- PRESERVED: roster count ----
             roster_count = 0
             try:
                 count_row = conn.execute(
@@ -1236,7 +852,7 @@ class DashboardScreen(ctk.CTkFrame):
                 print(f"Warning: roster count query failed: {e}",
                       flush=True)
 
-            # Query champion count (game state).
+            # ---- PRESERVED: champion count ----
             champion_count = 0
             try:
                 champ_row = conn.execute(
@@ -1251,267 +867,446 @@ class DashboardScreen(ctk.CTkFrame):
                 print(f"Warning: champion count query failed: {e}",
                       flush=True)
 
+            # ---- NEW (Phase 2.5): 7-day cash history for Sparkline ----
+            cash_history = self._query_cash_history(conn, promo_id, cash)
+            # ---- NEW (Phase 2.5): yesterday's cash for TrendIndicator ----
+            yesterday_cash = self._query_yesterday_cash(conn, promo_id, cash)
+
             # Voice-banded display values (D2 — §14 compliance).
             reputation_voice = _reputation_band(reputation_raw)
             fan_trust_voice = _fan_trust_band(fan_trust_raw)
 
-            # UI Fix Plan 2 — Phase 3, Fix 7: load the promotion logo
-            # into the dashboard's promo logo label. Mirrors the
-            # Roster's logo loader but uses a 44x44 size for the
-            # smaller dashboard card slot.
-            self._refresh_dashboard_promo_logo(conn, promo_id)
+            # ---- Render the 5 StatTiles ----
+            # Tile 1: CASH — numeric, mono font, with trend + sparkline.
+            cash_value = _format_cash(cash)
+            try:
+                cash_float = float(cash) if cash is not None else 0.0
+            except (TypeError, ValueError):
+                cash_float = 0.0
+            try:
+                yesterday_float = float(yesterday_cash) if yesterday_cash is not None else cash_float
+            except (TypeError, ValueError):
+                yesterday_float = cash_float
+            cash_tile = StatTile(
+                self._promo_status_container,
+                label="CASH", value=cash_value,
+                current_value=cash_float,
+                previous_value=yesterday_float,
+                sparkline_data=cash_history,
+                show_sparkline=True,
+            )
+            cash_tile.grid(row=0, column=0, sticky="nsew",
+                            padx=(0, SPACE_SM), pady=0)
+            self._promotion_status_widgets.append(cash_tile)
 
-            # UI Implementation Plan v3 — P2-2: load the promotion-logo
-            # watermark (10% opacity, 200x200) into the promo_card's
-            # background. Sits behind the content via place()+lower().
-            self._refresh_promo_watermark(conn, promo_id)
+            # Tile 2: REPUTATION — voice phrase (display_small font, no trend).
+            # StatTile's value uses mono by default; for voice phrases we
+            # want a non-mono font. We pass the value + accept the default
+            # mono font (acceptable — the voice phrase still reads clearly).
+            # Per the spec: "use the display_small font for the value".
+            # We override via set_value after construction.
+            rep_tile = StatTile(
+                self._promo_status_container,
+                label="REPUTATION", value=reputation_voice,
+            )
+            rep_tile.grid(row=0, column=1, sticky="nsew",
+                           padx=SPACE_XS, pady=0)
+            # Override the value font to display_small (voice phrase, not number).
+            try:
+                rep_tile._value.configure(font=theme.fonts.h3)
+            except Exception:
+                pass
+            self._promotion_status_widgets.append(rep_tile)
 
-            # Render the five status rows. Fix 7: each row gets a
-            # small colored dot indicator on the left (cash=gold,
-            # reputation=gold, fan_trust=success green, roster=steel,
-            # champions=gold). The dots are 10x10 CTkLabel circles
-            # with rounded corners — no image assets needed.
-            rows = [
-                ("Cash", _format_cash(cash), theme.colors.gold,
-                 theme.fonts.mono, theme.colors.gold),
-                ("Reputation", reputation_voice,
-                 theme.colors.text_primary, theme.fonts.body,
-                 theme.colors.gold),
-                ("Fan Trust", fan_trust_voice,
-                 theme.colors.text_primary, theme.fonts.body,
-                 theme.colors.success),
-                ("Roster", f"{roster_count:,} fighters",
-                 theme.colors.text_primary, theme.fonts.body,
-                 theme.colors.steel),
-                ("Champions", f"{champion_count}",
-                 theme.colors.text_primary, theme.fonts.body,
-                 theme.colors.gold),
-            ]
+            # Tile 3: FAN TRUST — voice phrase.
+            trust_tile = StatTile(
+                self._promo_status_container,
+                label="FAN TRUST", value=fan_trust_voice,
+            )
+            trust_tile.grid(row=0, column=2, sticky="nsew",
+                             padx=SPACE_XS, pady=0)
+            try:
+                trust_tile._value.configure(font=theme.fonts.h3)
+            except Exception:
+                pass
+            self._promotion_status_widgets.append(trust_tile)
 
-            for label, value, value_color, value_font, dot_color in rows:
-                row_frame = ctk.CTkFrame(
-                    self.promo_status_content, fg_color="transparent")
-                row_frame.pack(side="top", fill="x", pady=2)
+            # Tile 4: ROSTER — count + trend (no historical data → ●).
+            roster_value = f"{roster_count:,} fighters"
+            roster_tile = StatTile(
+                self._promo_status_container,
+                label="ROSTER", value=roster_value,
+                current_value=float(roster_count),
+                previous_value=float(roster_count),  # No historical data.
+                show_sparkline=False,
+            )
+            roster_tile.grid(row=0, column=3, sticky="nsew",
+                              padx=SPACE_XS, pady=0)
+            self._promotion_status_widgets.append(roster_tile)
 
-                # Colored dot indicator (Fix 7). 10x10 CTkLabel with
-                # rounded corners + the dot_color as fg_color.
-                dot = ctk.CTkLabel(
-                    row_frame, text="",
-                    width=10, height=10,
-                    fg_color=dot_color,
-                    corner_radius=5,
-                )
-                dot.pack(side="left", padx=(0, 8))
-
-                lbl = ctk.CTkLabel(
-                    row_frame, text=f"{label}:",
-                    font=theme.fonts.body,
-                    text_color=theme.colors.text_secondary,
-                    anchor="w",
-                )
-                lbl.pack(side="left", padx=(0, 8))
-
-                val = ctk.CTkLabel(
-                    row_frame, text=value,
-                    font=value_font,
-                    text_color=value_color,
-                    anchor="e",
-                )
-                val.pack(side="right")
-
-                self._promotion_status_widgets.append(row_frame)
-                self._promotion_status_widgets.append(dot)
+            # Tile 5: CHAMPIONS — count of 8 + trend.
+            # Per spec: "3 of 8 belts". We have champion_count + the
+            # total weight classes is 8 (per the seed). Query the
+            # total to be safe (defensive — the seed might change).
+            total_wcs = 8
+            try:
+                wc_count_row = conn.execute(
+                    "SELECT COUNT(*) FROM weight_classes WHERE is_active=1"
+                ).fetchone()
+                if wc_count_row and wc_count_row[0]:
+                    total_wcs = wc_count_row[0]
+            except sqlite3.Error:
+                pass
+            champs_value = f"{champion_count} of {total_wcs} belts"
+            champs_tile = StatTile(
+                self._promo_status_container,
+                label="CHAMPIONS", value=champs_value,
+                current_value=float(champion_count),
+                previous_value=float(champion_count),  # No historical data.
+                show_sparkline=False,
+            )
+            champs_tile.grid(row=0, column=4, sticky="nsew",
+                              padx=(SPACE_SM, 0), pady=0)
+            self._promotion_status_widgets.append(champs_tile)
         except Exception as e:
             print(f"Warning: promotion-status refresh failed: {e}",
                   flush=True)
 
-    def _refresh_dashboard_promo_logo(self, conn, promo_id):
-        """Load the promotion logo into the Dashboard's logo label (Fix 7).
+    def _query_cash_history(self, conn, promo_id, current_cash):
+        """Query the last 7 days of cash for the Sparkline.
 
-        Mirrors RosterScreen._refresh_promo_logo but uses a 44x44
-        size for the smaller dashboard card slot. Tries
-        src/ui/assets/promo_logos/<promo_id>_*.png via glob. Falls
-        back to text initials.
+        NEW (Phase 2.5). Uses finance_transactions with a running
+        cumulative sum to derive the cash-on-hand at the end of each
+        of the last 6 transaction-date days, then APPENDS the current
+        cash (from promotions.current_cash) as the 7th point (today).
+
+        If fewer than 6 transaction dates exist, pads at the front
+        with the oldest running total (so the line stays flat at the
+        start rather than showing a fake jump from 0). If zero
+        transactions, returns [current_cash] * 7 (flat line at today's
+        cash — honest about the lack of historical data).
+
+        The current_cash is ALWAYS the last point so the sparkline's
+        final value matches the StatTile's displayed value (the user
+        sees a consistent number across the tile + sparkline).
+
+        Args:
+            conn: SQLite connection.
+            promo_id: the player's promotion ID.
+            current_cash: the current cash balance (from promotions.
+
+        Returns:
+            List of 7 floats (oldest first, today's cash last).
         """
         try:
-            theme = get_theme()
-            # Query the promo name (needed for the initials fallback).
-            promo_name = "Your Promotion"
+            base = float(current_cash) if current_cash is not None else 0.0
+        except (TypeError, ValueError):
+            base = 0.0
+
+        try:
+            # Get the last 6 distinct transaction dates + the running
+            # cumulative sum of amounts up to + including each date.
+            # We use a correlated subquery for the running total so we
+            # get the cash balance at the END of each transaction date.
+            rows = conn.execute(
+                """
+                SELECT transaction_date,
+                       (SELECT SUM(amount) FROM finance_transactions
+                    WHERE promotion_id = ?
+                      AND transaction_date <= t.transaction_date
+                   ) AS running_total
+                FROM finance_transactions t
+                WHERE t.promotion_id = ?
+                GROUP BY t.transaction_date
+                ORDER BY t.transaction_date DESC
+                LIMIT 6
+                """,
+                (promo_id, promo_id),
+            ).fetchall()
+        except sqlite3.Error as e:
+            print(f"Warning: cash history query failed: {e}", flush=True)
+            rows = []
+
+        if not rows:
+            # No transactions — flat line at current cash (honest).
+            return [base] * 7
+
+        # rows is newest-first; reverse to oldest-first.
+        history = []
+        for r in reversed(rows):
             try:
-                promo_row = conn.execute(
-                    "SELECT name FROM promotions WHERE promotion_id=?",
+                v = float(r[1]) if r[1] is not None else base
+            except (TypeError, ValueError):
+                v = base
+            history.append(v)
+
+        # Append today's cash as the last point (always — so the
+        # sparkline's final value matches the StatTile's value).
+        history.append(base)
+
+        # Pad to 7 at the FRONT with the oldest value (so the line
+        # stays flat at the start rather than showing a fake jump
+        # from 0).
+        while len(history) < 7:
+            history.insert(0, history[0])
+        return history[:7]
+
+    def _query_yesterday_cash(self, conn, promo_id, current_cash):
+        """Query the cash balance at the most recent transaction date.
+
+        NEW (Phase 2.5). Used as the TrendIndicator's previous_value
+        for the CASH StatTile. "Yesterday" here means "the most recent
+        transaction date before today" — if there's only 1 transaction
+        (e.g., the seed), that's the seed amount, and the trend shows
+        the delta between the seed and today's actual cash (honest
+        about spending that isn't logged in finance_transactions).
+
+        If no transactions exist, returns current_cash (delta = 0,
+        arrow = ●).
+        """
+        try:
+            base = float(current_cash) if current_cash is not None else 0.0
+        except (TypeError, ValueError):
+            base = 0.0
+
+        try:
+            # Get the most recent transaction's running total. This is
+            # the cash balance at the end of that transaction's date.
+            # If we have 2+ transactions, the second-most-recent gives
+            # us "yesterday" (the point before today's current_cash).
+            rows = conn.execute(
+                """
+                SELECT transaction_date,
+                       (SELECT SUM(amount) FROM finance_transactions
+                    WHERE promotion_id = ?
+                      AND transaction_date <= t.transaction_date
+                   ) AS running_total
+                FROM finance_transactions t
+                WHERE t.promotion_id = ?
+                GROUP BY t.transaction_date
+                ORDER BY t.transaction_date DESC
+                LIMIT 2
+                """,
+                (promo_id, promo_id),
+            ).fetchall()
+        except sqlite3.Error as e:
+            print(f"Warning: yesterday cash query failed: {e}", flush=True)
+            return base
+
+        if not rows:
+            return base
+        if len(rows) == 1:
+            # Only 1 transaction — previous = that transaction's
+            # running total (the seed amount, typically). The trend
+            # shows the delta between the seed and today's actual cash.
+            try:
+                return float(rows[0][1]) if rows[0][1] is not None else base
+            except (TypeError, ValueError):
+                return base
+        # rows[0] = today (most recent), rows[1] = previous.
+        try:
+            return float(rows[1][1]) if rows[1][1] is not None else base
+        except (TypeError, ValueError):
+            return base
+
+    # ------------------------------------------------------------
+    # Next Event (events + fights + fighters — game state)
+    # ------------------------------------------------------------
+    # NEW section (Phase 2.5). Queries the next scheduled event for
+    # the player's promotion + its main event fight.
+
+    def _refresh_next_event(self, conn, promo_id):
+        """Render the Next Event card (Section 4).
+
+        NEW (Phase 2.5). Queries the earliest scheduled event for the
+        player's promotion with event_date >= today's sim date. Joins
+        with fights (card_slot='main_event') + fighters for the main
+        event matchup. Shows:
+          - Event date (long format: "Sat 19 Sep 2026")
+          - Event name
+          - Main event matchup (Fighter A vs Fighter B)
+          - DataChip "TITLE FIGHT" (champion variant) if is_title_fight=1
+          - Build Card (primary) + Matchmaking (secondary) buttons
+        If no event scheduled, shows EmptyState with a "Build a Card"
+        CTA button.
+        """
+        try:
+            self._destroy_widgets(self._next_event_widgets)
+            self._next_event_widgets = []
+
+            theme = get_theme()
+
+            # Query the next scheduled event. We don't filter by
+            # event_date >= today because the sim date might lag behind
+            # real-time; instead, we take the earliest scheduled event
+            # (status='scheduled') ordered by event_date ASC. If multiple
+            # events are scheduled, the next one is the earliest.
+            event_row = None
+            try:
+                event_row = conn.execute(
+                    """
+                    SELECT event_id, event_name, event_date
+                    FROM events
+                    WHERE promotion_id=? AND status='scheduled'
+                    ORDER BY event_date ASC
+                    LIMIT 1
+                    """,
                     (promo_id,),
                 ).fetchone()
-                if promo_row and promo_row[0]:
-                    promo_name = promo_row[0]
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as e:
+                print(f"Warning: next event query failed: {e}", flush=True)
 
-            # Reuse the Roster's logo loader via a lazy import (avoids
-            # a hard dependency from dashboard.py to roster.py at
-            # module load time).
-            try:
-                from ui.screens.roster import _load_promo_logo
-                pil_img = _load_promo_logo(promo_id, promo_name, size=44)
-            except Exception:
-                pil_img = None
-
-            if pil_img is not None:
-                self._dashboard_promo_logo_image = ctk.CTkImage(
-                    light_image=pil_img, dark_image=pil_img,
-                    size=(44, 44),
+            if event_row is None:
+                # Empty state (D6) — EmptyState component with CTA.
+                empty = EmptyState(
+                    self._next_event_container,
+                    headline="No events booked.",
+                    body="Build a card to give the fans something to remember.",
+                    icon_text="📅",
+                    cta_text="Build a Card",
+                    cta_on_click=self._on_schedule_event,
                 )
-                self._dashboard_promo_logo_label.configure(
-                    image=self._dashboard_promo_logo_image, text="")
-            else:
-                # Text-initials fallback.
-                initials = self._dashboard_promo_initials(promo_name)
-                self._dashboard_promo_logo_label.configure(
-                    image=None, text=initials,
-                    font=(theme.fonts.h2[0], 18, "bold"),
-                    text_color=theme.colors.gold,
-                )
-        except Exception as e:
-            print(f"Warning: dashboard promo logo refresh failed: {e}",
-                  flush=True)
-
-    @staticmethod
-    def _dashboard_promo_initials(promo_name):
-        """Compute up to 3-letter initials from a promotion name."""
-        if not promo_name:
-            return "?"
-        words = str(promo_name).strip().split()
-        if not words:
-            return "?"
-        initials = "".join(w[0].upper() for w in words if w)[:3]
-        return initials or "?"
-
-    # ------------------------------------------------------------
-    # Promotion logo watermark (P2-2 — Visual Texture)
-    # ------------------------------------------------------------
-
-    def _refresh_promo_watermark(self, conn, promo_id):
-        """Load the promotion-logo watermark behind the promo_card.
-
-        UI Implementation Plan v3 — P2-2: a 200x200 promotion logo
-        rendered at 10% opacity, centered behind the promo_card's
-        content (cash/rep/trust/roster/champions rows). The watermark
-        gives the section visual depth without being OTT or garish —
-        the player should barely notice it, but it reinforces the
-        "your promotion" identity of the section.
-
-        Implementation:
-          1. Load the promo logo via _load_promo_logo (Roster's helper,
-             returns a PIL.Image RGBA at 200x200).
-          2. Multiply the alpha channel by 0.10 (so a fully opaque
-             pixel becomes 25/255 alpha — barely visible against the
-             bg_surface_elevated card surface).
-          3. Wrap the modified PIL image in a CTkImage.
-          4. Configure self._promo_watermark_label with the image.
-
-        Defensive — if PIL isn't available or the logo file is
-        missing, the watermark label is cleared (image=None) and the
-        card still renders normally. This mirrors the existing
-        _refresh_dashboard_promo_logo pattern.
-
-        Per the design docs (GUI_PLAN.md §3): "Bloomberg Terminal
-        meets ESPN scoreboard" — the watermark is a subtle texture,
-        not a fight-poster backdrop.
-        """
-        try:
-            # Reuse the Roster's logo loader (returns PIL.Image at the
-            # requested size). Lazy import keeps the dashboard module
-            # independent of roster.py at module load time.
-            try:
-                from ui.screens.roster import _load_promo_logo
-                pil_img = _load_promo_logo(promo_id, "", size=200)
-            except Exception:
-                pil_img = None
-
-            if pil_img is None:
-                # No logo available — clear the watermark label.
-                try:
-                    self._promo_watermark_label.configure(image=None)
-                except Exception:
-                    pass
-                self._promo_watermark_image = None
+                empty.pack(side="top", fill="x", pady=SPACE_MD)
+                self._next_event_widgets.append(empty)
                 return
 
-            # Reduce the alpha channel to 10%. PIL's .point() with a
-            # lambda multiplies each pixel's alpha value by 0.10 —
-            # 255 becomes 25, 128 becomes 12, etc. The result is a
-            # barely-visible ghost of the logo behind the card's
-            # content.
-            try:
-                pil_img = pil_img.convert("RGBA")
-                alpha = pil_img.split()[3]
-                alpha = alpha.point(lambda p: int(p * 0.10))
-                pil_img.putalpha(alpha)
-            except Exception as e:
-                # Alpha manipulation failed — skip the watermark
-                # rather than risk showing a fully-opaque logo behind
-                # the card content.
-                print(f"Warning: watermark alpha manipulation failed: {e}",
-                      flush=True)
-                try:
-                    self._promo_watermark_label.configure(image=None)
-                except Exception:
-                    pass
-                self._promo_watermark_image = None
-                return
+            event_id, event_name, event_date = event_row
 
-            # Wrap in CTkImage + store as attribute so the GC doesn't
-            # drop the underlying Tk image (Tk images are referenced
-            # by name, not Python refcount).
-            self._promo_watermark_image = ctk.CTkImage(
-                light_image=pil_img, dark_image=pil_img,
-                size=(200, 200),
+            # Build the card.
+            card = Card(self._next_event_container, variant="flat",
+                         padding=SPACE_LG, corner_radius=6)
+            card.pack(side="top", fill="x")
+            self._next_event_widgets.append(card)
+
+            # Event date (display_small, gold).
+            date_str = _format_event_date_long(event_date)
+            date_label = ctk.CTkLabel(
+                card.content_frame, text=date_str,
+                font=theme.fonts.h2, text_color=theme.colors.gold,
+                anchor="w",
             )
-            self._promo_watermark_label.configure(
-                image=self._promo_watermark_image, text="")
-        except Exception as e:
-            print(f"Warning: promo watermark refresh failed: {e}",
-                  flush=True)
-            # Defensive — clear the watermark on any failure so we
-            # don't leave a stale image on the label.
+            date_label.pack(side="top", fill="x", pady=(0, SPACE_XS))
+            self._next_event_widgets.append(date_label)
+
+            # Event name (h3, text_primary).
+            name_label = ctk.CTkLabel(
+                card.content_frame, text=event_name or "Untitled Event",
+                font=theme.fonts.h3, text_color=theme.colors.text_primary,
+                anchor="w",
+            )
+            name_label.pack(side="top", fill="x", pady=(0, SPACE_MD))
+            self._next_event_widgets.append(name_label)
+
+            # Main event fight (if any).
+            main_event_text = None
+            is_title_fight = False
             try:
-                self._promo_watermark_label.configure(image=None)
-            except Exception:
-                pass
-            self._promo_watermark_image = None
+                me_row = conn.execute(
+                    """
+                    SELECT f.is_title_fight,
+                           fa.first_name, fa.last_name,
+                           fb.first_name, fb.last_name,
+                           wc.name
+                    FROM fights f
+                    LEFT JOIN fighters fa ON fa.fighter_id = (
+                        SELECT fighter_id FROM fight_history
+                        WHERE fight_id = f.fight_id LIMIT 1
+                    )
+                    LEFT JOIN fighters fb ON fb.fighter_id = (
+                        SELECT fighter_id FROM fight_history
+                        WHERE fight_id = f.fight_id
+                          AND fighter_id <> fa.fighter_id
+                        LIMIT 1
+                    )
+                    LEFT JOIN weight_classes wc
+                      ON wc.weight_class_id = f.weight_class_id
+                    WHERE f.event_id=? AND f.card_slot='main_event'
+                    LIMIT 1
+                    """,
+                    (event_id,),
+                ).fetchone()
+                if me_row:
+                    is_title_fight = bool(me_row[0])
+                    a_first, a_last = me_row[1] or "", me_row[2] or ""
+                    b_first, b_last = me_row[3] or "", me_row[4] or ""
+                    wc_name = me_row[5] or ""
+                    a_name = f"{a_first} {a_last}".strip()
+                    b_name = f"{b_first} {b_last}".strip()
+                    if a_name and b_name:
+                        main_event_text = f"{a_name} vs {b_name}"
+                        if wc_name:
+                            main_event_text += f"  ·  {wc_name}"
+                    elif a_name:
+                        main_event_text = a_name
+            except sqlite3.Error as e:
+                print(f"Warning: main event query failed: {e}", flush=True)
+
+            if main_event_text:
+                me_label = ctk.CTkLabel(
+                    card.content_frame,
+                    text=f"Main Event:  {main_event_text}",
+                    font=theme.fonts.body,
+                    text_color=theme.colors.text_primary,
+                    anchor="w",
+                )
+                me_label.pack(side="top", fill="x", pady=(0, SPACE_SM))
+                self._next_event_widgets.append(me_label)
+
+                # Title fight indicator chip.
+                if is_title_fight:
+                    tf_chip = DataChip(
+                        card.content_frame, text="TITLE FIGHT",
+                        variant="champion",
+                    )
+                    tf_chip.pack(side="top", anchor="w", pady=(0, SPACE_MD))
+                    self._next_event_widgets.append(tf_chip)
+
+            # Buttons row: Build Card (primary) + Matchmaking (secondary).
+            btn_row = ctk.CTkFrame(card.content_frame, fg_color="transparent")
+            btn_row.pack(side="top", fill="x", pady=(SPACE_SM, 0))
+            self._next_event_widgets.append(btn_row)
+
+            build_btn = Button(
+                btn_row, text="Build Card", variant="primary",
+                on_click=self._on_schedule_event,
+            )
+            build_btn.pack(side="left", padx=(0, SPACE_SM))
+            self._next_event_widgets.append(build_btn)
+
+            match_btn = Button(
+                btn_row, text="Matchmaking", variant="secondary",
+                on_click=self._on_view_free_agents,
+            )
+            match_btn.pack(side="left")
+            self._next_event_widgets.append(match_btn)
+        except Exception as e:
+            print(f"Warning: next-event refresh failed: {e}", flush=True)
 
     # ------------------------------------------------------------
     # Champions list (titles + weight_classes + fighters — game state)
     # ------------------------------------------------------------
+    # PRESERVED query. NEW rendering: horizontal strip of DataChip +
+    # HyperlinkLabel per champion.
 
     def _refresh_champions(self, conn, promo_id):
-        """Render the YOUR CHAMPIONS list.
+        """Render the YOUR CHAMPIONS horizontal strip.
 
         Per D1: reads from titles + weight_classes + fighters (game
         state — champion names, NOT raw attribute values). Per D9:
         ordered by weight_class display_order (heavyweight first).
 
-        UI Fix Plan 2 — Phase 3, Fix 7: champion names are now
-        HyperlinkLabels (click navigates to Fighter Profile). Each
-        champion row gets a gold left-border accent + a small "★"
-        marker so the section reads as a marquee list.
+        Phase 2.5: each champion = DataChip(champion variant) showing
+        the weight class + HyperlinkLabel showing the champion's name
+        (click navigates to Fighter Profile). Up to 8 champions in a
+        horizontal strip. If no champions, shows EmptyState.
         """
         try:
-            theme = get_theme()
-
-            # Destroy old dynamic widgets (D8).
-            for w in self._champion_widgets:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+            self._destroy_widgets(self._champion_widgets)
             self._champion_widgets = []
 
-            # Query champions — join titles → weight_classes → fighters.
-            # display_order ascending (heavyweight first). Fall back to
-            # weight_class_id if display_order is NULL.
-            # Fix 7: also fetch fighter_id so we can wire up the
-            # HyperlinkLabel navigation.
+            theme = get_theme()
+
+            # PRESERVED query — champions join.
             rows = []
             try:
                 rows = conn.execute(
@@ -1534,117 +1329,108 @@ class DashboardScreen(ctk.CTkFrame):
                       flush=True)
 
             if not rows:
-                empty_label = ctk.CTkLabel(
-                    self.champions_content,
-                    text="No champions yet — go win some belts.",
-                    font=theme.fonts.body_small,
-                    text_color=theme.colors.text_tertiary,
-                    anchor="w",
+                # Empty state (D6).
+                empty = EmptyState(
+                    self._champions_container,
+                    headline="No champions yet.",
+                    body="Go win some belts.",
+                    icon_text="🏆",
                 )
-                empty_label.pack(side="top", fill="x")
-                self._champion_widgets.append(empty_label)
+                empty.pack(side="top", fill="x", pady=SPACE_MD)
+                self._champion_widgets.append(empty)
                 return
 
-            # Lazy import — avoids a hard module-load dependency from
-            # dashboard.py to the hyperlink widget (the dashboard
-            # already loads many widgets; this keeps the import local).
-            from ui.widgets.hyperlink import HyperlinkLabel
+            # Horizontal strip of champion chips. Wrap into rows of 4
+            # max (so 8 champions = 2 rows of 4) using grid.
+            strip = ctk.CTkFrame(self._champions_container, fg_color="transparent")
+            strip.pack(side="top", fill="x")
+            self._champion_widgets.append(strip)
 
-            for wc_name, fighter_id, first, last in rows:
-                champion_name = f"{first or ''} {last or ''}".strip()
-                # Fix 7: row card with a thin gold left-border accent.
-                # Implemented as a CTkFrame with border_width + gold
-                # border_color + a slight elevated background so the
-                # row reads as a discrete marquee card.
-                # QW7: champion chips — 2px champion_gold accent border
-                # (slightly brighter than the default gold so the belt
-                # holder reads as a cut above the other UI elements).
-                row_frame = ctk.CTkFrame(
-                    self.champions_content,
+            # 4-column grid; each cell = DataChip + HyperlinkLabel row.
+            for i in range(4):
+                strip.grid_columnconfigure(i, weight=1, uniform="champ")
+
+            for idx, (wc_name, fighter_id, first, last) in enumerate(rows):
+                row = idx // 4
+                col = idx % 4
+                cell = ctk.CTkFrame(strip, fg_color="transparent")
+                cell.grid(row=row, column=col, sticky="ew",
+                           padx=SPACE_XS, pady=SPACE_XS)
+                self._champion_widgets.append(cell)
+
+                # Inner card-like frame so each champion reads as a
+                # discrete chip-pair.
+                inner = ctk.CTkFrame(
+                    cell,
                     fg_color=theme.colors.bg_card_elevated,
                     corner_radius=4,
-                    border_width=2,
-                    border_color=theme.colors.gold,
+                    border_width=1,
+                    border_color=theme.colors.border_subtle,
                 )
-                row_frame.pack(side="top", fill="x", pady=3, padx=2)
+                inner.pack(fill="x", padx=2, pady=2)
+                self._champion_widgets.append(inner)
 
-                # Inner padding frame so the labels don't touch the
-                # gold border.
-                inner = ctk.CTkFrame(row_frame, fg_color="transparent")
-                inner.pack(side="top", fill="x", padx=8, pady=4)
+                # Top row: DataChip (champion variant) with WC name.
+                chip = DataChip(inner, text=wc_name or "CHAMP",
+                                 variant="champion")
+                chip.pack(side="top", anchor="w", padx=SPACE_SM,
+                           pady=(SPACE_XS, 0))
+                self._champion_widgets.append(chip)
 
-                # WC label (gold, left).
-                wc_label = ctk.CTkLabel(
-                    inner, text=f"★ {wc_name or 'Unknown'}",
-                    font=theme.fonts.body_small,
-                    text_color=theme.colors.gold,
-                    anchor="w",
-                )
-                wc_label.pack(side="left", padx=(0, 8))
-
-                # Champion name — HyperlinkLabel (Fix 7). Clicking
-                # navigates to Fighter Profile via the HyperlinkLabel's
-                # built-in handler.
+                # Bottom row: champion name as HyperlinkLabel.
+                champion_name = f"{first or ''} {last or ''}".strip()
                 if fighter_id is not None and champion_name:
                     name_link = HyperlinkLabel(
-                        inner,
-                        text=champion_name,
+                        inner, text=champion_name,
                         fighter_id=fighter_id,
                         font=theme.fonts.body,
-                        anchor="e",
+                        anchor="w",
                     )
-                    name_link.pack(side="right")
+                    name_link.pack(side="top", anchor="w",
+                                    padx=SPACE_SM, pady=(0, SPACE_XS))
                     self._champion_widgets.append(name_link)
                 else:
                     name_label = ctk.CTkLabel(
-                        inner,
-                        text="Vacant",
+                        inner, text="Vacant",
                         font=theme.fonts.body,
                         text_color=theme.colors.text_tertiary,
-                        anchor="e",
+                        anchor="w",
                     )
-                    name_label.pack(side="right")
+                    name_label.pack(side="top", anchor="w",
+                                     padx=SPACE_SM, pady=(0, SPACE_XS))
                     self._champion_widgets.append(name_label)
-
-                self._champion_widgets.append(row_frame)
-                self._champion_widgets.append(inner)
-                self._champion_widgets.append(wc_label)
         except Exception as e:
             print(f"Warning: champions refresh failed: {e}", flush=True)
 
     # ------------------------------------------------------------
     # Fighter Watch (daily_headlines + fighter_descriptors — §17 cache)
     # ------------------------------------------------------------
+    # PRESERVED queries (_lookup_fighter_watch_data, _find_hottest_
+    # streak_fighter). NEW rendering: GradientCard + PortraitFrame +
+    # MomentumRing + FormMeter. NEW query: _query_last_5_fights.
 
     def _refresh_fighter_watch(self, conn):
-        """Render the three Fighter Watch cards.
+        """Render the three Fighter Watch cards (Section 5).
 
         Per D1+D3+D4:
           - Top Prospect: from daily_headlines.fastest_rising → fighter_id
             → fighter_descriptors.narrative_family voice phrase.
           - Hottest Streak: direct query of fighter_descriptors for
             momentum='very_high' (or 'high' fallback), EXCLUDING the
-            Top Prospect fighter so the card shows a different face
-            when possible. Voice phrase = decoded momentum phrase.
+            Top Prospect fighter so the card shows a different face.
           - Biggest Fall: from daily_headlines.biggest_fall → fighter_id
             → fighter_descriptors.momentum voice phrase.
 
-        Voice phrases decoded via interpretation.context_engine.
-        decode_phrase (D4 — single source of truth for the "label||
-        phrase" format).
+        Phase 2.5: each card = GradientCard wrapper (gold for Top
+        Prospect + Hottest Streak, crimson for Biggest Fall) +
+        PortraitFrame + name (HyperlinkLabel) + MomentumRing + voice
+        phrase + FormMeter (last 5 fights W/L blocks).
         """
         try:
-            theme = get_theme()
-
-            # Destroy old dynamic widgets (D8).
-            for w in self._watch_cards:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+            self._destroy_widgets(self._watch_cards)
             self._watch_cards = []
 
-            # Pull the latest headlines for fighter_id lookups.
+            # PRESERVED: pull the latest headlines for fighter_id lookups.
             fastest_rising = None
             biggest_fall = None
             try:
@@ -1666,65 +1452,63 @@ class DashboardScreen(ctk.CTkFrame):
                 print(f"Warning: fighter-watch headline query failed: {e}",
                       flush=True)
 
-            # ---- TOP PROSPECT card ----
+            # ---- TOP PROSPECT card (gold gradient) ----
             top_prospect_data = self._lookup_fighter_watch_data(
                 conn, fastest_rising)
             self._render_watch_card(
-                self.watch_card_top,
-                "TOP PROSPECT",
-                top_prospect_data,
+                self._watch_container, grid_col=0,
+                title="TOP PROSPECT",
+                data=top_prospect_data,
                 default_voice="the wunderkind everyone's talking about",
                 empty_voice="No prospect emerging yet.",
+                is_falling=False,
+                conn=conn,
             )
 
-            # ---- HOTTEST STREAK card (D3 — exclude top-prospect fighter) ----
+            # ---- HOTTEST STREAK card (gold gradient) ----
+            # D3 — exclude top-prospect fighter.
             streak_fighter_id = self._find_hottest_streak_fighter(
                 conn, exclude_ids={fastest_rising} if fastest_rising else set())
             streak_data = self._lookup_fighter_watch_data(
                 conn, streak_fighter_id)
             self._render_watch_card(
-                self.watch_card_streak,
-                "HOTTEST STREAK",
-                streak_data,
+                self._watch_container, grid_col=1,
+                title="HOTTEST STREAK",
+                data=streak_data,
                 default_voice="riding a hot streak",
                 empty_voice="No one's on a hot streak right now.",
+                is_falling=False,
+                conn=conn,
             )
 
-            # ---- BIGGEST FALL card ----
+            # ---- BIGGEST FALL card (crimson gradient) ----
             biggest_fall_data = self._lookup_fighter_watch_data(
                 conn, biggest_fall)
             self._render_watch_card(
-                self.watch_card_fall,
-                "BIGGEST FALL",
-                biggest_fall_data,
+                self._watch_container, grid_col=2,
+                title="BIGGEST FALL",
+                data=biggest_fall_data,
                 default_voice="in freefall",
                 empty_voice="Nobody's sliding today.",
+                is_falling=True,
+                conn=conn,
             )
         except Exception as e:
-            print(f"Warning: fighter-watch refresh failed: {e}",
-                  flush=True)
+            print(f"Warning: fighter-watch refresh failed: {e}", flush=True)
 
     def _lookup_fighter_watch_data(self, conn, fighter_id):
         """Look up a fighter's name + voice phrases for a watch card.
 
-        Per D1+D4: reads from fighters (first_name/last_name only —
-        NOT attributes) + fighter_descriptors (cache — momentum +
-        narrative_family voice phrases). The "label||phrase" storage
-        is decoded via decode_phrase (D4).
-
-        UI Implementation Plan v3 — P1-1: also returns the fighter_id
-        so the card can render the name as a HyperlinkLabel (click
-        navigates to Fighter Profile) + add a "View Profile →" link.
+        PRESERVED from pre-Phase-2.5. Per D1+D4: reads from fighters
+        (first_name/last_name only — NOT attributes) + fighter_descriptors
+        (cache — momentum + narrative_family voice phrases). The
+        "label||phrase" storage is decoded via decode_phrase (D4).
 
         Returns:
             dict with keys:
-              fighter_id: the int fighter_id (so callers can build
-                HyperlinkLabels)
-              name: "First Last" or "The fighter"
-              momentum_phrase: voice phrase (e.g., "building serious
-                momentum") or None
-              narrative_phrase: voice phrase (e.g., "the wunderkind
-                everyone's talking about") or None
+              fighter_id, name, momentum_phrase, narrative_phrase,
+              momentum_label (the canonical label, for MomentumRing
+              tier mapping — NEW for Phase 2.5).
             Returns None if fighter_id is None or lookup fails.
         """
         if fighter_id is None:
@@ -1750,6 +1534,10 @@ class DashboardScreen(ctk.CTkFrame):
                 "name": name,
                 "momentum_phrase": decode_phrase(momentum_stored),
                 "narrative_phrase": decode_phrase(narrative_stored),
+                # NEW (Phase 2.5): the canonical momentum LABEL for
+                # the MomentumRing tier mapping. We extract it from
+                # the stored "label||phrase" string.
+                "momentum_label": _decode_momentum_label(momentum_stored),
             }
         except sqlite3.Error as e:
             print(f"Warning: fighter lookup failed for id={fighter_id}: {e}",
@@ -1759,29 +1547,12 @@ class DashboardScreen(ctk.CTkFrame):
     def _find_hottest_streak_fighter(self, conn, exclude_ids=None):
         """Find the fighter with the hottest momentum.
 
-        Per D3: query fighter_descriptors for momentum='very_high'
-        (or 'high' as fallback), EXCLUDING the given exclude_ids.
-        The exclude_ids set is the Top Prospect fighter_id so the
-        Hottest Streak card shows a different face when possible.
-
-        The momentum column stores "label||phrase" — we filter on
-        the LABEL using the same SUBSTR + INSTR trick the
-        headline_engine uses.
-
-        Phase 4 — Performance: the per-momentum-label query result
-        is cached via query_cached("dashboard", "hot_streak_<label>")
-        so a second refresh within the same Advance Day cycle
-        (e.g., navigating away + back to Dashboard) returns the
-        cached list instantly without re-scanning fighter_descriptors.
-        The cache is cleared on Advance Day by
-        CageEmpireApp._on_advance_day calling clear_query_cache().
-
-        Returns:
-            fighter_id (int) or None if no qualifying fighter.
+        PRESERVED from pre-Phase-2.5. Per D3: query fighter_descriptors
+        for momentum='very_high' (or 'high' as fallback), EXCLUDING
+        the given exclude_ids. Cached via query_cached.
         """
         exclude_ids = exclude_ids or set()
         try:
-            # Try 'very_high' first, then 'high' as fallback.
             for momentum_label in ("very_high", "high"):
                 cache_key = f"hot_streak_{momentum_label}"
                 rows = query_cached(
@@ -1793,7 +1564,7 @@ class DashboardScreen(ctk.CTkFrame):
                         JOIN fighters f ON f.fighter_id = fd.fighter_id
                         WHERE f.is_active = 1 AND f.is_retired = 0
                           AND SUBSTR(fd.momentum, 1,
-                                     INSTR(fd.momentum || '||', '||') - 1) = ?
+                                     INSTR(fd.momentum || '||', '||') - 1) =?
                         ORDER BY fd.fighter_id ASC
                         """,
                         (label,),
@@ -1802,11 +1573,6 @@ class DashboardScreen(ctk.CTkFrame):
                 for (fid,) in rows:
                     if fid not in exclude_ids:
                         return fid
-                # If all qualifying fighters are in exclude_ids, fall
-                # through to the next momentum label. If still none
-                # at any label, return the first qualifying fighter
-                # ignoring the exclude set (better to show someone
-                # than an empty card).
                 if rows:
                     return rows[0][0]
         except sqlite3.Error as e:
@@ -1814,108 +1580,210 @@ class DashboardScreen(ctk.CTkFrame):
                   flush=True)
         return None
 
-    def _render_watch_card(self, card_frame, title, data,
-                            default_voice, empty_voice):
-        """Render a single Fighter Watch card.
+    def _query_last_5_fights(self, conn, fighter_id):
+        """Query the last 5 fight outcomes for a fighter (FormMeter data).
+
+        NEW (Phase 2.5). Per D12: reads fight_history.outcome
+        ('win'/'loss'/'draw'/'nc') for the given fighter, ordered by
+        event_date DESC, LIMIT 5. Maps to 'W'/'L'/'D'/'D' (nc treated
+        as draw for form visualization).
 
         Args:
-            card_frame: the CTkFrame card container (built once in
-                _build_fighter_watch).
+            conn: SQLite connection.
+            fighter_id: the fighter's DB id.
+
+        Returns:
+            List of 'W'/'L'/'D' strings (oldest first, so the FormMeter
+            shows the streak chronologically left→right). Empty list if
+            no fight history or fighter_id is None.
+        """
+        if fighter_id is None:
+            return []
+        try:
+            rows = conn.execute(
+                """
+                SELECT outcome FROM fight_history
+                WHERE fighter_id=?
+                ORDER BY event_date DESC, fight_history_id DESC
+                LIMIT 5
+                """,
+                (fighter_id,),
+            ).fetchall()
+        except sqlite3.Error as e:
+            print(f"Warning: last-5-fights query failed: {e}", flush=True)
+            return []
+
+        # rows is newest-first; reverse so the FormMeter shows oldest
+        # on the left, newest on the right (standard "form" convention).
+        mapping = {"win": "W", "loss": "L", "draw": "D", "nc": "D"}
+        results = [mapping.get(str(r[0]).strip().lower(), "D")
+                   for r in reversed(rows) if r[0]]
+        return results
+
+    def _render_watch_card(self, parent_row, grid_col, title, data,
+                            default_voice, empty_voice, is_falling=False,
+                            conn=None):
+        """Render a single Fighter Watch card (Phase 2.5 redesign).
+
+        REWRITTEN for Phase 2.5. Uses GradientCard (gold or crimson
+        variant) as the wrapper. Composes inside it:
+          - Eyebrow (title) at top
+          - Middle row: 64px PortraitFrame + name (HyperlinkLabel) +
+            MomentumRing (right-aligned)
+          - Voice phrase (italic, centered) — prefer narrative_phrase,
+            fall back to momentum_phrase, fall back to default_voice.
+          - FormMeter (compact) showing last 5 fights W/L blocks
+          - Context line (empty for now — the daily_headlines body
+            could be used if available, but the watch cards query
+            fighter_descriptors directly which doesn't have a context
+            field. Future Phase 4+ can add this.)
+
+        Args:
+            parent_row: the grid container (self._watch_container).
+            grid_col: the grid column index (0, 1, or 2).
             title: the card title (e.g., "TOP PROSPECT").
             data: dict from _lookup_fighter_watch_data, or None.
             default_voice: voice phrase to use if data has no
-                narrative_phrase (e.g., "the wunderkind everyone's
-                talking about"). Per §17.4 — the UI shows voice
-                phrases, not raw labels.
+                narrative_phrase.
             empty_voice: voice phrase for the empty state (per D6).
-
-        UI Implementation Plan v3 — P1-1: the fighter name is now a
-        HyperlinkLabel (click navigates to Fighter Profile) + a
-        "View Profile →" link is added at the bottom of each card.
-        The fighter_id comes from _lookup_fighter_watch_data's return
-        dict (was fetched but never used before P1-1).
+            is_falling: True for the Biggest Fall card (crimson gradient).
+            conn: SQLite connection (for the FormMeter's last-5-fights
+                query). If None, no FormMeter is shown.
         """
         try:
             theme = get_theme()
+            variant = "crimson" if is_falling else "gold"
 
-            # Lazy import — mirrors the champions section's pattern.
-            from ui.widgets.hyperlink import HyperlinkLabel
+            # ---- GradientCard wrapper ----
+            card = GradientCard(
+                parent_row, variant=variant,
+                padding=SPACE_MD, corner_radius=6,
+            )
+            card.grid(row=0, column=grid_col, sticky="nsew",
+                       padx=(SPACE_XS if grid_col == 1 else 0,
+                             SPACE_XS if grid_col == 1 else 0),
+                       pady=0)
+            # Adjust padx for first/last column (no inner gap on the
+            # outer edges).
+            if grid_col == 0:
+                card.grid_configure(padx=(0, SPACE_XS))
+            elif grid_col == 2:
+                card.grid_configure(padx=(SPACE_XS, 0))
+            self._watch_cards.append(card)
 
-            # Card title (gold H3, full-width)
-            title_label = ctk.CTkLabel(
-                card_frame, text=title,
-                font=theme.fonts.h3, text_color=theme.colors.gold,
+            # ---- Eyebrow (title) ----
+            eyebrow_color = (theme.colors.crimson if is_falling
+                              else theme.colors.gold)
+            eyebrow = ctk.CTkLabel(
+                card.content_frame, text=title,
+                font=theme.fonts.caption, text_color=eyebrow_color,
                 anchor="w",
             )
-            title_label.pack(side="top", fill="x", padx=20, pady=(10, 5))
-            self._watch_cards.append(title_label)
+            eyebrow.pack(side="top", fill="x", pady=(0, SPACE_SM))
+            self._watch_cards.append(eyebrow)
 
             if data is None:
-                # Empty state (D6)
+                # Empty state (D6).
                 empty_label = ctk.CTkLabel(
-                    card_frame, text=empty_voice,
+                    card.content_frame, text=empty_voice,
                     font=theme.fonts.body_small,
                     text_color=theme.colors.text_tertiary,
                     anchor="w", wraplength=180, justify="left",
                 )
-                empty_label.pack(side="top", fill="x", padx=20, pady=(0, 12))
+                empty_label.pack(side="top", fill="x", pady=(0, SPACE_MD))
                 self._watch_cards.append(empty_label)
                 return
 
             fighter_id = data.get("fighter_id")
+            name = data.get("name", "The fighter")
+            momentum_label = data.get("momentum_label", "stable")
 
-            # Fighter name (H3 primary). P1-1: render as HyperlinkLabel
-            # when fighter_id is present so the player can click
-            # through to the Fighter Profile. Degrades to a plain
-            # CTkLabel when fighter_id is missing (defensive — should
-            # never happen since _lookup_fighter_watch_data only
-            # returns data when fighter_id is not None).
+            # ---- Middle row: portrait + name/stats + momentum ring ----
+            middle = ctk.CTkFrame(card.content_frame, fg_color="transparent")
+            middle.pack(side="top", fill="x", pady=(0, SPACE_SM))
+            self._watch_cards.append(middle)
+
+            # 64px PortraitFrame (placeholder initials — no portrait
+            # image asset wired up here; Phase 4+ can add it).
+            initials = "".join([w[0] for w in name.split() if w])[:2].upper() or "?"
+            portrait = PortraitFrame(
+                middle, ctk_image=None, size="watch",
+                is_champion=False, initials=initials,
+                fighter_id=fighter_id,
+            )
+            portrait.pack(side="left", padx=(0, SPACE_SM))
+            self._watch_cards.append(portrait)
+
+            # Right side: name + stats + momentum ring.
+            right = ctk.CTkFrame(middle, fg_color="transparent")
+            right.pack(side="left", fill="x", expand=True)
+            self._watch_cards.append(right)
+
+            # Name (HyperlinkLabel — click navigates to Fighter Profile).
             if fighter_id is not None:
                 name_label = HyperlinkLabel(
-                    card_frame, text=data["name"],
-                    fighter_id=fighter_id,
-                    font=theme.fonts.h3,
-                    anchor="w", wraplength=180, justify="left",
+                    right, text=name, fighter_id=fighter_id,
+                    font=(theme.fonts.h3[0], theme.fonts.h3[1], "bold"),
+                    anchor="w", wraplength=140, justify="left",
                 )
             else:
                 name_label = ctk.CTkLabel(
-                    card_frame, text=data["name"],
-                    font=theme.fonts.h3,
+                    right, text=name,
+                    font=(theme.fonts.h3[0], theme.fonts.h3[1], "bold"),
                     text_color=theme.colors.text_primary,
-                    anchor="w", wraplength=180, justify="left",
+                    anchor="w", wraplength=140, justify="left",
                 )
-            name_label.pack(side="top", fill="x", padx=20, pady=(0, 3))
+            name_label.pack(side="top", anchor="w", pady=(0, SPACE_XS))
             self._watch_cards.append(name_label)
 
-            # Voice phrase — prefer narrative_phrase, fall back to
-            # momentum_phrase, fall back to default_voice. Per §17.4:
-            # the UI shows voice phrases, never raw labels.
-            # Per UI-POLISH Fix 5: title-case the phrase so it reads
-            # as polished prose, not lowercase voice.py output.
+            # MomentumRing (right-aligned in the middle row, below the
+            # name). The ring's tier comes from the fighter_descriptors
+            # momentum label. Size 48px (smaller than default 64 so it
+            # fits in the 4-col watch card).
+            ring = MomentumRing(
+                right, tier=momentum_label, size=48,
+                show_label=True, thickness=5,
+            )
+            ring.pack(side="top", anchor="w", pady=(SPACE_XS, 0))
+            self._watch_cards.append(ring)
+
+            # ---- Voice phrase (italic, centered) ----
             voice = (data.get("narrative_phrase")
                      or data.get("momentum_phrase")
                      or default_voice)
             voice_label = ctk.CTkLabel(
-                card_frame, text=title_case_phrase(voice),
-                font=theme.fonts.descriptor,
-                text_color=theme.colors.text_secondary,
-                anchor="w", wraplength=180, justify="left",
+                card.content_frame, text=title_case_phrase(voice),
+                font=(theme.fonts.descriptor[0],
+                      theme.fonts.descriptor[1], "italic"),
+                text_color=theme.colors.text_primary,
+                anchor="center", justify="center", wraplength=200,
             )
-            voice_label.pack(side="top", fill="x", padx=20, pady=(0, 8))
+            voice_label.pack(side="top", fill="x", pady=(0, SPACE_SM))
             self._watch_cards.append(voice_label)
 
-            # P1-1: "View Profile →" HyperlinkLabel at the bottom of
-            # each card. Gives the player an explicit affordance to
-            # jump to the Fighter Profile (matches P3-1 in the plan).
-            # Only shown when fighter_id is present.
+            # ---- FormMeter (last 5 fights W/L blocks) ----
+            # NEW (Phase 2.5). Shows the fighter's last 5 fight outcomes
+            # as gold (W) / crimson (L) / steel (D) blocks. Compact
+            # variant (16×16 blocks) so it fits in the 4-col card.
+            if conn is not None and fighter_id is not None:
+                results = self._query_last_5_fights(conn, fighter_id)
+                if results:
+                    form = FormMeter(
+                        card.content_frame, results=results,
+                        compact=True, show_form_score=False,
+                    )
+                    form.pack(side="top", anchor="w", pady=(0, SPACE_XS))
+                    self._watch_cards.append(form)
+
+            # ---- "View Profile →" hyperlink (footer) ----
             if fighter_id is not None:
                 view_link = HyperlinkLabel(
-                    card_frame, text="View Profile →",
+                    card.content_frame, text="View Profile →",
                     fighter_id=fighter_id,
                     font=theme.fonts.caption,
                     anchor="w",
                 )
-                view_link.pack(side="top", fill="x", padx=20, pady=(0, 12))
+                view_link.pack(side="top", anchor="w", pady=(SPACE_XS, 0))
                 self._watch_cards.append(view_link)
         except Exception as e:
             print(f"Warning: watch-card render failed: {e}", flush=True)
@@ -1923,119 +1791,99 @@ class DashboardScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
     # Recent News (news_items — game-state news feed)
     # ------------------------------------------------------------
+    # PRESERVED query. NEW rendering: NewsCard list + "View all" link.
 
     def _refresh_news(self, conn):
-        """Render the Recent News list.
+        """Render the Recent News list using NewsCard components.
 
-        Per the Task 6.3 brief: "news_items is OK for display since
-        it doesn't expose raw attribute values." The news feed is a
-        fundamental game feature, not fighter data. We read ONLY the
-        headline/topic/published_at fields — never fighter attribute
-        values.
+        Per the Task 6.3 brief: "news_items is OK for display since it
+        doesn't expose raw attribute values." We read the headline,
+        body, topic, published_at, and fighter_id fields. The NewsCard
+        component handles the layout (topic chip + headline + body +
+        timestamp). Fighter-specific headlines render as HyperlinkLabels.
 
-        UI Implementation Plan v3 — P1-4: news_items has a fighter_id
-        column (verified via PRAGMA table_info). Added it to the
-        SELECT so we can render fighter-specific news headlines as
-        HyperlinkLabels (click → Fighter Profile). Non-fighter news
-        (promotion-level, matchup-level) keeps the plain CTkLabel
-        treatment — fighter_id is NULL for those rows.
+        Phase 2.5: 5 NewsCards stacked vertically + "View all" hyperlink
+        at the bottom (no-op for now — the News Feed screen isn't built
+        yet). If no news, EmptyState.
         """
         try:
-            theme = get_theme()
-
-            # Destroy old dynamic widgets (D8).
-            for w in self._news_widgets:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+            self._destroy_widgets(self._news_widgets)
             self._news_widgets = []
 
-            # P1-4: query news_items with fighter_id so we can wire
-            # HyperlinkLabels for fighter-specific items. Per
-            # PRAGMA table_info(news_items): the column exists. Some
-            # rows have NULL fighter_id (promotion-level news) —
-            # those degrade to plain CTkLabels.
+            theme = get_theme()
+
+            # PRESERVED query — news_items, fighter_id included for
+            # the HyperlinkLabel wiring.
             rows = []
             try:
                 rows = conn.execute(
-                    "SELECT headline, topic, published_at, fighter_id "
+                    "SELECT headline, body, topic, published_at, fighter_id "
                     "FROM news_items "
-                    "ORDER BY published_at DESC LIMIT 20"
+                    "ORDER BY published_at DESC LIMIT 5"
                 ).fetchall()
             except sqlite3.Error as e:
                 print(f"Warning: news_items query failed: {e}",
                       flush=True)
 
             if not rows:
-                # Show the empty-state label (D6).
-                try:
-                    self.news_empty_label.configure(
-                        text="The newswire is quiet.",
-                        font=theme.fonts.body,
-                        text_color=theme.colors.text_tertiary,
-                    )
-                    self.news_empty_label.pack(fill="x", padx=20, pady=30)
-                except Exception:
-                    pass
+                # Empty state (D6).
+                empty = EmptyState(
+                    self._news_container,
+                    headline="The newswire is quiet.",
+                    body="No stories have broken in the last 24 hours. "
+                         "Advance a day to see what develops.",
+                    icon_text="📰",
+                )
+                empty.pack(side="top", fill="x", pady=SPACE_MD)
+                self._news_widgets.append(empty)
                 return
 
-            # Hide the empty-state label.
-            try:
-                self.news_empty_label.pack_forget()
-            except Exception:
-                pass
+            # Render each news item as a NewsCard.
+            for headline, body, topic, published_at, fighter_id in rows:
+                # Truncate body to ~2 lines (~180 chars) for the card.
+                body_text = body or ""
+                if len(body_text) > 180:
+                    body_text = body_text[:177].rstrip() + "..."
 
-            # Lazy import — needed for fighter-specific news items (P1-4).
-            from ui.widgets.hyperlink import HyperlinkLabel
-
-            # Render each news item as a row.
-            for headline, topic, published_at, fighter_id in rows:
-                row_frame = ctk.CTkFrame(
-                    self.news_scroll, fg_color="transparent")
-                row_frame.pack(side="top", fill="x", pady=3, padx=4)
-
-                # Topic badge (gold bracketed label)
-                topic_label = ctk.CTkLabel(
-                    row_frame,
-                    text=f"[{_topic_label(topic)}]",
-                    font=theme.fonts.caption,
-                    text_color=theme.colors.gold,
-                    anchor="w",
+                news_card = NewsCard(
+                    self._news_container,
+                    topic=_topic_label(topic),
+                    headline=headline or "(no headline)",
+                    body=body_text,
+                    timestamp=_format_date(published_at),
+                    fighter_id=fighter_id if fighter_id else None,
+                    has_detail=False,
                 )
-                topic_label.pack(side="left", padx=(8, 6))
+                news_card.pack(side="top", fill="x", pady=(0, SPACE_SM))
+                self._news_widgets.append(news_card)
 
-                # Headline text (primary color). P1-4: render as a
-                # HyperlinkLabel when fighter_id is present so the
-                # player can click through to the Fighter Profile.
-                # Degrades to a plain CTkLabel for non-fighter news.
-                headline_text = headline or "(no headline)"
-                if fighter_id:
-                    head_label = HyperlinkLabel(
-                        row_frame, text=headline_text,
-                        fighter_id=fighter_id,
-                        font=theme.fonts.body,
-                        anchor="w",
-                    )
-                else:
-                    head_label = ctk.CTkLabel(
-                        row_frame, text=headline_text,
-                        font=theme.fonts.body,
-                        text_color=theme.colors.text_primary,
-                        anchor="w",
-                    )
-                head_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-                # Date (tertiary caption, right-aligned)
-                date_label = ctk.CTkLabel(
-                    row_frame,
-                    text=_format_date(published_at),
-                    font=theme.fonts.caption,
-                    text_color=theme.colors.text_tertiary,
-                    anchor="e",
-                )
-                date_label.pack(side="right", padx=(0, 8))
-
-                self._news_widgets.append(row_frame)
+            # "View all ▶" hyperlink at the bottom (no-op — News Feed
+            # screen not built yet).
+            view_all = HyperlinkLabel(
+                self._news_container, text="View all ▶",
+                font=theme.fonts.caption,
+                anchor="e",
+            )
+            view_all.pack(side="top", anchor="e", pady=(SPACE_SM, 0))
+            self._news_widgets.append(view_all)
         except Exception as e:
             print(f"Warning: news refresh failed: {e}", flush=True)
+
+    # ============================================================
+    # HELPERS — widget lifecycle
+    # ============================================================
+
+    @staticmethod
+    def _destroy_widgets(widget_list):
+        """Destroy every widget in the list + clear the list.
+
+        Used by every _refresh_* method to clear the old dynamic
+        widgets before re-rendering (D8 + D10). Defensive — silently
+        skips widgets that fail to destroy (already destroyed, etc.).
+        """
+        for w in widget_list:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        widget_list.clear()

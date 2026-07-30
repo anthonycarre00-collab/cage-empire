@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from ui.theme import get_theme, SPACE_SM, SPACE_XS
+from ui.theme import get_theme, tint_to_solid, SPACE_SM, SPACE_XS
 from .sparkline import Sparkline
 
 
