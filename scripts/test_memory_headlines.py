@@ -1051,13 +1051,16 @@ def case_l_snapshot_cache_integration():
           0 <= n <= 4, f"got={n}")
 
     # L.3 — interpretation_cache_meta.engine_version is bumped to
-    # the new ENGINE_VERSION (1.5.0 per the snapshot_cache bump).
+    # the new ENGINE_VERSION. Phase 0 (UI Redesign Rev 3) bumped
+    # 1.5.0 → 1.6.0 to force a cache rebuild. Test reads the current
+    # ENGINE_VERSION dynamically so future bumps don't break this.
+    from interpretation.snapshot_cache import ENGINE_VERSION
     row = conn.execute(
         "SELECT engine_version FROM interpretation_cache_meta "
         "WHERE meta_id=1"
     ).fetchone()
-    check("L", "interpretation_cache_meta.engine_version = 1.5.0",
-          row is not None and row[0] == "1.5.0",
+    check("L", f"interpretation_cache_meta.engine_version = {ENGINE_VERSION}",
+          row is not None and row[0] == ENGINE_VERSION,
           f"got={row[0] if row else None!r}")
 
     # L.4 — _generate_headlines wraps the call in try/except

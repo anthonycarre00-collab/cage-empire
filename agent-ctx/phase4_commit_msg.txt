@@ -1,0 +1,70 @@
+perf: Phase 4 — lazy refresh + debounce + portrait/query cache + 12 DB indexes
+
+Phase 4 of UI Fix Plan 2 (Fix 20). Five performance utilities + 12
+DB indexes to address the user's "pages load slow" feedback.
+
+MEASURED IMPACT (4,450-fighter world DB, headless CTk via Xvfb):
+  - refresh_all (force=True, simulates Load/Theme toggle): 1384ms to 1292ms
+  - refresh_all (lazy, active=dashboard): 1384ms to 167ms (8.3x faster)
+  - refresh_all (lazy, active=roster): 1384ms to 700ms (2.0x faster)
+  - Search typing "johnson": 7 refreshes to 1 refresh (200ms debounce)
+  - Fighter Profile re-visit: 8ms PIL load to 0ms cache hit
+  - Dashboard re-visit: 5.7ms hottest-streak scan to 0ms cache hit
+  - Free Agents query EXPLAIN: SCAN to SEARCH idx_fighters_promo_active
+
+NEW MODULE: src/ui/perf.py
+  - debounce(ms): Tk-friendly trailing-edge debounce via widget.after
+  - portrait LRU cache (200 entries): skip PIL load + LANCZOS resize
+  - query cache (namespaced): cleared on Advance Day
+  - timed(label) decorator: opt-in profiling via CAGE_EMPIRE_NO_TIMING env
+
+LAZY REFRESH (src/ui/state.py):
+  - refresh_all() now takes force=False default
+  - Lazy mode refreshes ONLY active screen + Dashboard, marks rest stale
+  - force=True still refreshes every screen (Load, theme toggle)
+  - Stale flag is informational — set_active_screen already refreshes
+    on every navigation, so stale screens auto-refresh when visited
+
+SEARCH DEBOUNCE (roster.py, free_agents.py):
+  - @debounce(200) on _on_search_change in both screens
+  - Collapses fast typing into a single refresh
+  - Uses self.after(200, ...) — no threads, no race conditions
+
+PORTRAIT CACHE (fighter_profile.py):
+  - _refresh_header checks get_cached_portrait(fighter_id) first
+  - Cache hit: skip PIL.Image.open + LANCZOS resize + CTkImage build
+  - 200-entry LRU eviction — covers typical browse session
+
+QUERY CACHE (dashboard.py):
+  - _find_hottest_streak_fighter wraps SQL in query_cached("dashboard", ...)
+  - Navigating away from Dashboard + back no longer re-scans descriptors
+  - CageEmpireApp._on_advance_day clears query + portrait caches
+
+DB INDEXES (build_db.py v3.13.0 migration):
+  - idx_fighters_promo_active (composite: current_promotion_id,
+    is_active, is_retired) — biggest win, serves Roster + Free
+    Agents + Matchmaking
+  - idx_fighters_weight_class, idx_fighters_gender — filter indexes
+  - idx_fight_history_fighter (fighter_id, event_date DESC)
+  - idx_fight_history_opponent — reverse lookups
+  - idx_news_items_published DESC — latest-news query
+  - idx_daily_headlines_date_type — Fighter Watch query
+  - idx_titles_champion — champion check
+  - idx_rankings_fighter — ranking lookups
+  - idx_injuries_fighter_active, idx_suspensions_fighter_active
+  - idx_scouting_reports_target — scouting report lookup
+  - All CREATE INDEX IF NOT EXISTS (idempotent)
+  - Added to both SCHEMA_SQL (--fresh) and migration (--migrate)
+  - Schema bumped 3.12.0 to 3.13.0 (MINOR — additive indexes only)
+
+TESTS:
+  - scripts/perf/test_perf.py — 5 smoke tests (all pass)
+  - scripts/perf/profile_screens.py — DB query profiler
+  - scripts/perf/profile_refresh.py — full screen refresh profiler
+  - test_memory_headlines Case N.1 — read CODE_SCHEMA_VERSION from
+    build_db instead of hardcoding "3.12.0" (future-proof)
+  - 42/43 existing tests pass (1 pre-existing failure in
+    test_pre_b1_fixes Case F+G — flagged in D11/D15 of prior
+    worklog entries, NOT caused by Phase 4)
+
+DAILY INTERPRETATION PASS: 310ms (well under 1s budget)

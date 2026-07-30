@@ -80,7 +80,18 @@ import sqlite3
 # date overwrites, doesn't duplicate). The Memory Engine (Task 2.5)
 # is a reader called on-demand (when a fight is booked), NOT wired
 # into the daily pass — it doesn't write to any cache table.
-ENGINE_VERSION = "1.5.0"
+#
+# Phase 0 (UI Redesign Rev 3, 2026-07-30): bumped 1.5.0 → 1.6.0 to
+# force a full cache rebuild on the next daily pass. Per the
+# Interpretation Layer Audit (docs/UI_REDESIGN_INTERPRETATION_AUDIT.md),
+# the _EXT 8-variant pickers (commit 1149538) were added without
+# bumping ENGINE_VERSION, so the version-mismatch rebuild logic never
+# triggered — the production DB still held the original 3-variant
+# picker output. This bump cuts perceived repetition ~60% for
+# momentum / pressure / career_phase (the heaviest-bucket columns).
+# No schema change required — the rebuild just re-runs the existing
+# _EXT pickers and overwrites the stale cache rows. Idempotent.
+ENGINE_VERSION = "1.6.0"
 
 
 def run_daily_interpretation_pass(conn):
