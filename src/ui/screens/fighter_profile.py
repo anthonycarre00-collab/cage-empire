@@ -1052,7 +1052,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         # crimson accent bar (left) + content (right).
         # QW2/QW3: bg_surface → bg_card + 1px border_subtle + corner_radius=6.
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card,
+            self._scroll, fg_color=theme.colors.bg_card_elevated,
             corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
@@ -1096,7 +1096,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
@@ -1124,7 +1124,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
@@ -1152,7 +1152,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
@@ -1188,7 +1188,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._attr_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         self._attr_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
@@ -1242,7 +1242,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._pers_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         self._pers_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
@@ -1278,7 +1278,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._scouting_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            self._scroll, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         # NOT packed here — _refresh shows/hides it based on the

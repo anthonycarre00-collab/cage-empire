@@ -245,13 +245,14 @@ class FighterTable(ctk.CTkFrame):
         # QW2/QW7: bg_surface → bg_card + corner_radius=0 for sharp
         # "ledger" edges per UI_REDESIGN_VISUAL_PLAN §4.3.
         theme = get_theme()
-        self.configure(fg_color=theme.colors.bg_card, corner_radius=0)
+        self.configure(fg_color=theme.colors.bg_card_elevated, corner_radius=0)
 
         # ---- Header row (D3) ----
-        # QW2: header row uses bg_card_elevated (was bg_surface_elevated
-        # — same value via alias, but explicit for clarity).
+        # Contrast fix: header uses bg_card (darker, #1c2028) so it's
+        # distinct from the body rows (which alternate bg_card_elevated /
+        # bg_card). The gold column labels pop against the darker header.
         self._header_row = ctk.CTkFrame(
-            self, fg_color=theme.colors.bg_card_elevated,
+            self, fg_color=theme.colors.bg_card,
             corner_radius=0, height=36,
         )
         self._header_row.pack(side="top", fill="x")
@@ -263,7 +264,7 @@ class FighterTable(ctk.CTkFrame):
         # QW2: body uses bg_card (was bg_surface — same as the shell,
         # which made the table read as a hole in the page).
         self._body = ctk.CTkScrollableFrame(
-            self, fg_color=theme.colors.bg_card, corner_radius=0,
+            self, fg_color=theme.colors.bg_card_elevated, corner_radius=0,
         )
         self._body.pack(side="top", fill="both", expand=True)
 
@@ -384,13 +385,14 @@ class FighterTable(ctk.CTkFrame):
             for i, row_data in enumerate(rows):
                 fighter_id = row_data.get("fighter_id")
                 # Alternating row color (D5).
-                # QW2: bg_surface/bg_surface_elevated → bg_card/bg_card_elevated
-                # (explicit; aliases resolve to the same values, but the
-                # explicit names make the 4-tier depth system visible
-                # at the call site).
-                base_bg = (theme.colors.bg_card
+                # Contrast fix: even rows use bg_card_elevated (lighter,
+                # #252a33), odd rows use bg_card (darker, #1c2028). This
+                # gives a visible alternating pattern AND keeps both rows
+                # lighter than the shell (bg_surface #15181f) so the table
+                # reads as a distinct surface.
+                base_bg = (theme.colors.bg_card_elevated
                            if i % 2 == 0
-                           else theme.colors.bg_card_elevated)
+                           else theme.colors.bg_card)
 
                 row_frame = ctk.CTkFrame(
                     self._body, fg_color=base_bg, corner_radius=0,

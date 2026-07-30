@@ -490,7 +490,7 @@ class DashboardScreen(ctk.CTkFrame):
         # P2-2: added 1px bg_border around the card for the framed-
         # surface look.
         self.top_story_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card,
+            row, fg_color=theme.colors.bg_card_elevated,
             corner_radius=6,
             border_width=2,
             border_color=theme.colors.gold,
@@ -562,7 +562,7 @@ class DashboardScreen(ctk.CTkFrame):
         #   Both top-row cards now read as a matched pair on the
         #   dashboard (elevated surfaces framed by subtle borders).
         self.promo_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card, corner_radius=6,
+            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=1,
             border_color=theme.colors.border_subtle,
         )
@@ -713,17 +713,17 @@ class DashboardScreen(ctk.CTkFrame):
         # accent borders (the "rising" brand color). Biggest Fall gets
         # a 2px crimson accent border (the "falling" brand color).
         self.watch_card_top = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card, corner_radius=6,
+            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=2, border_color=theme.colors.gold)
         self.watch_card_top.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         self.watch_card_streak = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card, corner_radius=6,
+            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=2, border_color=theme.colors.gold)
         self.watch_card_streak.grid(row=0, column=1, sticky="nsew", padx=3)
 
         self.watch_card_fall = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_card, corner_radius=6,
+            row, fg_color=theme.colors.bg_card_elevated, corner_radius=6,
             border_width=2, border_color=theme.colors.crimson)
         self.watch_card_fall.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
 
@@ -788,7 +788,7 @@ class DashboardScreen(ctk.CTkFrame):
         # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
         self.news_scroll = ctk.CTkScrollableFrame(
             self._scroll,
-            fg_color=theme.colors.bg_card,
+            fg_color=theme.colors.bg_card_elevated,
             corner_radius=6,
             border_width=1,
             border_color=theme.colors.border_subtle,

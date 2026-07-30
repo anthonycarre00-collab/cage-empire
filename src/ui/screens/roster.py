@@ -973,7 +973,7 @@ class RosterScreen(ctk.CTkFrame):
         # border_subtle 1px border, corner_radius=0 for sharp "ledger"
         # edges per UI_REDESIGN_VISUAL_PLAN §4.3.
         table_card = ctk.CTkFrame(
-            self, fg_color=theme.colors.bg_card, corner_radius=0,
+            self, fg_color=theme.colors.bg_card_elevated, corner_radius=0,
             border_width=1, border_color=theme.colors.border_subtle,
         )
         table_card.pack(side="top", fill="both", expand=True,
@@ -1022,7 +1022,7 @@ class RosterScreen(ctk.CTkFrame):
             on_sort_click=self._on_sort_click_new,
             page_size=PAGE_SIZE,
             empty_message="Your roster is empty.",
-            fg_color=theme.colors.bg_card, corner_radius=0,
+            fg_color=theme.colors.bg_card_elevated, corner_radius=0,
         )
         self._fighter_table.pack(side="top", fill="both", expand=True,
                                   padx=1, pady=1)
