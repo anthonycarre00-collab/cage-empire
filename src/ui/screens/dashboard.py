@@ -388,14 +388,21 @@ class DashboardScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_header(self):
-        """Build the H1 title + subtitle ('DASHBOARD' + sim-date)."""
+        """Build the H1 title + subtitle ('THE EMPIRE' + sim-date).
+
+        UI Fix Plan 2 — Phase 3, Fix 2 + Fix 6: the screen H1 title is
+        renamed from 'DASHBOARD' to 'THE EMPIRE' (matches the NAV_GROUPS
+        display name + the Promotion Status card title per the Voice
+        Recommendations table). Screen-name key 'dashboard' is unchanged
+        so state.set_active_screen + refresh registrations still work.
+        """
         theme = get_theme()
 
         # UI Fix Plan 2 — Phase 1, Fix 8: title parents to
         # self._scroll (the scrollable root) so it scrolls with the
         # rest of the dashboard content when the window is short.
         title = ctk.CTkLabel(
-            self._scroll, text="DASHBOARD",
+            self._scroll, text="THE EMPIRE",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
             anchor="w",
         )
@@ -418,18 +425,27 @@ class DashboardScreen(ctk.CTkFrame):
     def _build_top_row(self):
         """Build the two-column top row.
 
+        UI Fix Plan 2 — Phase 3, Fix 4 + Fix 6:
+          - Top Story card gets a crimson accent bar (2px) on the
+            left edge + bg_surface_elevated (pops above other
+            headlines). Headline bumped from h2 to h1. "── OTHER
+            HEADLINES ──" renamed to "More Headlines".
+          - Promotion Status card renamed "PROMOTION STATUS" →
+            "The Empire" (Fix 6). "── YOUR CHAMPIONS ──" renamed
+            "Your Champions".
+
         Layout:
           ┌──────────────────────────┬───────────────────────────────┐
-          │  TOP STORY               │  PROMOTION STATUS             │
-          │  [headline_text]         │  Cash: $50.0M                 │
-          │  [body_text]             │  Reputation: Highly Respected │
-          │                          │  Fan Trust: Strong            │
-          │  ── OTHER HEADLINES ──   │  Roster: 1,002 fighters       │
-          │  ▸ headline 2            │  Champions: 5                 │
-          │  ▸ headline 3            │                               │
-          │  ▸ headline 4            │  ── YOUR CHAMPIONS ──         │
-          │                          │  Heavyweight: J. Cardoso      │
-          │                          │  ...                          │
+          │█ TOP STORY (elevated)    │  THE EMPIRE                   │
+          │█ [h1 headline]           │  Cash: $50.0M                 │
+          │█ [body_text]             │  Reputation: Highly Respected │
+          │█                         │  Fan Trust: Strong            │
+          │█ More Headlines          │  Roster: 1,002 fighters       │
+          │█ ▸ headline 2            │  Champions: 5                 │
+          │█ ▸ headline 3            │                               │
+          │█ ▸ headline 4            │  Your Champions               │
+          │█                         │  Heavyweight: J. Cardoso      │
+          │█                         │  ...                          │
           └──────────────────────────┴───────────────────────────────┘
         """
         theme = get_theme()
@@ -443,31 +459,49 @@ class DashboardScreen(ctk.CTkFrame):
         row.grid_columnconfigure(0, weight=1, uniform="top")
         row.grid_columnconfigure(1, weight=1, uniform="top")
 
-        # ---- LEFT: Top Story + Other Headlines ----
+        # ---- LEFT: Top Story + More Headlines ----
+        # UI Fix Plan 2 — Phase 3, Fix 4: card uses bg_surface_elevated
+        # (pops above other headlines) + a crimson accent bar on the
+        # left edge. The crimson bar is a 2px-wide CTkFrame packed
+        # left inside the card.
         self.top_story_card = ctk.CTkFrame(
-            row, fg_color=theme.colors.bg_surface, corner_radius=8,
+            row, fg_color=theme.colors.bg_surface_elevated,
+            corner_radius=8,
         )
         self.top_story_card.grid(row=0, column=0, sticky="nsew",
                                   padx=(0, 8))
 
-        # Card title (gold H2)
+        # Inner content layout: crimson accent bar (2px) | main content.
+        # The bar spans the full height of the card.
+        self._top_story_accent_bar = ctk.CTkFrame(
+            self.top_story_card, fg_color=theme.colors.crimson,
+            corner_radius=0, width=4,
+        )
+        self._top_story_accent_bar.pack(side="left", fill="y")
+
+        # Main content container (sits to the right of the accent bar).
+        ts_main = ctk.CTkFrame(self.top_story_card, fg_color="transparent")
+        ts_main.pack(side="left", fill="both", expand=True)
+
+        # Card title (gold H2) — kept as "TOP STORY" label (the
+        # headline below is the H1 per Fix 4).
         ts_title = ctk.CTkLabel(
-            self.top_story_card, text="TOP STORY",
-            font=theme.fonts.h2, text_color=theme.colors.gold,
+            ts_main, text="TOP STORY",
+            font=theme.fonts.caption, text_color=theme.colors.gold,
             anchor="w",
         )
-        ts_title.pack(side="top", fill="x", padx=15, pady=(12, 5))
+        ts_title.pack(side="top", fill="x", padx=15, pady=(12, 4))
 
         # Container for the top-story content (headline + body).
-        # Populated by _refresh.
+        # Populated by _refresh. Fix 4 bumps headline from h2 to h1.
         self.top_story_content = ctk.CTkFrame(
-            self.top_story_card, fg_color="transparent",
+            ts_main, fg_color="transparent",
         )
         self.top_story_content.pack(side="top", fill="x", padx=15, pady=(0, 5))
 
-        # "OTHER HEADLINES" sub-title
+        # "More Headlines" sub-title (Fix 4 — was "── OTHER HEADLINES ──")
         oh_title = ctk.CTkLabel(
-            self.top_story_card, text="── OTHER HEADLINES ──",
+            ts_main, text="More Headlines",
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -475,23 +509,45 @@ class DashboardScreen(ctk.CTkFrame):
 
         # Container for the other-headlines list. Populated by _refresh.
         self.other_headlines_content = ctk.CTkFrame(
-            self.top_story_card, fg_color="transparent",
+            ts_main, fg_color="transparent",
         )
         self.other_headlines_content.pack(
             side="top", fill="x", padx=15, pady=(0, 12))
 
-        # ---- RIGHT: Promotion Status + Your Champions ----
+        # ---- RIGHT: The Empire + Your Champions ----
+        # UI Fix Plan 2 — Phase 3, Fix 7: restructured layout. The
+        # promotion logo sits at the top of the card, then the
+        # "The Empire" H2 title, then business stats, then a
+        # "Your Champions" sub-section with gold-bordered champion
+        # rows whose names are HyperlinkLabels (Fix 7).
         self.promo_card = ctk.CTkFrame(
             row, fg_color=theme.colors.bg_surface, corner_radius=8,
         )
         self.promo_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
+        # Top section: promotion logo + "THE EMPIRE" title side-by-side.
+        # Fix 7 + Fix 6: logo at top, title renamed "PROMOTION STATUS"
+        # → "THE EMPIRE".
+        ps_header = ctk.CTkFrame(self.promo_card, fg_color="transparent")
+        ps_header.pack(side="top", fill="x", padx=15, pady=(12, 5))
+
+        # Logo label (60x60). Loaded by _refresh_promotion_status from
+        # src/ui/assets/promo_logos/. Falls back to initials.
+        self._dashboard_promo_logo_label = ctk.CTkLabel(
+            ps_header, text="",
+            width=44, height=44,
+            fg_color=theme.colors.bg_surface_elevated,
+            corner_radius=6,
+            anchor="center",
+        )
+        self._dashboard_promo_logo_label.pack(side="left", padx=(0, 10))
+
         ps_title = ctk.CTkLabel(
-            self.promo_card, text="PROMOTION STATUS",
+            ps_header, text="THE EMPIRE",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
-        ps_title.pack(side="top", fill="x", padx=15, pady=(12, 5))
+        ps_title.pack(side="left", fill="x", expand=True)
 
         # Container for the status rows (cash/rep/trust/roster/champions).
         self.promo_status_content = ctk.CTkFrame(
@@ -500,9 +556,9 @@ class DashboardScreen(ctk.CTkFrame):
         self.promo_status_content.pack(
             side="top", fill="x", padx=15, pady=(0, 5))
 
-        # "YOUR CHAMPIONS" sub-title
+        # "Your Champions" sub-title (Fix 4 — was "── YOUR CHAMPIONS ──")
         yc_title = ctk.CTkLabel(
-            self.promo_card, text="── YOUR CHAMPIONS ──",
+            self.promo_card, text="Your Champions",
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -514,6 +570,11 @@ class DashboardScreen(ctk.CTkFrame):
         )
         self.champions_content.pack(
             side="top", fill="x", padx=15, pady=(0, 12))
+
+        # Dashboard promo logo image reference (kept as attribute so
+        # the GC doesn't drop the underlying Tk image). Loaded by
+        # _refresh_promotion_status.
+        self._dashboard_promo_logo_image = None
 
     # ============================================================
     # SECTION 3 — FIGHTER WATCH (3 cards)
@@ -875,11 +936,13 @@ class DashboardScreen(ctk.CTkFrame):
 
             # ---- TOP STORY card content ----
             if top_story:
-                # Headline text (large, primary color)
+                # Headline text — Fix 4: bumped from h2 to h1 (the
+                # top story is the most prominent piece on the
+                # Dashboard; h1 makes it visually dominant).
                 head_label = ctk.CTkLabel(
                     self.top_story_content,
                     text=top_story["text"] or "Today's top story",
-                    font=theme.fonts.h2,
+                    font=theme.fonts.h1,
                     text_color=theme.colors.text_primary,
                     anchor="w", wraplength=380, justify="left",
                 )
@@ -1023,24 +1086,48 @@ class DashboardScreen(ctk.CTkFrame):
             reputation_voice = _reputation_band(reputation_raw)
             fan_trust_voice = _fan_trust_band(fan_trust_raw)
 
-            # Render the five status rows.
+            # UI Fix Plan 2 — Phase 3, Fix 7: load the promotion logo
+            # into the dashboard's promo logo label. Mirrors the
+            # Roster's logo loader but uses a 44x44 size for the
+            # smaller dashboard card slot.
+            self._refresh_dashboard_promo_logo(conn, promo_id)
+
+            # Render the five status rows. Fix 7: each row gets a
+            # small colored dot indicator on the left (cash=gold,
+            # reputation=gold, fan_trust=success green, roster=steel,
+            # champions=gold). The dots are 10x10 CTkLabel circles
+            # with rounded corners — no image assets needed.
             rows = [
                 ("Cash", _format_cash(cash), theme.colors.gold,
-                 theme.fonts.mono),
+                 theme.fonts.mono, theme.colors.gold),
                 ("Reputation", reputation_voice,
-                 theme.colors.text_primary, theme.fonts.body),
+                 theme.colors.text_primary, theme.fonts.body,
+                 theme.colors.gold),
                 ("Fan Trust", fan_trust_voice,
-                 theme.colors.text_primary, theme.fonts.body),
+                 theme.colors.text_primary, theme.fonts.body,
+                 theme.colors.success),
                 ("Roster", f"{roster_count:,} fighters",
-                 theme.colors.text_primary, theme.fonts.body),
+                 theme.colors.text_primary, theme.fonts.body,
+                 theme.colors.steel),
                 ("Champions", f"{champion_count}",
-                 theme.colors.text_primary, theme.fonts.body),
+                 theme.colors.text_primary, theme.fonts.body,
+                 theme.colors.gold),
             ]
 
-            for label, value, value_color, value_font in rows:
+            for label, value, value_color, value_font, dot_color in rows:
                 row_frame = ctk.CTkFrame(
                     self.promo_status_content, fg_color="transparent")
                 row_frame.pack(side="top", fill="x", pady=2)
+
+                # Colored dot indicator (Fix 7). 10x10 CTkLabel with
+                # rounded corners + the dot_color as fg_color.
+                dot = ctk.CTkLabel(
+                    row_frame, text="",
+                    width=10, height=10,
+                    fg_color=dot_color,
+                    corner_radius=5,
+                )
+                dot.pack(side="left", padx=(0, 8))
 
                 lbl = ctk.CTkLabel(
                     row_frame, text=f"{label}:",
@@ -1059,9 +1146,71 @@ class DashboardScreen(ctk.CTkFrame):
                 val.pack(side="right")
 
                 self._promotion_status_widgets.append(row_frame)
+                self._promotion_status_widgets.append(dot)
         except Exception as e:
             print(f"Warning: promotion-status refresh failed: {e}",
                   flush=True)
+
+    def _refresh_dashboard_promo_logo(self, conn, promo_id):
+        """Load the promotion logo into the Dashboard's logo label (Fix 7).
+
+        Mirrors RosterScreen._refresh_promo_logo but uses a 44x44
+        size for the smaller dashboard card slot. Tries
+        src/ui/assets/promo_logos/<promo_id>_*.png via glob. Falls
+        back to text initials.
+        """
+        try:
+            theme = get_theme()
+            # Query the promo name (needed for the initials fallback).
+            promo_name = "Your Promotion"
+            try:
+                promo_row = conn.execute(
+                    "SELECT name FROM promotions WHERE promotion_id=?",
+                    (promo_id,),
+                ).fetchone()
+                if promo_row and promo_row[0]:
+                    promo_name = promo_row[0]
+            except sqlite3.Error:
+                pass
+
+            # Reuse the Roster's logo loader via a lazy import (avoids
+            # a hard dependency from dashboard.py to roster.py at
+            # module load time).
+            try:
+                from ui.screens.roster import _load_promo_logo
+                pil_img = _load_promo_logo(promo_id, promo_name, size=44)
+            except Exception:
+                pil_img = None
+
+            if pil_img is not None:
+                self._dashboard_promo_logo_image = ctk.CTkImage(
+                    light_image=pil_img, dark_image=pil_img,
+                    size=(44, 44),
+                )
+                self._dashboard_promo_logo_label.configure(
+                    image=self._dashboard_promo_logo_image, text="")
+            else:
+                # Text-initials fallback.
+                initials = self._dashboard_promo_initials(promo_name)
+                self._dashboard_promo_logo_label.configure(
+                    image=None, text=initials,
+                    font=(theme.fonts.h2[0], 18, "bold"),
+                    text_color=theme.colors.gold,
+                )
+        except Exception as e:
+            print(f"Warning: dashboard promo logo refresh failed: {e}",
+                  flush=True)
+
+    @staticmethod
+    def _dashboard_promo_initials(promo_name):
+        """Compute up to 3-letter initials from a promotion name."""
+        if not promo_name:
+            return "?"
+        words = str(promo_name).strip().split()
+        if not words:
+            return "?"
+        initials = "".join(w[0].upper() for w in words if w)[:3]
+        return initials or "?"
 
     # ------------------------------------------------------------
     # Champions list (titles + weight_classes + fighters — game state)
@@ -1073,6 +1222,11 @@ class DashboardScreen(ctk.CTkFrame):
         Per D1: reads from titles + weight_classes + fighters (game
         state — champion names, NOT raw attribute values). Per D9:
         ordered by weight_class display_order (heavyweight first).
+
+        UI Fix Plan 2 — Phase 3, Fix 7: champion names are now
+        HyperlinkLabels (click navigates to Fighter Profile). Each
+        champion row gets a gold left-border accent + a small "★"
+        marker so the section reads as a marquee list.
         """
         try:
             theme = get_theme()
@@ -1088,11 +1242,13 @@ class DashboardScreen(ctk.CTkFrame):
             # Query champions — join titles → weight_classes → fighters.
             # display_order ascending (heavyweight first). Fall back to
             # weight_class_id if display_order is NULL.
+            # Fix 7: also fetch fighter_id so we can wire up the
+            # HyperlinkLabel navigation.
             rows = []
             try:
                 rows = conn.execute(
                     """
-                    SELECT wc.name, f.first_name, f.last_name
+                    SELECT wc.name, f.fighter_id, f.first_name, f.last_name
                     FROM titles t
                     JOIN weight_classes wc
                       ON wc.weight_class_id = t.weight_class_id
@@ -1121,30 +1277,67 @@ class DashboardScreen(ctk.CTkFrame):
                 self._champion_widgets.append(empty_label)
                 return
 
-            for wc_name, first, last in rows:
-                champion_name = f"{first or ''} {last or ''}".strip()
-                row_frame = ctk.CTkFrame(
-                    self.champions_content, fg_color="transparent")
-                row_frame.pack(side="top", fill="x", pady=2)
+            # Lazy import — avoids a hard module-load dependency from
+            # dashboard.py to the hyperlink widget (the dashboard
+            # already loads many widgets; this keeps the import local).
+            from ui.widgets.hyperlink import HyperlinkLabel
 
+            for wc_name, fighter_id, first, last in rows:
+                champion_name = f"{first or ''} {last or ''}".strip()
+                # Fix 7: row card with a thin gold left-border accent.
+                # Implemented as a CTkFrame with border_width + gold
+                # border_color + a slight elevated background so the
+                # row reads as a discrete marquee card.
+                row_frame = ctk.CTkFrame(
+                    self.champions_content,
+                    fg_color=theme.colors.bg_surface_elevated,
+                    corner_radius=4,
+                    border_width=1,
+                    border_color=theme.colors.gold,
+                )
+                row_frame.pack(side="top", fill="x", pady=3, padx=2)
+
+                # Inner padding frame so the labels don't touch the
+                # gold border.
+                inner = ctk.CTkFrame(row_frame, fg_color="transparent")
+                inner.pack(side="top", fill="x", padx=8, pady=4)
+
+                # WC label (gold, left).
                 wc_label = ctk.CTkLabel(
-                    row_frame, text=f"{wc_name or 'Unknown'}:",
-                    font=theme.fonts.body,
+                    inner, text=f"★ {wc_name or 'Unknown'}",
+                    font=theme.fonts.body_small,
                     text_color=theme.colors.gold,
                     anchor="w",
                 )
                 wc_label.pack(side="left", padx=(0, 8))
 
-                name_label = ctk.CTkLabel(
-                    row_frame,
-                    text=(champion_name or "Vacant"),
-                    font=theme.fonts.body,
-                    text_color=theme.colors.text_primary,
-                    anchor="e",
-                )
-                name_label.pack(side="right")
+                # Champion name — HyperlinkLabel (Fix 7). Clicking
+                # navigates to Fighter Profile via the HyperlinkLabel's
+                # built-in handler.
+                if fighter_id is not None and champion_name:
+                    name_link = HyperlinkLabel(
+                        inner,
+                        text=champion_name,
+                        fighter_id=fighter_id,
+                        font=theme.fonts.body,
+                        anchor="e",
+                    )
+                    name_link.pack(side="right")
+                    self._champion_widgets.append(name_link)
+                else:
+                    name_label = ctk.CTkLabel(
+                        inner,
+                        text="Vacant",
+                        font=theme.fonts.body,
+                        text_color=theme.colors.text_tertiary,
+                        anchor="e",
+                    )
+                    name_label.pack(side="right")
+                    self._champion_widgets.append(name_label)
 
                 self._champion_widgets.append(row_frame)
+                self._champion_widgets.append(inner)
+                self._champion_widgets.append(wc_label)
         except Exception as e:
             print(f"Warning: champions refresh failed: {e}", flush=True)
 

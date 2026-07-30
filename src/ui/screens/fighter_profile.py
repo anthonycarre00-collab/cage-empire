@@ -263,6 +263,7 @@ from interpretation.context_engine import (
     decode_phrase,
     compute_trajectory_for_fighter,
     get_trajectory_phrase,
+    get_trajectory_phrase_ext,
 )
 import random
 
@@ -477,7 +478,13 @@ _PORTRAITS_DIR = (Path(__file__).resolve().parent.parent.parent.parent
 
 # Portrait display size (px). Per the brief: "200x200px placeholder
 # at the top-left of the profile".
-_PORTRAIT_SIZE = 200
+# UI Fix Plan 2 — Phase 3, Fix 15 (AD-7): bumped from 200 to 256.
+# 256 is power-of-2 (clean downsample from 512×512 source), reuses
+# across screens (256 hero / 64 watch card / 32 table thumbnail),
+# and gives the portrait more visual weight on the profile (the
+# profile is the hero screen for a fighter — the portrait should
+# feel prominent, not tucked away).
+_PORTRAIT_SIZE = 256
 
 # Palette for the initials-placeholder background. Picked from the
 # Office Mode palette so the placeholders feel branded. The fighter_id
@@ -493,6 +500,29 @@ _PLACEHOLDER_COLORS = [
 ]
 
 
+def _center_crop_square(img):
+    """Crop a PIL image to a centered square (UI Fix Plan 2, Fix 15).
+
+    Takes the min(width, height) as the square side + crops the
+    center. Used before resize so non-square source portraits
+    (e.g., 512×600 uploads) aren't distorted when resized to the
+    square _PORTRAIT_SIZE.
+
+    Defensive — returns the original image on any error (so a bad
+    crop doesn't prevent the portrait from rendering at all).
+    """
+    try:
+        w, h = img.size
+        if w == h:
+            return img  # already square — no crop needed
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        return img.crop((left, top, left + side, top + side))
+    except Exception:
+        return img
+
+
 def _load_portrait_image(fighter_id, first_name, last_name):
     """Load a fighter's portrait image, or generate a placeholder.
 
@@ -502,8 +532,10 @@ def _load_portrait_image(fighter_id, first_name, last_name):
     initials (e.g., "JR" for John Reed). The color is derived from
     the fighter_id (deterministic).
 
-    Returns a PIL.Image (ready to be wrapped in CTkImage), or None
-    if PIL isn't available.
+    UI Fix Plan 2 — Phase 3, Fix 15 (AD-7): portrait size bumped
+    from 200 to 256 + center-crop added before resize (so non-square
+    source images aren't distorted). Returns a PIL.Image (ready to
+    be wrapped in CTkImage), or None if PIL isn't available.
     """
     if not HAS_PIL:
         return None
@@ -514,6 +546,13 @@ def _load_portrait_image(fighter_id, first_name, last_name):
         try:
             img = Image.open(str(portrait_path))
             img = img.convert("RGBA")
+            # UI Fix Plan 2 — Phase 3, Fix 15 (AD-7): center-crop
+            # before resize. Non-square source images (e.g., 512×600
+            # uploads) would be squashed by a direct resize — we
+            # crop the center square first so the portrait isn't
+            # distorted. The crop is min(width, height) × min(width,
+            # height) centered on the image's midpoint.
+            img = _center_crop_square(img)
             img = img.resize((_PORTRAIT_SIZE, _PORTRAIT_SIZE),
                              Image.LANCZOS)
             return img
@@ -892,11 +931,19 @@ class FighterProfileScreen(ctk.CTkFrame):
         missing, file not found, placeholder generation fails), the
         portrait label is hidden + the name takes the full width.
 
+        UI Fix Plan 2 — Phase 3, Fix 15: portrait bumped to 256×256
+        + wrapped in a bordered CTkFrame. The border is gold by
+        default (the brand accent for champion / title / hyperlink
+        affordances) + swaps to crimson when the fighter is a
+        current champion (the title is on the line — visual cue
+        that this fighter holds a belt).
+
         Layout:
           ┌──────────┐  ┌─────────────────────────────────────┐
-          │          │  │  John Reed "Lightning"               │
-          │ Portrait │  │  Lightweight · Alpha Combat · Gym X  │
-          │ 200x200  │  │                                     │
+          │▌        ▐│  │  John Reed "Lightning"               │
+          │▌ Portrait▐│  │  Lightweight · Alpha Combat · Gym X  │
+          │▌  256    ▐│  │                                     │
+          │▌        ▐│  │                                     │
           └──────────┘  └─────────────────────────────────────┘
         """
         theme = get_theme()
@@ -905,15 +952,32 @@ class FighterProfileScreen(ctk.CTkFrame):
         header_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
         header_row.pack(side="top", fill="x", padx=20, pady=(10, 0))
 
-        # ---- LEFT: Portrait ----
-        self._portrait_label = ctk.CTkLabel(
-            header_row, text="",
-            width=_PORTRAIT_SIZE, height=_PORTRAIT_SIZE,
+        # ---- LEFT: Portrait (Fix 15: gold/crimson bordered frame) ----
+        # The portrait_frame is a CTkFrame with border_width=2 +
+        # border_color=gold. _refresh_header swaps the border to
+        # crimson when the fighter is a current champion. The
+        # portrait_label sits inside the frame + holds the actual
+        # CTkImage.
+        self._portrait_frame = ctk.CTkFrame(
+            header_row,
+            fg_color=theme.colors.bg_surface_elevated,
             corner_radius=8,
+            border_width=2,
+            border_color=theme.colors.gold,  # default; crimson if champ
+            width=_PORTRAIT_SIZE + 4,  # +4 for the 2px border on each side
+            height=_PORTRAIT_SIZE + 4,
+        )
+        self._portrait_frame.pack(side="left", padx=(0, 16), pady=(0, 10))
+        self._portrait_frame.pack_propagate(False)  # respect the fixed size
+
+        self._portrait_label = ctk.CTkLabel(
+            self._portrait_frame, text="",
+            width=_PORTRAIT_SIZE, height=_PORTRAIT_SIZE,
+            corner_radius=6,
             fg_color=theme.colors.bg_surface_elevated,
             anchor="center",
         )
-        self._portrait_label.pack(side="left", padx=(0, 16), pady=(0, 10))
+        self._portrait_label.pack(expand=True)
         # The portrait image is set by _refresh_header. Until then,
         # show a placeholder text "No Image".
         self._portrait_label.configure(text="No Image",
@@ -933,13 +997,20 @@ class FighterProfileScreen(ctk.CTkFrame):
         )
         self._name_label.pack(side="top", fill="x", pady=(0, 4))
 
-        # Subtitle — populated by _refresh.
+        # Subtitle — populated by _refresh. Fix 17: the gym name part
+        # of the subtitle gets a small procedural gym icon next to it
+        # (handled in _refresh_header via the gym_icon widget).
         self._subtitle_label = ctk.CTkLabel(
             name_subtle_container, text="",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
             anchor="w", wraplength=700, justify="left",
         )
         self._subtitle_label.pack(side="top", fill="x")
+
+        # Container for the gym icon + gym name (Fix 17). Built by
+        # _refresh_header so the icon can be regenerated per-fighter.
+        self._gym_icon_label = None
+        self._gym_icon_ctk_image = None
 
     # ============================================================
     # SECTION 3 — IDENTITY BLOCK (6 voice phrases)
@@ -956,24 +1027,44 @@ class FighterProfileScreen(ctk.CTkFrame):
           - NARRATIVE
           - LEGACY
           - TRAJECTORY
+
+        UI Fix Plan 2 — Phase 3, Fix 16: the card now has a 2px
+        crimson left-border accent (a thin CTkFrame packed left
+        inside the card). The accent reads as a visual flag — the
+        identity block is the fighter's "story summary" and the
+        crimson bar makes it pop above the other cards.
         """
         theme = get_theme()
 
-        # Card container
+        # Card container. Fix 16: the card is a horizontal layout —
+        # crimson accent bar (left) + content (right).
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_surface,
+            corner_radius=8,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
+        # Crimson accent bar (Fix 16). 3px wide, spans the full card
+        # height. Mirrors the Dashboard's Top Story crimson accent.
+        accent_bar = ctk.CTkFrame(
+            card, fg_color=theme.colors.crimson,
+            corner_radius=0, width=3,
+        )
+        accent_bar.pack(side="left", fill="y")
+
+        # Main content (sits to the right of the accent bar).
+        identity_main = ctk.CTkFrame(card, fg_color="transparent")
+        identity_main.pack(side="left", fill="both", expand=True)
+
         title = ctk.CTkLabel(
-            card, text="IDENTITY",
+            identity_main, text="IDENTITY",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
         title.pack(side="top", fill="x", padx=15, pady=(12, 5))
 
         # Content container — populated by _refresh as a 2-col grid.
-        self._identity_content = ctk.CTkFrame(card, fg_color="transparent")
+        self._identity_content = ctk.CTkFrame(identity_main, fg_color="transparent")
         self._identity_content.pack(side="top", fill="x", padx=15, pady=(0, 12))
 
     # ============================================================
@@ -981,7 +1072,13 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_bio_section(self):
-        """Build the bio section: bio_text from fighter_bios."""
+        """Build the bio section: bio_text from fighter_bios.
+
+        UI Fix Plan 2 — Phase 3, Fix 16: section title renamed from
+        "── BIO ──" to plain "Bio" (drops the ── decoration per the
+        Voice Recommendations table — modern journalistic style
+        doesn't use the ASCII divider).
+        """
         theme = get_theme()
 
         card = ctk.CTkFrame(
@@ -990,7 +1087,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
         title = ctk.CTkLabel(
-            card, text="── BIO ──",
+            card, text="Bio",
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -1004,7 +1101,11 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_career_section(self):
-        """Build the career section: record + streaks + reigns + champ."""
+        """Build the career section: record + streaks + reigns + champ.
+
+        UI Fix Plan 2 — Phase 3, Fix 16: section title renamed from
+        "── CAREER ──" to plain "Career".
+        """
         theme = get_theme()
 
         card = ctk.CTkFrame(
@@ -1013,7 +1114,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
         title = ctk.CTkLabel(
-            card, text="── CAREER ──",
+            card, text="Career",
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -1027,7 +1128,11 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_recent_fights(self):
-        """Build the recent fights section: last 5 fight_history rows."""
+        """Build the recent fights section: last 5 fight_history rows.
+
+        UI Fix Plan 2 — Phase 3, Fix 16: section title renamed from
+        "── RECENT FIGHTS ──" to plain "Recent Fights".
+        """
         theme = get_theme()
 
         card = ctk.CTkFrame(
@@ -1036,7 +1141,7 @@ class FighterProfileScreen(ctk.CTkFrame):
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
         title = ctk.CTkLabel(
-            card, text="── RECENT FIGHTS ──",
+            card, text="Recent Fights",
             font=theme.fonts.h3, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -1373,6 +1478,11 @@ class FighterProfileScreen(ctk.CTkFrame):
         data/portraits/<fighter_id>.png) or generates a placeholder
         with the fighter's initials. The portrait is set on
         self._portrait_label.
+
+        UI Fix Plan 2 — Phase 3, Fix 15: swaps the portrait frame's
+        border to crimson when the fighter is a current champion
+        (visual cue that they hold a belt). Fix 17: prepends a
+        procedural gym icon to the gym-name part of the subtitle.
         """
         try:
             theme = get_theme()
@@ -1385,7 +1495,10 @@ class FighterProfileScreen(ctk.CTkFrame):
             )
 
             # Subtitle: WC · Promo · Gym. Defensive — any missing
-            # component is skipped.
+            # component is skipped. Fix 17: the gym name is preceded
+            # by a small procedural gym icon (handled separately below
+            # via _refresh_gym_icon — the subtitle text itself stays
+            # plain text since CTkLabel can't host an inline image).
             parts = []
             if data.get("wc_name"):
                 wc_label = data["wc_name"]
@@ -1403,7 +1516,7 @@ class FighterProfileScreen(ctk.CTkFrame):
                 text_color=theme.colors.text_secondary,
             )
 
-            # ---- Portrait (UI-POLISH Fix 4) ----
+            # ---- Portrait (UI-POLISH Fix 4 + Phase 3 Fix 15) ----
             # Load the portrait image (or generate an initials
             # placeholder). Wrap in CTkImage + set on the portrait label.
             try:
@@ -1434,8 +1547,77 @@ class FighterProfileScreen(ctk.CTkFrame):
                     font=theme.fonts.display,
                     text_color=theme.colors.text_secondary,
                 )
+
+            # ---- Fix 15: portrait border color (gold → crimson if champ) ----
+            # The champion check queries the titles table for this
+            # fighter. Mirrors the check in _refresh_career (D9).
+            is_champion = False
+            try:
+                champ_row = conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM titles WHERE "
+                    "current_champion_fighter_id=? AND is_vacant=0)",
+                    (data["fighter_id"],),
+                ).fetchone()
+                is_champion = bool(champ_row and champ_row[0] == 1)
+            except sqlite3.Error:
+                pass
+            try:
+                if is_champion:
+                    self._portrait_frame.configure(
+                        border_color=theme.colors.crimson)
+                else:
+                    self._portrait_frame.configure(
+                        border_color=theme.colors.gold)
+            except Exception:
+                pass
+
+            # ---- Fix 17: gym icon next to gym name ----
+            # The gym icon is set as a small CTkImage on the subtitle
+            # label's compound side. CTkLabel supports an `image`
+            # parameter that renders the image to the left of the text
+            # (with compound="left"). The icon is procedural (per
+            # gym_icon.get_gym_icon) — deterministic color from gym_id
+            # hash + white initials.
+            self._refresh_gym_icon(data)
         except Exception as e:
             print(f"Warning: header refresh failed: {e}", flush=True)
+
+    def _refresh_gym_icon(self, data):
+        """Set a procedural gym icon on the subtitle label (Fix 17).
+
+        Uses ui.widgets.gym_icon.get_gym_icon to generate a 20x20
+        octagonal icon with the gym's initials + a deterministic
+        color. Sets it as the subtitle label's `image` with
+        compound="left" so it renders inline with the WC · Promo ·
+        Gym text.
+
+        Defensive — if PIL isn't installed or the gym_id is missing,
+        the icon is cleared (the subtitle text remains, just without
+        the icon prefix).
+        """
+        try:
+            gym_id = data.get("current_gym_id")
+            gym_name = data.get("gym_name")
+            if gym_id is None or not gym_name:
+                # No gym — clear any previously-set icon.
+                self._subtitle_label.configure(image=None)
+                self._gym_icon_ctk_image = None
+                return
+            try:
+                from ui.widgets.gym_icon import get_gym_icon
+                icon = get_gym_icon(gym_id, gym_name, size=20)
+            except Exception:
+                icon = None
+            if icon is not None:
+                self._gym_icon_ctk_image = icon
+                self._subtitle_label.configure(
+                    image=icon, compound="left")
+            else:
+                # PIL not available — clear the icon.
+                self._subtitle_label.configure(image=None)
+                self._gym_icon_ctk_image = None
+        except Exception as e:
+            print(f"Warning: gym icon refresh failed: {e}", flush=True)
 
     # ------------------------------------------------------------
     # Identity block — 6 voice phrases
@@ -1468,7 +1650,10 @@ class FighterProfileScreen(ctk.CTkFrame):
                     # Use a seeded RNG for deterministic phrase selection
                     # (so the same fighter always shows the same phrase).
                     rng = random.Random(data["fighter_id"])
-                    trajectory_phrase = get_trajectory_phrase(
+                    # UI Fix Plan 2 — Phase 3, Fix 19: use the EXTENDED
+                    # picker (8 variants) so the player sees the modern
+                    # MMA journalism voice on the trajectory phrase too.
+                    trajectory_phrase = get_trajectory_phrase_ext(
                         trajectory_label, rng)
             except Exception as e:
                 print(f"Warning: trajectory computation failed: {e}",
@@ -1606,20 +1791,23 @@ class FighterProfileScreen(ctk.CTkFrame):
                 print(f"Warning: titles query failed: {e}", flush=True)
 
             # Row 1: CHAMPION badge (only if champion).
+            # UI Fix Plan 2 — Phase 3, Fix 16: the badge is now BIG
+            # — H2 font, full-width, gold background, ~60px tall. It
+            # reads as a marquee banner at the top of the career
+            # section (the most important fact about the fighter).
             if is_champion:
-                badge_row = ctk.CTkFrame(
-                    self._career_content, fg_color="transparent")
-                badge_row.pack(side="top", fill="x", pady=(0, 8))
-
                 for title_id, wc_name, promo_name in champion_titles:
                     badge = ctk.CTkLabel(
-                        badge_row,
+                        self._career_content,
                         text=f"★ CHAMPION — {wc_name} ({promo_name})",
-                        font=theme.fonts.h3,
-                        text_color=theme.colors.gold,
-                        anchor="w",
+                        font=theme.fonts.h2,
+                        text_color=theme.colors.bg_base,
+                        fg_color=theme.colors.gold,
+                        corner_radius=6,
+                        height=60,
+                        anchor="center",
                     )
-                    badge.pack(side="top", fill="x")
+                    badge.pack(side="top", fill="x", pady=(0, 8))
                     self._career_widgets.append(badge)
 
             # Row 2: Record + Win streak + Loss streak + Title reigns.
@@ -1670,6 +1858,13 @@ class FighterProfileScreen(ctk.CTkFrame):
         Per D8: each fight is a row:
           [W/L] vs Opponent Name (result_type, R{round}) · date
         The W/L badge is colored. Fights ordered most-recent-first.
+
+        UI Fix Plan 2 — Phase 3, Fix 16: each fight is now its own
+        row card with bg_surface_elevated (was a transparent row
+        inside the parent card). The W/L badge is a 24×24 colored
+        CIRCLE (was a text label " W " — the new circle reads as a
+        proper outcome badge like a sports app). Colors: gold for
+        Win, crimson for Loss, steel for Draw.
         """
         try:
             theme = get_theme()
@@ -1708,25 +1903,44 @@ class FighterProfileScreen(ctk.CTkFrame):
 
             for (event_date, outcome, result_type, finish_round,
                  title_at_stake, opp_first, opp_last, opp_nick) in rows:
-                row_frame = ctk.CTkFrame(
-                    self._fights_content, fg_color="transparent")
-                row_frame.pack(side="top", fill="x", pady=2)
+                # Fix 16: each fight is its own row card with
+                # bg_surface_elevated + a subtle border. Reads as a
+                # discrete fight entry (vs. the old transparent row
+                # which blended into the parent card).
+                row_card = ctk.CTkFrame(
+                    self._fights_content,
+                    fg_color=theme.colors.bg_surface_elevated,
+                    corner_radius=6,
+                )
+                row_card.pack(side="top", fill="x", pady=3, padx=2)
 
-                # Outcome badge (W/L/D)
+                # Inner padding frame so the badge + labels don't
+                # touch the card border.
+                inner = ctk.CTkFrame(row_card, fg_color="transparent")
+                inner.pack(side="top", fill="x", padx=10, pady=6)
+
+                # Outcome badge (W/L/D) — Fix 16: 24×24 colored circle.
+                # Implemented as a CTkLabel with the badge color as
+                # fg_color + corner_radius=12 (half of 24 = full circle).
+                # The badge text (W/L/D) is rendered in the bg_base
+                # color so it's high-contrast against the colored circle.
                 badge_text, badge_color = _outcome_badge(outcome)
                 badge = ctk.CTkLabel(
-                    row_frame, text=f" {badge_text} ",
-                    font=theme.fonts.h3,
-                    text_color=badge_color,
-                    anchor="center", width=30,
+                    inner, text=badge_text,
+                    font=(theme.fonts.body_small[0],
+                          theme.fonts.body_small[1], "bold"),
+                    text_color=theme.colors.bg_base,
+                    fg_color=badge_color,
+                    corner_radius=12,
+                    width=24, height=24,
                 )
-                badge.pack(side="left", padx=(0, 8))
+                badge.pack(side="left", padx=(0, 10))
                 self._fights_widgets.append(badge)
 
                 # Opponent name
                 opp_name = _format_name(opp_first, opp_last, opp_nick)
                 opp_label = ctk.CTkLabel(
-                    row_frame, text=f"vs {opp_name}",
+                    inner, text=f"vs {opp_name}",
                     font=theme.fonts.body,
                     text_color=theme.colors.text_primary,
                     anchor="w",
@@ -1745,7 +1959,7 @@ class FighterProfileScreen(ctk.CTkFrame):
                     # as "Decision (R3)"
                     result_label_str = f"Decision (R{finish_round})"
                 result_label = ctk.CTkLabel(
-                    row_frame, text=f"({result_label_str})",
+                    inner, text=f"({result_label_str})",
                     font=theme.fonts.body,
                     text_color=theme.colors.text_secondary,
                     anchor="w",
@@ -1756,7 +1970,7 @@ class FighterProfileScreen(ctk.CTkFrame):
                 # Title at stake marker
                 if title_at_stake:
                     title_marker = ctk.CTkLabel(
-                        row_frame, text="★ TITLE",
+                        inner, text="★ TITLE",
                         font=theme.fonts.caption,
                         text_color=theme.colors.gold,
                         anchor="w",
@@ -1767,7 +1981,7 @@ class FighterProfileScreen(ctk.CTkFrame):
                 # Date (right-aligned)
                 date_str = str(event_date)[:10] if event_date else ""
                 date_label = ctk.CTkLabel(
-                    row_frame, text=f"· {date_str}",
+                    inner, text=f"· {date_str}",
                     font=theme.fonts.caption,
                     text_color=theme.colors.text_tertiary,
                     anchor="e",
@@ -1775,7 +1989,8 @@ class FighterProfileScreen(ctk.CTkFrame):
                 date_label.pack(side="right")
                 self._fights_widgets.append(date_label)
 
-                self._fights_widgets.append(row_frame)
+                self._fights_widgets.append(row_card)
+                self._fights_widgets.append(inner)
         except Exception as e:
             print(f"Warning: recent fights refresh failed: {e}",
                   flush=True)

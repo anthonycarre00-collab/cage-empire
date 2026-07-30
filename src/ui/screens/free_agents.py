@@ -404,11 +404,18 @@ class FreeAgentsScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_header(self):
-        """Build the H1 title + subtitle ('FREE AGENTS' + count)."""
+        """Build the H1 title + subtitle ('OPEN MARKET' + count).
+
+        UI Fix Plan 2 — Phase 3, Fix 12 + Fix 2: H1 title renamed from
+        'FREE AGENTS' to 'OPEN MARKET' to match the NAV_GROUPS display
+        name + the plan's Voice Recommendations table. The screen-name
+        key 'free_agents' is unchanged so state.set_active_screen +
+        refresh registrations still work.
+        """
         theme = get_theme()
 
         title = ctk.CTkLabel(
-            self, text="FREE AGENTS",
+            self, text="OPEN MARKET",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
             anchor="w",
         )

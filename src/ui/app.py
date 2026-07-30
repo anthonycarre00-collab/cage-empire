@@ -74,11 +74,18 @@ except ImportError:
 # NAVIGATION CONFIG
 # ============================================================
 
+# UI Fix Plan 2 — Phase 3, Fix 2 (voice renames):
+# Display names updated to match the CAGE EMPIRE gritty
+# journalism voice per the plan's Voice Recommendations table.
+# The screen_name KEYS are unchanged ("dashboard", "roster", etc.)
+# so every state.set_active_screen call, refresh registration, and
+# nav button command continues to work without code changes —
+# only the player-visible label text is renamed.
 NAV_GROUPS = [
     ("HOME", [
-        ("dashboard", "Dashboard", "home"),
-        ("schedule", "Schedule", "calendar"),
-        ("news", "News Feed", "news"),
+        ("dashboard", "The Empire", "home"),
+        ("schedule", "Calendar", "calendar"),
+        ("news", "The Wire", "news"),
     ]),
     # UI Fix Plan 2 — Phase 1, Fix 18 (AD-3): "Fighter Profile"
     # removed from the FIGHTERS nav group. The screen stays
@@ -91,28 +98,28 @@ NAV_GROUPS = [
     # matches the AD-3 architecture decision: "Accessible only via
     # hyperlinks from Roster, Open Market, Dashboard, etc."
     ("FIGHTERS", [
-        ("roster", "Roster", "roster"),
-        ("free_agents", "Free Agents", "free_agents"),
+        ("roster", "The Stable", "roster"),
+        ("free_agents", "Open Market", "free_agents"),
         ("scouting", "Scouting", "scouting"),
-        ("hall_of_fame", "Hall of Fame", "hof"),
+        ("hall_of_fame", "Legends", "hof"),
     ]),
     ("EVENTS", [
-        ("event_builder", "Event Builder", "event_builder"),
+        ("event_builder", "Build a Card", "event_builder"),
         ("matchmaking", "Matchmaking", "matchmaking"),
-        ("fight_resolution", "Fight Resolution", "fight"),
-        ("past_events", "Past Events", "past_events"),
+        ("fight_resolution", "Fight Night", "fight"),
+        ("past_events", "The Archive", "past_events"),
     ]),
     ("BUSINESS", [
-        ("finance", "Finance", "finance"),
-        ("contracts", "Contracts", "contracts"),
-        ("rival_promotions", "Rival Promotions", "rivals"),
-        ("gyms", "Gyms", "gyms"),
+        ("finance", "The Books", "finance"),
+        ("contracts", "Deals", "contracts"),
+        ("rival_promotions", "The Competition", "rivals"),
+        ("gyms", "Training Camps", "gyms"),
     ]),
     ("WORLD", [
-        ("rankings", "Rankings", "rankings"),
-        ("titles", "Titles", "titles"),
-        ("rivalries", "Rivalries", "rivalries"),
-        ("records", "Records", "records"),
+        ("rankings", "The Rankings", "rankings"),
+        ("titles", "Belts", "titles"),
+        ("rivalries", "Bad Blood", "rivalries"),
+        ("records", "The Record Book", "records"),
     ]),
     ("SETTINGS", [
         ("settings", "Settings", "settings"),
@@ -831,9 +838,14 @@ class CageEmpireApp(ctk.CTk):
             # queries scouting_reports + the scout list.
             scouting_screen.pack(fill="both", expand=True)
         else:
-            # Show placeholder with screen name
+            # Show placeholder with screen name.
+            # UI Fix Plan 2 — Phase 3, Fix 2: look up the display name
+            # from NAV_GROUPS so the placeholder matches the sidebar
+            # label (e.g., "schedule" → "Calendar", not "Schedule").
+            display_name = self._lookup_nav_display_name(screen_name) \
+                or screen_name.replace('_', ' ').title()
             label = ctk.CTkLabel(self.screen_container,
-                                 text=f"[ {screen_name.replace('_', ' ').title()} ]\n\n"
+                                 text=f"[ {display_name} ]\n\n"
                                       f"This screen will be implemented in a future task.\n"
                                       f"Theme: {theme.name}  ·  DB: {self.db_path.name}",
                                  font=theme.fonts.h1,
@@ -857,6 +869,27 @@ class CageEmpireApp(ctk.CTk):
             self.game_state._active_screen = screen_name
         self._update_sidebar()
         self._update_top_bar()
+
+    # ============================================================
+    # UI Fix Plan 2 — Phase 3, Fix 2: NAV display-name lookup helper.
+    # ============================================================
+    def _lookup_nav_display_name(self, screen_name):
+        """Return the player-visible display name for a screen_name.
+
+        Walks NAV_GROUPS looking for the (screen_name, display_name,
+        icon) tuple whose first element matches. Returns None if the
+        screen_name isn't in any nav group (e.g., "fighter_profile"
+        which was hidden per Fix 18 — callers should fall back to
+        title-casing the screen_name in that case).
+        """
+        try:
+            for _group_name, screens in NAV_GROUPS:
+                for sname, display_name, _icon in screens:
+                    if sname == screen_name:
+                        return display_name
+        except Exception:
+            pass
+        return None
 
     # ============================================================
     # BOTTOM BAR

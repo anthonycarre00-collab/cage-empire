@@ -217,14 +217,30 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
 """
 
 import sqlite3
+from pathlib import Path
 
 import customtkinter as ctk
 import tkinter.ttk as ttk
+
+# PIL is used for the promotion logo load + resize (Fix 9). Falls
+# back gracefully if PIL isn't installed (the logo label shows text
+# initials instead).
+try:
+    from PIL import Image as _PIL_Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 from ui.theme import get_theme
 from ui.state import get_state
 from ui.voice_display import title_case_phrase, display_phrase, \
     display_attr_descriptor
+
+# UI Fix Plan 2 — Phase 3, Fix 11 (AD-5): the new FighterTable widget
+# replaces the ttk.Treeview. Imported unconditionally — the USE_TREEVIEW
+# flag below controls which is actually built/used, but the import is
+# safe (the widget module has no side effects).
+from ui.widgets.fighter_table import FighterTable, Column
 
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
@@ -233,11 +249,29 @@ from interpretation.context_engine import decode_phrase
 
 
 # ============================================================
+# PROMOTION LOGO PATH (Fix 9)
+# ============================================================
+# Logos live at src/ui/assets/promo_logos/<promotion_id>_<slug>.png.
+# The slug is the promotion name lowercased with underscores (e.g.,
+# "alpha_combat_federation"). We resolve the logo at refresh time by
+# globbing for "<promo_id>_*.png" — robust against slug renames.
+_PROMO_LOGOS_DIR = (Path(__file__).resolve().parent.parent
+                    / "assets" / "promo_logos")
+
+
+# ============================================================
 # CONSTANTS
 # ============================================================
 
 # Page size — per the brief: "show 20 at a time".
 PAGE_SIZE = 20
+
+# UI Fix Plan 2 — Phase 3, Fix 11 (AD-5):
+# USE_TREEVIEW = False → use the new FighterTable widget (CTk-based,
+# supports HyperlinkLabels + rich per-cell content). Set to True to
+# fall back to the legacy ttk.Treeview (kept as a safety net in case
+# the new widget has issues on a specific platform).
+USE_TREEVIEW = False
 
 # Treeview column identifiers. The "Name" column uses the Treeview's
 # inherent `#0` column (the tree column) — we hide the tree display
@@ -273,6 +307,203 @@ COLUMN_WIDTHS = {
 }
 
 
+# UI Fix Plan 2 — Phase 3, Fix 11b + 11c: new column set for the
+# FighterTable widget. The legacy Treeview keeps the old 6 columns
+# (Name/WC/Career Phase/Momentum/Record/Narrative); the new
+# FighterTable uses 6 columns with the renamed + restructured layout:
+#   Name | Age | WC | Stage | Form | Record
+# Changes per the plan:
+#   - "Career Phase" → "Stage" (short phrases, not long-form)
+#   - "Momentum" → "Form" (short phrases)
+#   - "Narrative" column removed entirely (discover on Fighter Profile)
+#   - Age added as the 2nd column (computed from DOB + sim date)
+#   - WC abbreviated (HW, LHW, MW, WW, LW, FW, BW, FlyW, WSW, WBW,
+#     WFlyW, WFW, WAW) — full name still on Fighter Profile
+#   - Name column drops the nickname (first + last only) — the
+#     nickname is still on Fighter Profile
+NEW_COL_NAME = "name"
+NEW_COL_AGE = "age"
+NEW_COL_WC = "wc"
+NEW_COL_STAGE = "stage"
+NEW_COL_FORM = "form"
+NEW_COL_RECORD = "record"
+
+NEW_COLUMN_LABELS = {
+    NEW_COL_NAME: "Name",
+    NEW_COL_AGE: "Age",
+    NEW_COL_WC: "WC",
+    NEW_COL_STAGE: "Stage",
+    NEW_COL_FORM: "Form",
+    NEW_COL_RECORD: "Record",
+}
+
+NEW_COLUMN_WIDTHS = {
+    NEW_COL_NAME: 220,
+    NEW_COL_AGE: 50,
+    NEW_COL_WC: 60,
+    NEW_COL_STAGE: 160,
+    NEW_COL_FORM: 130,
+    NEW_COL_RECORD: 80,
+}
+
+NEW_COLUMN_ANCHORS = {
+    NEW_COL_NAME: "w",
+    NEW_COL_AGE: "center",
+    NEW_COL_WC: "center",
+    NEW_COL_STAGE: "w",
+    NEW_COL_FORM: "w",
+    NEW_COL_RECORD: "center",
+}
+
+
+# ============================================================
+# UI Fix Plan 2 — Phase 3, Fix 11b: WC abbreviation map.
+# ============================================================
+# Full weight class name → 2-4 letter abbreviation. Covers the 13
+# weight classes in the CAGE EMPIRE world DB (per
+# scripts/group_b_populate_wcs.py):
+#   Men:  HW, LHW, MW, WW, LW, FW, BW, FlyW
+#   Women: WSW, WBW, WFlyW, WFW, WAW
+# Defensive — unknown weight classes fall back to the first 3 letters
+# of the name uppercased.
+_WC_ABBREVIATIONS = {
+    # Men's
+    "heavyweight": "HW",
+    "light heavyweight": "LHW",
+    "middleweight": "MW",
+    "welterweight": "WW",
+    "lightweight": "LW",
+    "featherweight": "FW",
+    "bantamweight": "BW",
+    "flyweight": "FlyW",
+    # Women's
+    "women's strawweight": "WSW",
+    "women's bantamweight": "WBW",
+    "women's flyweight": "WFlyW",
+    "women's featherweight": "WFW",
+    "women's atomweight": "WAW",
+}
+
+
+def _abbreviate_wc(wc_name):
+    """Abbreviate a weight class name for compact table display.
+
+    Per Fix 11b: the Roster table shows abbreviated weight classes
+    (HW, LHW, MW, etc.) instead of full names — saves horizontal
+    space for the new Age + Stage + Form columns. The full name is
+    still shown on the Fighter Profile.
+
+    Defensive — unknown names fall back to the first 3 letters of
+    the name uppercased (so newly-added weight classes don't break
+    the table).
+    """
+    if not wc_name:
+        return ""
+    key = str(wc_name).strip().lower()
+    if key in _WC_ABBREVIATIONS:
+        return _WC_ABBREVIATIONS[key]
+    # Fallback: first 3 letters uppercased.
+    return str(wc_name).strip()[:3].upper()
+
+
+# ============================================================
+# UI Fix Plan 2 — Phase 3, Fix 11c: short phrases for Stage + Form.
+# ============================================================
+# The Treeview showed the full decoded voice phrase (e.g., "A Surging
+# Contender With the Division on Notice"). The new FighterTable shows
+# a short, punchy label (e.g., "Rising Contender") per the plan.
+# These are deterministic per canonical label (no RNG variants) so
+# the table reads consistently + saves horizontal space.
+
+# Map canonical career_phase label → short Stage phrase.
+_STAGE_SHORT_PHRASES = {
+    "prospect": "Prospect",
+    "rising_contender": "Rising Contender",
+    "champion": "Champion",
+    "veteran": "Veteran",
+    "gatekeeper": "Gatekeeper",
+    "declining": "Declining",
+}
+
+# Map canonical momentum label → short Form phrase.
+_FORM_SHORT_PHRASES = {
+    "very_high": "Blazing Hot",
+    "high": "Heating Up",
+    "stable": "Steady",
+    "falling": "Cooling Off",
+    "collapsing": "Free Fall",
+}
+
+
+def _stage_short_phrase(stored_value):
+    """Decode a career_phase cache value to a short Stage phrase.
+
+    Args:
+        stored_value: the raw "label||phrase" cache column value
+            (e.g., "rising_contender||a surging contender...").
+
+    Returns:
+        Short phrase like "Rising Contender", or "(Uncached)" if the
+        stored value is NULL / unrecognized.
+    """
+    if not stored_value or "||" not in str(stored_value):
+        return "(Uncached)"
+    label = str(stored_value).split("||", 1)[0]
+    return _STAGE_SHORT_PHRASES.get(label, "(Uncached)")
+
+
+def _form_short_phrase(stored_value):
+    """Decode a momentum cache value to a short Form phrase.
+
+    Args:
+        stored_value: the raw "label||phrase" cache column value
+            (e.g., "high||riding a hot streak").
+
+    Returns:
+        Short phrase like "Heating Up", or "(Uncached)" if the
+        stored value is NULL / unrecognized.
+    """
+    if not stored_value or "||" not in str(stored_value):
+        return "(Uncached)"
+    label = str(stored_value).split("||", 1)[0]
+    return _FORM_SHORT_PHRASES.get(label, "(Uncached)")
+
+
+# ============================================================
+# UI Fix Plan 2 — Phase 3, Fix 11b: age computation.
+# ============================================================
+def _compute_age_from_dob(dob_str, sim_date_str):
+    """Compute a fighter's age as of the sim date.
+
+    Mirrors interpretation.context_engine._compute_age but lives here
+    so the Roster doesn't need to import the interpretation layer
+    (keeps the UI/interpretation boundary clean per §17.1). Defensive
+    — returns "" on any parse failure (so the Age column shows blank
+    instead of crashing the table on a fighter with bad DOB data).
+
+    Args:
+        dob_str: ISO date string (e.g., "1998-04-15") from
+            fighters.date_of_birth.
+        sim_date_str: ISO date string from simulation_clock.current_date.
+
+    Returns:
+        Age as a string (e.g., "28"), or "" if either date is missing
+        or unparseable.
+    """
+    if not dob_str or not sim_date_str:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        dob = _dt.strptime(str(dob_str)[:10], "%Y-%m-%d")
+        cur = _dt.strptime(str(sim_date_str)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return ""
+    age = cur.year - dob.year
+    if (cur.month, cur.day) < (dob.month, dob.day):
+        age -= 1
+    return str(age)
+
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -306,6 +537,57 @@ def _format_name(first, last, nickname):
         nick = str(nickname).strip()
         name += f' "{nick}"'
     return name
+
+
+def _format_name_short(first, last):
+    """Format a fighter's name as 'First Last' (no nickname).
+
+    UI Fix Plan 2 — Phase 3, Fix 11b: the new FighterTable's Name
+    column drops the nickname (the table is data-dense; nicknames
+    clutter the column). The nickname is still shown on the Fighter
+    Profile. This helper exists separately from _format_name so the
+    Treeview fallback (which keeps the nickname) continues to work.
+
+    Defensive — None components are skipped.
+    """
+    parts = []
+    if first:
+        parts.append(str(first).strip())
+    if last:
+        parts.append(str(last).strip())
+    return " ".join(parts).strip() or "Unknown"
+
+
+def _load_promo_logo(promo_id, promo_name, size=60):
+    """Load + resize a promotion logo for the Roster header (Fix 9).
+
+    Resolves src/ui/assets/promo_logos/<promo_id>_*.png via glob (so
+    slug renames don't break the lookup). Resizes to `size`x`size`
+    via PIL LANCZOS. Returns a PIL.Image (caller wraps in CTkImage),
+    or None if the file isn't found / PIL isn't available.
+
+    Args:
+        promo_id: int — the promotion_id from the DB.
+        promo_name: str — the promotion name, used for the text-
+            initials fallback if the logo file isn't found.
+        size: target size in px (default 60 — matches the header
+            logo slot in _build_header).
+    """
+    if not HAS_PIL or promo_id is None:
+        return None
+    try:
+        # Glob for "<promo_id>_*.png" — robust against slug renames.
+        matches = list(_PROMO_LOGOS_DIR.glob(f"{int(promo_id)}_*.png"))
+        if not matches:
+            return None
+        img = _PIL_Image.open(str(matches[0]))
+        img = img.convert("RGBA")
+        img = img.resize((size, size), _PIL_Image.LANCZOS)
+        return img
+    except Exception as e:
+        print(f"Warning: promo logo load failed for promo {promo_id}: {e}",
+              flush=True)
+        return None
 
 
 def _format_record(wins, losses, draws):
@@ -420,6 +702,27 @@ class RosterScreen(ctk.CTkFrame):
         self._search_entry = None
         self._empty_label = None
 
+        # UI Fix Plan 2 — Phase 3, Fix 11 (AD-5): the new FighterTable
+        # widget. Built by _build_table when USE_TREEVIEW is False.
+        # Holds the row data the FighterTable renders (replaces the
+        # Treeview's insert/clear cycle with set_rows).
+        self._fighter_table = None
+
+        # UI Fix Plan 2 — Phase 3, Fix 9: promotion logo image
+        # reference. Kept as an attribute so the GC doesn't drop the
+        # underlying Tk image (Tk images are referenced by name, not
+        # Python refcount). Built by _refresh_subtitle (which has the
+        # promo_id needed to resolve the logo file).
+        self._promo_logo_ctk_image = None
+        # Per-Fix-9 promotion name cache (so we don't re-query for
+        # the logo fallback text initials on every refresh).
+        self._cached_promo_name = None
+
+        # UI Fix Plan 2 — Phase 3, Fix 11b: cached sim date string
+        # (used for age computation in _render_table_new). Refreshed
+        # by _refresh before rendering the table.
+        self._sim_date_str = None
+
         # Build the static structure. Dynamic content (Treeview rows,
         # pagination label, weight-class dropdown values) is rendered
         # by _refresh.
@@ -439,25 +742,54 @@ class RosterScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_header(self):
-        """Build the H1 title + subtitle ('ROSTER' + promotion + count)."""
+        """Build the H1 title + subtitle ('THE STABLE' + promotion + count).
+
+        UI Fix Plan 2 — Phase 3, Fix 2: H1 title renamed from 'ROSTER'
+        to 'THE STABLE' to match the NAV_GROUPS display name + the
+        plan's Voice Recommendations table. The screen-name key
+        'roster' is unchanged so state.set_active_screen + refresh
+        registrations still work.
+        """
         theme = get_theme()
 
+        # Header row: title + optional promotion logo (Fix 9).
+        header_row = ctk.CTkFrame(self, fg_color="transparent")
+        header_row.pack(side="top", fill="x", padx=20, pady=(10, 0))
+
+        # ---- Promotion logo (Fix 9) ----
+        # Small 60x60 logo loaded from src/ui/assets/promo_logos/.
+        # Falls back to text initials if the logo isn't found. Set on
+        # self._promo_logo_label by _refresh_subtitle (which has the
+        # promo_id needed to resolve the right file).
+        self._promo_logo_label = ctk.CTkLabel(
+            header_row, text="",
+            width=60, height=60,
+            fg_color=theme.colors.bg_surface_elevated,
+            corner_radius=8,
+            anchor="center",
+        )
+        self._promo_logo_label.pack(side="left", padx=(0, 12))
+
+        # Title + subtitle stack on the right of the logo.
+        title_subtitle_stack = ctk.CTkFrame(header_row, fg_color="transparent")
+        title_subtitle_stack.pack(side="left", fill="x", expand=True)
+
         title = ctk.CTkLabel(
-            self, text="ROSTER",
+            title_subtitle_stack, text="THE STABLE",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
             anchor="w",
         )
-        title.pack(side="top", fill="x", padx=20, pady=(10, 0))
+        title.pack(side="top", fill="x")
 
         # Subtitle populated by _refresh (needs promotion name + count
         # from the DB). Kept as an attribute so _refresh can call
         # .configure() on it without recreating.
         self._subtitle_label = ctk.CTkLabel(
-            self, text="Loading roster...",
+            title_subtitle_stack, text="Loading roster...",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
             anchor="w",
         )
-        self._subtitle_label.pack(side="top", fill="x", padx=20, pady=(0, 10))
+        self._subtitle_label.pack(side="top", fill="x", pady=(2, 0))
 
     # ============================================================
     # SECTION 2 — FILTER ROW (weight-class dropdown + search entry)
@@ -558,11 +890,89 @@ class RosterScreen(ctk.CTkFrame):
         self._search_entry.bind("<KeyRelease>", self._on_search_change)
 
     # ============================================================
-    # SECTION 3 — TABLE (ttk.Treeview — D2)
+    # SECTION 3 — TABLE (ttk.Treeview — D2, OR FighterTable — Fix 11)
     # ============================================================
 
     def _build_table(self):
         """Build the roster table.
+
+        UI Fix Plan 2 — Phase 3, Fix 11 (AD-5): branches on
+        USE_TREEVIEW. When False (default), builds the new
+        FighterTable widget (CTk-based, supports HyperlinkLabels).
+        When True, falls back to the legacy ttk.Treeview (kept as a
+        safety net).
+        """
+        if USE_TREEVIEW:
+            self._build_table_treeview()
+        else:
+            self._build_table_new()
+
+    def _build_table_new(self):
+        """Build the new FighterTable-based roster table (Fix 11).
+
+        Replaces the ttk.Treeview with a CTk-based custom widget that
+        supports HyperlinkLabels (Fix 13 — fighter names link to
+        Fighter Profile) + rich per-cell content. See
+        src/ui/widgets/fighter_table.py for the widget architecture.
+
+        Column layout per Fix 11b + 11c:
+          Name (220px, hyperlink) | Age (50px) | WC (60px) |
+          Stage (160px) | Form (130px) | Record (80px)
+
+        The widget lives inside a CTkFrame "table_card" that matches
+        the Dashboard's card aesthetic.
+        """
+        theme = get_theme()
+
+        # Container card — gives the FighterTable a framed surface.
+        table_card = ctk.CTkFrame(
+            self, fg_color=theme.colors.bg_surface, corner_radius=8,
+        )
+        table_card.pack(side="top", fill="both", expand=True,
+                        padx=20, pady=(0, 10))
+
+        # Build the column configs.
+        columns = [
+            Column(NEW_COL_NAME, NEW_COLUMN_LABELS[NEW_COL_NAME],
+                   NEW_COLUMN_WIDTHS[NEW_COL_NAME],
+                   NEW_COLUMN_ANCHORS[NEW_COL_NAME], hyperlink=True),
+            Column(NEW_COL_AGE, NEW_COLUMN_LABELS[NEW_COL_AGE],
+                   NEW_COLUMN_WIDTHS[NEW_COL_AGE],
+                   NEW_COLUMN_ANCHORS[NEW_COL_AGE]),
+            Column(NEW_COL_WC, NEW_COLUMN_LABELS[NEW_COL_WC],
+                   NEW_COLUMN_WIDTHS[NEW_COL_WC],
+                   NEW_COLUMN_ANCHORS[NEW_COL_WC]),
+            Column(NEW_COL_STAGE, NEW_COLUMN_LABELS[NEW_COL_STAGE],
+                   NEW_COLUMN_WIDTHS[NEW_COL_STAGE],
+                   NEW_COLUMN_ANCHORS[NEW_COL_STAGE]),
+            Column(NEW_COL_FORM, NEW_COLUMN_LABELS[NEW_COL_FORM],
+                   NEW_COLUMN_WIDTHS[NEW_COL_FORM],
+                   NEW_COLUMN_ANCHORS[NEW_COL_FORM]),
+            Column(NEW_COL_RECORD, NEW_COLUMN_LABELS[NEW_COL_RECORD],
+                   NEW_COLUMN_WIDTHS[NEW_COL_RECORD],
+                   NEW_COLUMN_ANCHORS[NEW_COL_RECORD]),
+        ]
+
+        # The FighterTable widget itself.
+        self._fighter_table = FighterTable(
+            table_card,
+            columns=columns,
+            on_row_click=self._on_row_click_new,
+            on_row_double_click=self._on_row_double_click_new,
+            on_sort_click=self._on_sort_click_new,
+            page_size=PAGE_SIZE,
+            empty_message="Your roster is empty.",
+            fg_color=theme.colors.bg_surface, corner_radius=0,
+        )
+        self._fighter_table.pack(side="top", fill="both", expand=True,
+                                  padx=1, pady=1)
+
+        # Apply the initial sort indicator (default: insertion order,
+        # no indicator shown — the FighterTable's set_sort_state is
+        # called by _on_sort_click_new on the first header click).
+
+    def _build_table_treeview(self):
+        """Build the legacy ttk.Treeview roster table (fallback).
 
         Uses tkinter.ttk.Treeview (the standard data-table widget for
         Tk). Themed to match the Office dark palette via a custom
@@ -974,16 +1384,110 @@ class RosterScreen(ctk.CTkFrame):
         selected row. Defensive: if no row is selected, no-op (the
         button should be disabled in that case, but defensive).
         """
+        # UI Fix Plan 2 — Phase 3, Fix 11: when using FighterTable,
+        # the selected fighter_id comes from the widget, not the
+        # Treeview. _navigate_to_selected_profile handles both.
         self._navigate_to_selected_profile()
 
-    def _navigate_to_selected_profile(self):
-        """Shared navigation helper — used by double-click + View Profile.
+    # ============================================================
+    # UI Fix Plan 2 — Phase 3, Fix 11: FighterTable handlers.
+    # ============================================================
 
-        Reads the selected fighter_id from the Treeview, calls
-        set_fighter_id on the Fighter Profile screen, then navigates
-        via state.set_active_screen. Defensive against missing
-        selection / unregistered screen.
+    def _on_sort_click_new(self, column_id, reverse):
+        """Handle sort header click from the FighterTable.
+
+        Maps the new column ids (NEW_COL_NAME, NEW_COL_AGE, etc.)
+        to the underlying sort_column value used by _sort_roster.
+        Then triggers _refresh which re-sorts + re-renders.
         """
+        # Map FighterTable column id → self._sort_column value.
+        # We reuse the existing _sort_roster logic by translating
+        # the new column ids to the old ones where possible + adding
+        # new ones (age) for the new path.
+        col_map = {
+            NEW_COL_NAME: "fighter_id",  # name sort falls back to id
+            NEW_COL_AGE: "age",
+            NEW_COL_WC: COL_WC,
+            NEW_COL_STAGE: COL_PHASE,
+            NEW_COL_FORM: COL_MOMENTUM,
+            NEW_COL_RECORD: COL_RECORD,
+        }
+        new_sort = col_map.get(column_id, "fighter_id")
+        if self._sort_column == new_sort:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = new_sort
+            self._sort_reverse = reverse
+        # The FighterTable already updated its sort indicator via
+        # set_sort_state (called internally before on_sort_click).
+        self._refresh()
+
+    def _on_row_click_new(self, fighter_id):
+        """Handle single-click on a FighterTable row.
+
+        Enables the View Profile button so the player can navigate
+        via the button (Fix 13 also makes the fighter name a
+        hyperlink — that fires its own navigation independently).
+        """
+        try:
+            if fighter_id is not None:
+                self._view_profile_button.configure(state="normal")
+            else:
+                self._view_profile_button.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _on_row_double_click_new(self, fighter_id):
+        """Handle double-click on a FighterTable row — navigate to profile.
+
+        Per Fix 13: the fighter name is already a hyperlink that
+        navigates on single-click. Double-click anywhere in the row
+        ALSO navigates (covers players who don't realize the name is
+        a link).
+        """
+        if fighter_id is None:
+            return
+        try:
+            state = get_state()
+            profile_screen = state.get_screen("fighter_profile")
+            if profile_screen is not None and hasattr(
+                    profile_screen, "set_fighter_id"):
+                profile_screen.set_fighter_id(fighter_id)
+            state.set_active_screen("fighter_profile")
+        except ValueError as e:
+            print(f"Warning: navigation to fighter_profile failed: {e}",
+                  flush=True)
+        except Exception as e:
+            print(f"Warning: navigation handler failed: {e}", flush=True)
+
+    def _navigate_to_selected_profile(self):
+        """Shared navigation helper — used by View Profile button.
+
+        UI Fix Plan 2 — Phase 3, Fix 11: when using FighterTable, the
+        selected fighter_id is read from the widget (not the Treeview
+        selection). Falls back to the Treeview path when USE_TREEVIEW
+        is True.
+        """
+        if not USE_TREEVIEW and self._fighter_table is not None:
+            # FighterTable path.
+            fighter_id = self._fighter_table.get_selected_fighter_id()
+            if fighter_id is None:
+                return
+            try:
+                state = get_state()
+                profile_screen = state.get_screen("fighter_profile")
+                if profile_screen is not None and hasattr(
+                        profile_screen, "set_fighter_id"):
+                    profile_screen.set_fighter_id(fighter_id)
+                state.set_active_screen("fighter_profile")
+            except ValueError as e:
+                print(f"Warning: navigation to fighter_profile failed: {e}",
+                      flush=True)
+            except Exception as e:
+                print(f"Warning: navigation handler failed: {e}", flush=True)
+            return
+
+        # Treeview path (legacy).
         try:
             selection = self._treeview.selection()
             if not selection:
@@ -1034,9 +1538,17 @@ class RosterScreen(ctk.CTkFrame):
                 return
             promo_id = state.get_player_promotion_id()
 
+            # UI Fix Plan 2 — Phase 3, Fix 11b: cache the sim date
+            # string for age computation in _render_table_new. Read
+            # once per refresh — used for every row's Age column.
+            self._sim_date_str = self._read_sim_date(conn)
+
             # Re-apply the Treeview style on every refresh so theme-
-            # change refresh picks up new colors (D2, D9).
-            self._apply_treeview_style()
+            # change refresh picks up new colors (D2, D9). Only
+            # applies when USE_TREEVIEW is True (the FighterTable
+            # reads colors at render time, no global style needed).
+            if USE_TREEVIEW:
+                self._apply_treeview_style()
 
             # Populate the weight-class dropdown (D4). Done on every
             # refresh so newly-signed/cut fighters' weight classes
@@ -1055,7 +1567,10 @@ class RosterScreen(ctk.CTkFrame):
                 self._current_page = max(1, total_pages)
 
             # Render the current page of rows.
-            self._render_table()
+            if USE_TREEVIEW:
+                self._render_table()
+            else:
+                self._render_table_new()
             self._refresh_pagination(total_pages)
             self._refresh_subtitle(conn, promo_id, len(self._roster_data))
 
@@ -1070,12 +1585,35 @@ class RosterScreen(ctk.CTkFrame):
         except Exception as e:
             print(f"Warning: RosterScreen._refresh failed: {e}", flush=True)
 
+    def _read_sim_date(self, conn):
+        """Read the current sim date from simulation_clock.
+
+        Used for age computation in _render_table_new. Defensive —
+        returns None on any query failure (the Age column will show
+        blank for all rows, not a crash).
+        """
+        try:
+            row = conn.execute(
+                "SELECT current_date FROM simulation_clock WHERE clock_id=1"
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except sqlite3.Error:
+            pass
+        return None
+
     # ------------------------------------------------------------
     # Subtitle — "Promotion Name (N,NNN fighters)"
     # ------------------------------------------------------------
 
     def _refresh_subtitle(self, conn, promo_id, total_count):
-        """Update the subtitle label with promotion name + count."""
+        """Update the subtitle label with promotion name + count.
+
+        UI Fix Plan 2 — Phase 3, Fix 9: also loads the promotion
+        logo into self._promo_logo_label (60x60 PNG from
+        src/ui/assets/promo_logos/). Falls back to text initials
+        if the logo isn't found or PIL isn't available.
+        """
         try:
             theme = get_theme()
             promo_name = "Your Promotion"
@@ -1095,9 +1633,57 @@ class RosterScreen(ctk.CTkFrame):
                 font=theme.fonts.body,
                 text_color=theme.colors.text_secondary,
             )
+
+            # ---- Promotion logo (Fix 9) ----
+            self._cached_promo_name = promo_name
+            self._refresh_promo_logo(promo_id, promo_name)
         except Exception as e:
             print(f"Warning: roster subtitle refresh failed: {e}",
                   flush=True)
+
+    def _refresh_promo_logo(self, promo_id, promo_name):
+        """Load the promotion logo into the header logo label (Fix 9).
+
+        Tries _load_promo_logo (PIL image resize). On success, wraps
+        in CTkImage + sets on self._promo_logo_label. On failure,
+        shows the promotion's initials (first letter of each word in
+        promo_name, up to 3 chars) as a text fallback.
+        """
+        try:
+            theme = get_theme()
+            pil_img = _load_promo_logo(promo_id, promo_name, size=60)
+            if pil_img is not None:
+                self._promo_logo_ctk_image = ctk.CTkImage(
+                    light_image=pil_img, dark_image=pil_img,
+                    size=(60, 60),
+                )
+                self._promo_logo_label.configure(
+                    image=self._promo_logo_ctk_image, text="")
+            else:
+                # Text-initials fallback.
+                initials = self._promo_initials(promo_name)
+                self._promo_logo_label.configure(
+                    image=None, text=initials,
+                    font=(theme.fonts.h2[0], 22, "bold"),
+                    text_color=theme.colors.gold,
+                )
+        except Exception as e:
+            print(f"Warning: promo logo refresh failed: {e}", flush=True)
+
+    @staticmethod
+    def _promo_initials(promo_name):
+        """Compute up to 3-letter initials from a promotion name.
+
+        "Alpha Combat Federation" → "ACF". "Rival Fight League" →
+        "RFL". Defensive — returns "?" if the name is empty.
+        """
+        if not promo_name:
+            return "?"
+        words = str(promo_name).strip().split()
+        if not words:
+            return "?"
+        initials = "".join(w[0].upper() for w in words if w)[:3]
+        return initials or "?"
 
     # ------------------------------------------------------------
     # Weight-class dropdown
@@ -1262,6 +1848,7 @@ class RosterScreen(ctk.CTkFrame):
             # (raw 0-100 values, §14-protected).
             sql = f"""
                 SELECT f.fighter_id, f.first_name, f.last_name, f.nickname,
+                       f.date_of_birth,
                        wc.name AS weight_class_name,
                        fd.career_phase, fd.momentum, fd.narrative_family,
                        fc.record_wins, fc.record_losses, fc.record_draws
@@ -1281,13 +1868,19 @@ class RosterScreen(ctk.CTkFrame):
             return []
 
         # Build the roster data list.
+        # UI Fix Plan 2 — Phase 3, Fix 11b: also store date_of_birth
+        # so _render_table_new can compute the Age column.
         roster = []
         for r in rows:
-            (fid, first, last, nick, wc_name, phase_stored, mom_stored,
+            (fid, first, last, nick, dob, wc_name, phase_stored, mom_stored,
              narr_stored, wins, losses, draws) = r
             roster.append({
                 "fighter_id": fid,
+                "first_name": first,
+                "last_name": last,
                 "name": _format_name(first, last, nick),
+                "name_short": _format_name_short(first, last),
+                "date_of_birth": dob,
                 "weight_class_name": wc_name or "Unknown",
                 "career_phase_stored": phase_stored,
                 "momentum_stored": mom_stored,
@@ -1313,21 +1906,35 @@ class RosterScreen(ctk.CTkFrame):
         Sort keys:
           - fighter_id (default) → int, ascending
           - name → string, case-insensitive
+          - age → int (computed from DOB + sim date), ascending
           - weight_class_name → string, case-insensitive
           - career_phase → decoded phrase (or "" if None)
           - momentum → decoded phrase (or "" if None)
-          - record → total fights (wins + losses + draws) descending
-            by default — most-experienced first
+          - record → total fights (wins + losses + draws)
           - narrative → decoded phrase (or "" if None)
+
+        UI Fix Plan 2 — Phase 3, Fix 11b: added the "age" sort key for
+        the new FighterTable's Age column. The age is computed from
+        date_of_birth + the cached sim date (self._sim_date_str).
         """
         col = self._sort_column
         reverse = self._sort_reverse
 
         def sort_key(item):
-            if col == "fighter_id" or col == COL_NAME:
-                if col == "fighter_id":
-                    return item["fighter_id"]
+            if col == "fighter_id":
+                return item["fighter_id"]
+            if col == COL_NAME:
                 return item["name"].lower()
+            if col == "age":
+                # UI Fix Plan 2 — Phase 3, Fix 11b: sort by computed
+                # age. Defensive — fighters with bad DOB get age 0
+                # (sorts first ascending, last descending).
+                age_str = _compute_age_from_dob(
+                    item.get("date_of_birth"), self._sim_date_str)
+                try:
+                    return int(age_str) if age_str else 0
+                except (TypeError, ValueError):
+                    return 0
             if col == COL_WC:
                 return item["weight_class_name"].lower()
             if col == COL_PHASE:
@@ -1361,6 +1968,75 @@ class RosterScreen(ctk.CTkFrame):
     # ------------------------------------------------------------
     # Render the table (current page of rows)
     # ------------------------------------------------------------
+
+    def _render_table_new(self):
+        """Render the current page of rows into the FighterTable.
+
+        UI Fix Plan 2 — Phase 3, Fix 11 (AD-5): the new path. Builds
+        a list of row dicts (one per fighter on the current page) +
+        passes them to FighterTable.set_rows. The widget handles the
+        actual widget creation (HyperlinkLabel for the Name column,
+        plain CTkLabel for the others).
+
+        Per Fix 11b: computes Age from date_of_birth + sim date.
+        Per Fix 11c: uses short Stage/Form phrases (not the long-form
+        decoded voice phrases the Treeview used).
+        Per Fix 13: the Name column is a HyperlinkLabel (handled by
+        the FighterTable via the Column(hyperlink=True) config).
+
+        Per D6: empty-state handling — if no rows match the current
+        filter/search, pass an empty list + the appropriate empty
+        message to set_rows.
+        """
+        try:
+            if self._fighter_table is None:
+                return
+
+            # Compute the page slice.
+            start = (self._current_page - 1) * PAGE_SIZE
+            end = start + PAGE_SIZE
+            page_rows = self._roster_data[start:end]
+
+            if not page_rows:
+                # Empty state (D6). Pass an empty list + the
+                # appropriate empty message based on WHY the roster
+                # is empty.
+                empty_msg = self._empty_state_message()
+                self._fighter_table.set_rows([], empty_message=empty_msg)
+                return
+
+            # Build the row dicts for the FighterTable.
+            rows = []
+            for fighter in page_rows:
+                # Per Fix 11b: compute age from DOB + sim date.
+                age_str = _compute_age_from_dob(
+                    fighter.get("date_of_birth"), self._sim_date_str)
+                # Per Fix 11b: abbreviate weight class.
+                wc_abbr = _abbreviate_wc(fighter["weight_class_name"])
+                # Per Fix 11c: short Stage + Form phrases.
+                stage_phrase = _stage_short_phrase(
+                    fighter["career_phase_stored"])
+                form_phrase = _form_short_phrase(
+                    fighter["momentum_stored"])
+                record_str = _format_record(
+                    fighter["record_wins"],
+                    fighter["record_losses"],
+                    fighter["record_draws"],
+                )
+                rows.append({
+                    "fighter_id": fighter["fighter_id"],
+                    NEW_COL_NAME: fighter["name_short"],
+                    NEW_COL_AGE: age_str,
+                    NEW_COL_WC: wc_abbr,
+                    NEW_COL_STAGE: stage_phrase,
+                    NEW_COL_FORM: form_phrase,
+                    NEW_COL_RECORD: record_str,
+                })
+
+            self._fighter_table.set_rows(rows)
+        except Exception as e:
+            print(f"Warning: roster table render (new) failed: {e}",
+                  flush=True)
 
     def _render_table(self):
         """Render the current page of rows into the Treeview.
