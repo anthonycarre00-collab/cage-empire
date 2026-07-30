@@ -800,17 +800,22 @@ class FighterProfileScreen(ctk.CTkFrame):
     # ============================================================
 
     def _build_back_button(self):
-        """Build the '← Back to Roster' button at the top.
+        """Build the '← Back' button at the top.
 
-        Per the brief's mockup: a single back button at the top-left
-        of the screen. Navigates via state.set_active_screen("roster").
+        UI Fix Plan 2 — Phase 1, Fix 14 (AD-2): the button text is now
+        generic ("← Back") instead of "← Back to Roster" because the
+        player may have arrived from Free Agents, Dashboard, or any
+        other screen with a fighter hyperlink. The handler uses
+        GameState.go_back() with a fallback to the Roster if the
+        back-stack is empty (e.g., the player deep-linked to a
+        fighter profile at app startup).
         """
         theme = get_theme()
         back_row = ctk.CTkFrame(self, fg_color="transparent")
         back_row.pack(side="top", fill="x", padx=20, pady=(10, 0))
 
         back_btn = ctk.CTkButton(
-            back_row, text="← Back to Roster",
+            back_row, text="← Back",
             font=theme.fonts.body,
             width=160, height=28,
             corner_radius=6,
@@ -822,12 +827,36 @@ class FighterProfileScreen(ctk.CTkFrame):
         back_btn.pack(side="left")
 
     def _on_back(self):
-        """Navigate back to the Roster screen."""
+        """Navigate back via GameState.go_back() with Roster fallback.
+
+        UI Fix Plan 2 — Phase 1, Fix 14 (AD-2). Pops the navigation
+        back-stack so the player returns to wherever they came from
+        (Roster, Free Agents, Dashboard, etc.). If the stack is empty
+        (e.g., the player deep-linked to a fighter profile at startup
+        or the stack was cleared), falls back to set_active_screen
+        ("roster") so the back button always goes SOMEWHERE sensible.
+
+        Per the task brief: do NOT swallow exceptions — print the full
+        traceback so the user can see what's wrong if it fails. This
+        is the ONE place in this screen where we surface errors
+        loudly instead of degrading to an empty-state: a broken Back
+        button is a navigation dead-end, which is worse UX than a
+        visible error.
+        """
+        import traceback
         try:
-            get_state().set_active_screen("roster")
-        except (ValueError, Exception) as e:
-            print(f"Warning: navigation back to roster failed: {e}",
+            state = get_state()
+            prev = state.go_back()
+            if prev is None:
+                # Back-stack empty — fall back to Roster so the player
+                # always lands somewhere navigable.
+                state.set_active_screen("roster")
+        except Exception:
+            # Per Fix 14 brief: don't swallow — print full traceback
+            # so the user can see what's wrong if it fails.
+            print("ERROR: FighterProfileScreen._on_back failed:",
                   flush=True)
+            traceback.print_exc()
 
     # ============================================================
     # SECTION 1 — SCROLLABLE ROOT (D4)

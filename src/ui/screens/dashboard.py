@@ -163,6 +163,7 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
 """
 
 import sqlite3
+import calendar
 from datetime import datetime
 
 import customtkinter as ctk
@@ -350,10 +351,26 @@ class DashboardScreen(ctk.CTkFrame):
         self._promotion_status_widgets = []  # Cash/Rep/Trust/Roster/Champions rows
         self._watch_cards = []             # Three Fighter Watch cards
         self._news_widgets = []            # Recent News rows
-        self._subtitle_label = None        # The "Week N, Year N · Promo" subtitle
+        self._subtitle_label = None        # The "Month Year · Promo" subtitle
+
+        # UI Fix Plan 2 — Phase 1, Fix 8: scrollable root container.
+        # The Dashboard's content (header + top row + fighter watch +
+        # news + actions) can exceed the viewport height — especially
+        # the Recent News list when news_items has many rows + the
+        # Fighter Watch cards when their voice phrases wrap. Wrapping
+        # everything in a CTkScrollableFrame ensures the player can
+        # always reach the sections below the fold (per the UI rules:
+        # max height with scroll overflow). Cards inside keep their
+        # own bg_surface background so they read as discrete panels
+        # on top of the transparent scroll frame. The screen's own
+        # fg_color (bg_base) shows through the transparent scroll.
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._scroll.pack(fill="both", expand=True)
 
         # Build the static structure (titles, scrollable containers,
         # action buttons). Dynamic content is rendered by _refresh.
+        # All _build_* methods parent their widgets to self._scroll
+        # (NOT self) so they live inside the scrollable frame.
         self._build_header()
         self._build_top_row()
         self._build_fighter_watch()
@@ -374,8 +391,11 @@ class DashboardScreen(ctk.CTkFrame):
         """Build the H1 title + subtitle ('DASHBOARD' + sim-date)."""
         theme = get_theme()
 
+        # UI Fix Plan 2 — Phase 1, Fix 8: title parents to
+        # self._scroll (the scrollable root) so it scrolls with the
+        # rest of the dashboard content when the window is short.
         title = ctk.CTkLabel(
-            self, text="DASHBOARD",
+            self._scroll, text="DASHBOARD",
             font=theme.fonts.h1, text_color=theme.colors.text_primary,
             anchor="w",
         )
@@ -385,7 +405,7 @@ class DashboardScreen(ctk.CTkFrame):
         # name from the DB). Kept as an attribute so _refresh can
         # call .configure() on it without recreating.
         self._subtitle_label = ctk.CTkLabel(
-            self, text="",
+            self._scroll, text="",
             font=theme.fonts.body, text_color=theme.colors.text_secondary,
             anchor="w",
         )
@@ -416,7 +436,9 @@ class DashboardScreen(ctk.CTkFrame):
 
         # Container — two columns with equal weight, gap via padx.
         # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
-        row = ctk.CTkFrame(self, fg_color="transparent")
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
+        # the top row scrolls with the rest of the dashboard.
+        row = ctk.CTkFrame(self._scroll, fg_color="transparent")
         row.pack(side="top", fill="x", padx=20, pady=(0, 20))
         row.grid_columnconfigure(0, weight=1, uniform="top")
         row.grid_columnconfigure(1, weight=1, uniform="top")
@@ -511,15 +533,17 @@ class DashboardScreen(ctk.CTkFrame):
 
         # Section title (full-width). Per UI-POLISH Fix 7: section
         # spacing bumped to 20px minimum.
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
         fw_section_title = ctk.CTkLabel(
-            self, text="FIGHTER WATCH",
+            self._scroll, text="FIGHTER WATCH",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
         fw_section_title.pack(side="top", fill="x", padx=20, pady=(0, 5))
 
         # Three-column container
-        row = ctk.CTkFrame(self, fg_color="transparent")
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
+        row = ctk.CTkFrame(self._scroll, fg_color="transparent")
         row.pack(side="top", fill="x", padx=20, pady=(0, 20))
         row.grid_columnconfigure(0, weight=1, uniform="watch")
         row.grid_columnconfigure(1, weight=1, uniform="watch")
@@ -563,8 +587,10 @@ class DashboardScreen(ctk.CTkFrame):
         """
         theme = get_theme()
 
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll
+        # so the news section scrolls with the rest of the dashboard.
         news_section_title = ctk.CTkLabel(
-            self, text="RECENT NEWS",
+            self._scroll, text="RECENT NEWS",
             font=theme.fonts.h2, text_color=theme.colors.gold,
             anchor="w",
         )
@@ -574,8 +600,9 @@ class DashboardScreen(ctk.CTkFrame):
         # visible area rather than growing the screen indefinitely
         # (per the UI rules: max height with scroll overflow).
         # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll.
         self.news_scroll = ctk.CTkScrollableFrame(
-            self,
+            self._scroll,
             fg_color=theme.colors.bg_surface,
             corner_radius=8,
             height=200,
@@ -607,7 +634,9 @@ class DashboardScreen(ctk.CTkFrame):
         theme = get_theme()
 
         # Per UI-POLISH Fix 7: section spacing bumped to 20px minimum.
-        actions_row = ctk.CTkFrame(self, fg_color="transparent")
+        # UI Fix Plan 2 — Phase 1, Fix 8: parents to self._scroll so
+        # the action buttons scroll with the rest of the dashboard.
+        actions_row = ctk.CTkFrame(self._scroll, fg_color="transparent")
         actions_row.pack(side="top", fill="x", padx=20, pady=(0, 20))
 
         # Schedule Event — gold accent (primary action).
@@ -717,26 +746,43 @@ class DashboardScreen(ctk.CTkFrame):
                   flush=True)
 
     # ------------------------------------------------------------
-    # Subtitle — "Week N, Year N · Promotion Name"
+    # Subtitle — "Month Year · Promotion Name"
     # ------------------------------------------------------------
 
     def _refresh_subtitle(self, conn, promo_id):
-        """Update the subtitle label with sim-date + promotion name."""
+        """Update the subtitle label with sim-date + promotion name.
+
+        UI Fix Plan 2 — Phase 1, Fix 3 (AD-6): the subtitle now shows
+        "Month Year · Promotion" (e.g., "July 2026 · Alpha Combat
+        Federation") instead of "Week N, Year N · Promotion". Reads
+        current_month + current_year directly from simulation_clock
+        (the same columns services.clock.get_clock returns at indices
+        3 + 4) + formats via calendar.month_name for the human-
+        readable month name.
+        """
         try:
             theme = get_theme()
-            # Sim date from the clock
-            week = "?"
+            # Sim date from the clock — query month + year directly
+            # so we don't depend on get_clock's index ordering.
+            month = None
             year = "?"
             try:
                 clock_row = conn.execute(
-                    "SELECT current_week, current_year "
+                    "SELECT current_month, current_year "
                     "FROM simulation_clock WHERE clock_id=1"
                 ).fetchone()
                 if clock_row:
-                    week = clock_row[0] if clock_row[0] is not None else "?"
+                    month = clock_row[0]
                     year = clock_row[1] if clock_row[1] is not None else "?"
             except sqlite3.Error:
                 pass
+
+            # Resolve month name (1-12 → "January".."December").
+            # calendar.month_name[0] == '' so guard against None /
+            # out-of-range defensively.
+            month_name = ""
+            if isinstance(month, int) and 1 <= month <= 12:
+                month_name = calendar.month_name[month]
 
             # Promotion name
             promo_name = "Your Promotion"
@@ -750,7 +796,14 @@ class DashboardScreen(ctk.CTkFrame):
             except sqlite3.Error:
                 pass
 
-            text = f"Week {week}, Year {year}  ·  {promo_name}"
+            # Format: "July 2026  ·  Alpha Combat Federation"
+            # Falls back to "2026  ·  ..." if month is missing/invalid
+            # so the subtitle still reads sensibly.
+            if month_name:
+                date_part = f"{month_name} {year}"
+            else:
+                date_part = f"{year}"
+            text = f"{date_part}  ·  {promo_name}"
             self._subtitle_label.configure(
                 text=text,
                 font=theme.fonts.body,

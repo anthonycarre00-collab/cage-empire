@@ -353,8 +353,12 @@ class FreeAgentsScreen(ctk.CTkFrame):
         # Fighter Profile and back. See D5, D7, D10.
         self._current_page = 1
         self._weight_class_filter = None  # None = "All Weight Classes"
-        # Per UI-POLISH Fix 2: gender filter. None = "All Genders".
-        self._gender_filter = None
+        # UI Fix Plan 2 — Phase 1, Fix 10: default gender filter to
+        # "male" (was None = "All"). Mirrors the same change in
+        # roster.py for consistency — both screens now show the male
+        # cohort first, with the dropdown available for "Female" /
+        # "All" switching. See roster.py for the full rationale.
+        self._gender_filter = "male"
         self._search_term = ""
         self._sort_column = "fighter_id"  # default: insertion order
         self._sort_reverse = False
@@ -453,7 +457,11 @@ class FreeAgentsScreen(ctk.CTkFrame):
             button_hover_color=theme.colors.steel,
             text_color=theme.colors.text_primary,
         )
-        self._gender_menu.set("All")
+        # UI Fix Plan 2 — Phase 1, Fix 10: default dropdown to "Male"
+        # so the initial view matches _gender_filter="male" set in
+        # __init__. Without this, the dropdown would show "All" while
+        # the actual filter is "male" — confusing desync.
+        self._gender_menu.set("Male")
         self._gender_menu.pack(side="left", padx=(0, 20))
 
         # ---- WEIGHT CLASS dropdown ----

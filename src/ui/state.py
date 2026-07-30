@@ -81,6 +81,15 @@ class GameState:
         self._active_screen = None
         self._theme = "office"
 
+        # UI Fix Plan 2 — Phase 1, Fix 14: navigation back-stack.
+        # Tracks the screen names the player visited BEFORE the current
+        # one so the Fighter Profile's Back button can return the
+        # player to wherever they came from (Roster, Free Agents,
+        # Dashboard, etc.) instead of hard-coding "roster". Cap at 10
+        # entries to bound memory + prevent infinite loops.
+        # See AD-2 in docs/UI_FIX_PLAN_2.md.
+        self._nav_stack = []
+
         # Register for theme change callbacks from ui.theme
         on_theme_change(self._on_theme_changed)
 
@@ -121,11 +130,71 @@ class GameState:
 
         Refreshes the now-active screen (it might have stale data
         from the last time it was visible).
+
+        UI Fix Plan 2 — Phase 1, Fix 14 (AD-2): before flipping the
+        active screen, push the OLD active screen onto `_nav_stack`
+        so `go_back()` can later return the player to where they
+        came from. Skipped when:
+          - there is no old active screen (first navigation)
+          - the new screen is the SAME as the old (re-nav to current)
+        The stack is capped at 10 entries (oldest dropped first) so
+        memory stays bounded + the back history can't grow without
+        limit on long sessions.
         """
         if name not in self._screens:
             raise ValueError(f"Screen '{name}' not registered")
+        # Push the OLD active screen (if any + if different) so the
+        # Fighter Profile's Back button can return the player to
+        # wherever they navigated FROM (Roster, Free Agents,
+        # Dashboard, etc.). See AD-2 in docs/UI_FIX_PLAN_2.md.
+        if (self._active_screen is not None
+                and self._active_screen != name):
+            self._nav_stack.append(self._active_screen)
+            # Cap at 10 — drop the OLDEST entry (FIFO overflow).
+            if len(self._nav_stack) > 10:
+                self._nav_stack.pop(0)
         self._active_screen = name
         self.refresh(name)
+
+    def go_back(self):
+        """Pop the navigation back-stack + navigate to the popped screen.
+
+        UI Fix Plan 2 — Phase 1, Fix 14 (AD-2). Returns the player to
+        the screen they were on BEFORE the current one. Used by the
+        Fighter Profile's Back button so it works no matter where the
+        player came from (Roster, Free Agents, Dashboard, etc.) instead
+        of always returning to the Roster.
+
+        Returns:
+            The screen name navigated to, or None if the back-stack
+            was empty (caller is expected to fall back to a sensible
+            default — typically "roster").
+        """
+        if not self._nav_stack:
+            return None
+        prev = self._nav_stack.pop()
+        # set_active_screen would push the CURRENT screen back onto
+        # the stack — but we just popped, so we want a one-way back
+        # navigation, not a push. Set _active_screen directly + refresh
+        # so the screen re-queries + re-renders, but don't re-push.
+        if prev not in self._screens:
+            # Defensive: if the previous screen was unregistered
+            # between pushes (e.g., a screen torn down at runtime),
+            # we can't navigate back to it. Return None so the caller
+            # falls back to its default.
+            return None
+        self._active_screen = prev
+        self.refresh(prev)
+        return prev
+
+    def can_go_back(self):
+        """Return True if the back-stack has at least one entry.
+
+        UI Fix Plan 2 — Phase 1, Fix 14 (AD-2). Used by widgets that
+        want to enable/disable a Back button based on whether there's
+        anywhere to go back to.
+        """
+        return len(self._nav_stack) > 0
 
     def get_active_screen(self):
         """Return the name of the currently-active screen."""

@@ -386,8 +386,16 @@ class RosterScreen(ctk.CTkFrame):
         # Fighter Profile and back. See D3, D4, D5.
         self._current_page = 1
         self._weight_class_filter = None  # None = "All Weight Classes"
-        # Per UI-POLISH Fix 2: gender filter. None = "All Genders".
-        self._gender_filter = None
+        # UI Fix Plan 2 — Phase 1, Fix 10: default gender filter to
+        # "male" (was None = "All"). The user's Phase 2 brief said
+        # "men and women mixed together" was a complaint; Phase 1's
+        # UI-POLISH added the gender dropdown, but defaulted to "All"
+        # which still mixed them. Phase 1 Fix 10 changes the default
+        # to "Male" so the player sees their male roster first (the
+        # larger cohort in MMA promotions) + can switch to "Female"
+        # or "All" via the dropdown. Same change in free_agents.py
+        # for consistency.
+        self._gender_filter = "male"
         self._search_term = ""
         self._sort_column = "fighter_id"  # default: insertion order
         self._sort_reverse = False
@@ -495,7 +503,11 @@ class RosterScreen(ctk.CTkFrame):
             button_hover_color=theme.colors.steel,
             text_color=theme.colors.text_primary,
         )
-        self._gender_menu.set("All")
+        # UI Fix Plan 2 — Phase 1, Fix 10: default dropdown to "Male"
+        # so the initial view matches _gender_filter="male" set in
+        # __init__. Without this, the dropdown would show "All" while
+        # the actual filter is "male" — confusing desync.
+        self._gender_menu.set("Male")
         self._gender_menu.pack(side="left", padx=(0, 20))
 
         # ---- WEIGHT CLASS dropdown ----

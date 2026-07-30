@@ -40,6 +40,7 @@ Architecture:
 
 import sys
 import sqlite3
+import calendar
 from pathlib import Path
 from datetime import datetime
 
@@ -79,11 +80,20 @@ NAV_GROUPS = [
         ("schedule", "Schedule", "calendar"),
         ("news", "News Feed", "news"),
     ]),
+    # UI Fix Plan 2 — Phase 1, Fix 18 (AD-3): "Fighter Profile"
+    # removed from the FIGHTERS nav group. The screen stays
+    # registered with GameState (so set_active_screen + refresh_all
+    # work) + the _navigate("fighter_profile") branch still works
+    # programmatically — the player reaches it via hyperlinks from
+    # the Roster, Free Agents, Dashboard, etc. (Phase 3 fixes 7 +
+    # 13 will install those hyperlinks). This declutters the sidebar
+    # (Fighter Profile is a destination, not a starting point) +
+    # matches the AD-3 architecture decision: "Accessible only via
+    # hyperlinks from Roster, Open Market, Dashboard, etc."
     ("FIGHTERS", [
         ("roster", "Roster", "roster"),
         ("free_agents", "Free Agents", "free_agents"),
         ("scouting", "Scouting", "scouting"),
-        ("fighter_profile", "Fighter Profile", "fighter"),
         ("hall_of_fame", "Hall of Fame", "hof"),
     ]),
     ("EVENTS", [
@@ -547,18 +557,56 @@ class CageEmpireApp(ctk.CTk):
         self._update_top_bar()
 
     def _update_top_bar(self):
-        """Refresh the date + cash display from the DB."""
+        """Refresh the date + cash display from the DB.
+
+        UI Fix Plan 2 — Phase 1, Fix 3 (AD-6): the date display now
+        uses "Month Year" (e.g., "July 2026") instead of "Week N,
+        Year N". The week number was cosmetic anyway (no logic reads
+        it) + "July 2026" reads as a real-world date the player can
+        anchor on, while "Week 3, Year 1" reads as an abstract sim
+        counter.
+
+        D-P1-A: the task brief said "current_month at index 4" in
+        the get_clock() return tuple, but the SQL in services/clock.
+        py:42 is `SELECT current_date, current_day, current_week,
+        current_month, current_year, tick_counter` — so the indices
+        are 0=date, 1=day, 2=week, 3=month, 4=year, 5=tick. The
+        existing code used clock[3] for "week" (actually month) +
+        clock[5] for "year" (actually tick_counter) — a pre-existing
+        bug that produced output like "Week 7, Year 145" (where 7
+        was the month + 145 was the tick counter). Fixed here to use
+        clock[3]=month + clock[4]=year so the new "Month Year"
+        display shows correct values.
+        """
         try:
             clock = get_clock(self.conn)
             if clock:
                 date_str = clock[0]  # current_date
-                week = clock[3]      # current_week
-                year = clock[5]      # current_year
+                month = clock[3]     # current_month (D-P1-A)
+                year = clock[4]      # current_year (D-P1-A)
+                # calendar.month_name[0] == '' so guard against
+                # out-of-range / None month values defensively.
+                month_name = (
+                    calendar.month_name[month]
+                    if isinstance(month, int) and 1 <= month <= 12
+                    else ""
+                )
                 if year == 0:
                     year = 1
-                self.date_label.configure(
-                    text=f"{date_str}  ·  Week {week}, Year {year}"
-                )
+                # Format: "2026-07-20  ·  July 2026"
+                # The date_str is the sim's ISO date (already
+                # formatted by services.clock); the suffix is the
+                # human-readable month + year for quick scanning.
+                if month_name:
+                    self.date_label.configure(
+                        text=f"{date_str}  ·  {month_name} {year}"
+                    )
+                else:
+                    # Defensive fallback if month is invalid — show
+                    # just the year (still useful) instead of crashing.
+                    self.date_label.configure(
+                        text=f"{date_str}  ·  {year}"
+                    )
 
             # Get player promotion cash
             promo_id = self.game_state.get_player_promotion_id()
