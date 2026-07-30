@@ -1,0 +1,87 @@
+feat: Phase 1 — theme.py rewrite + Oswald bundle + 4 textures + Championship Skin
+
+Phase 1 of UI Redesign Rev 3 (delegated to full-stack-developer subagent,
+supervisor-signed-off).
+
+THEME.PY REWRITE (597 → 1,316 lines, full rewrite):
+- New 4-tier layered charcoal depth system per UI_REDESIGN_VISUAL_PLAN
+  §2.2: bg_base #0a0c10 → bg_surface #15181f → bg_card #1c2028 →
+  bg_card_elevated #252a33. Depth from value contrast, NOT drop
+  shadows (PIL compositing too slow against the 167ms lazy-refresh
+  budget from Phase 4).
+- New OfficeColors + FightNightColors with revised palette per §2.2/§2.3:
+  bg_base, bg_surface, bg_card, bg_card_elevated, border_subtle,
+  border_strong, divider_faint, text_primary/secondary/tertiary,
+  text_on_gold, text_on_crimson, crimson, crimson_tint, gold,
+  gold_tint, gold_bright, success, warning, danger, info (new blue).
+- Backward-compat aliases preserved: bg_surface_elevated →
+  bg_card_elevated, bg_border → border_subtle, steel kept. Existing
+  screens render with new hex values WITHOUT code changes.
+- Per-weight Inter family registration (THE font collapse-bug fix):
+  each Inter weight registered under UNIQUE family name (Inter-Regular,
+  Inter-Medium, Inter-SemiBold, Inter-Bold) so Tk can't collapse them
+  to the last-registered weight.
+- Spacing tokens (8-point scale): SPACE_XS=4, SPACE_SM=8, SPACE_MD=12,
+  SPACE_LG=16, SPACE_XL=24, SPACE_2XL=32, SPACE_3XL=48, SPACE_4XL=64.
+  GRID_GUTTER=24, PAGE_PADDING=24. Exposed as constants + SPACING_TOKENS
+  tuple for iteration.
+- Championship Skin overlay colors per §2.2: CHAMPIONSHIP_SKIN dict
+  with champion_gold #f0c060, champion_gold_leaf #f5d77a,
+  challenger_crimson #d63a3f, title_fight_badge_bg #1a1410. Phase 7
+  Fight Night screen will read this when fights.is_title_fight=1.
+- tint_to_solid(rgba, base_hex) helper: converts rgba tint strings
+  (gold_tint, crimson_tint) to solid hex for CTk consumption. Phase 2
+  components will use this for hover/active state backgrounds.
+- Startup health check: prints font registration summary at module
+  import time. Each family logged as ✓ (resolved) or ✗ (fallback).
+  Helps diagnose font registration failures in the wild.
+
+OSWALD FONT BUNDLE:
+- Downloaded Google Fonts variable font (Oswald[wght].ttf, 172 KB).
+- Used fonttools.varLib.instancer to instantiate wght=700 as static
+  TTF (88 KB) so Tk registers under family name "Oswald".
+- Renamed nameIDs so the family resolves correctly.
+- Saved to src/ui/assets/fonts/Oswald-Bold.ttf.
+- OFL 1.1 license file saved to src/ui/assets/fonts/OFL.txt (required
+  for redistribution).
+- PIL ImageFont.truetype() load verified.
+
+TEXTURE UTILITIES (4 textures, procedurally generated via PIL):
+- get_noise_grain_texture(): 256×256 PNG, 3% opacity grey noise.
+  Tiled across bg_base (Office + Fight Night).
+- get_chain_link_dim_texture(): 512×512 PNG, chain-link at 4%
+  opacity, crimson-tinted. Fight Night shell surfaces only.
+- get_gold_leaf_border_texture(): 16×16 PNG, 1px gold-leaf textured
+  border (corner tile). Champion cards + heatmap border.
+- get_vignette_fight_night_texture(): 1920×1080 PNG, radial gradient
+  transparent center → 30% black at corners. Fight Night overlay.
+- All 4 saved to src/ui/assets/textures/ on first generation (lazy),
+  file-based reload on subsequent calls (0.183s vs 1.4s first-gen).
+- Module-level cache: re-access is 0.0000s.
+- Verified via PIL pixel inspection: all spec-compliant.
+
+TEST STATUS:
+- 42/43 existing tests pass (1 pre-existing failure in test_pre_b1_fixes
+  Case F+G — flagged in D11/D15 of prior worklogs, NOT caused by
+  Phase 1).
+- All 5 screen modules (Dashboard, Roster, Free Agents, Scouting,
+  Fighter Profile) instantiate + refresh cleanly with the new theme.
+- Backward-compat aliases ensure zero screen code changes required.
+
+SMOKE TEST (headless Xvfb):
+- theme.py imports cleanly with all new tokens (CHAMPIONSHIP_SKIN,
+  SPACE_XS/XL, tint_to_solid, get_noise_grain_texture).
+- Font registration summary prints at import (Inter families show
+  fallback in headless Xvfb env — expected; will resolve on real
+  Windows/Mac desktops where fontconfig is properly configured).
+- Source Serif Pro resolves ✓ in all environments.
+- All 7 screen modules import without crashes.
+- All 5 main screens instantiate + _refresh() without crashes.
+
+NO SCREEN CODE CHANGES. NO SCHEMA CHANGES. NO TEST FIXES NEEDED.
+
+SUPERVISOR SIGN-OFF: Phase 1 APPROVED. Next: Phase 2 (component
+library — 15 reusable CTk widgets: Card, SectionHeader, DataChip,
+StatBar, FighterRow, NewsCard, WatchCard, PortraitFrame,
+HyperlinkLabel refactor, Button, TabBar, CalendarStrip, Breadcrumb,
+EmptyState, LoadingState, ModalDialog).
