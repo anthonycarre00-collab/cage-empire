@@ -298,6 +298,7 @@ NEW_COL_WC = "wc"
 NEW_COL_STAGE = "stage"
 NEW_COL_FORM = "form"
 NEW_COL_RECORD = "record"
+NEW_COL_GYM = "gym"
 
 NEW_COLUMN_LABELS = {
     NEW_COL_NAME: "Name",
@@ -307,6 +308,7 @@ NEW_COLUMN_LABELS = {
     NEW_COL_STAGE: "Stage",
     NEW_COL_FORM: "Form",
     NEW_COL_RECORD: "Record",
+    NEW_COL_GYM: "Gym",
 }
 
 # Column widths rebalanced for the 7-column layout (P2-1). Total
@@ -315,13 +317,14 @@ NEW_COLUMN_LABELS = {
 # Stage + Form are slightly narrower than v2 because the table has
 # one more column now.
 NEW_COLUMN_WIDTHS = {
-    NEW_COL_NAME: 220,
+    NEW_COL_NAME: 260,
     NEW_COL_AGE: 50,
     NEW_COL_NAT: 50,
     NEW_COL_WC: 60,
-    NEW_COL_STAGE: 140,
-    NEW_COL_FORM: 120,
+    NEW_COL_STAGE: 160,
+    NEW_COL_FORM: 140,
     NEW_COL_RECORD: 80,
+    NEW_COL_GYM: 200,
 }
 
 NEW_COLUMN_ANCHORS = {
@@ -332,6 +335,7 @@ NEW_COLUMN_ANCHORS = {
     NEW_COL_STAGE: "w",
     NEW_COL_FORM: "w",
     NEW_COL_RECORD: "center",
+    NEW_COL_GYM: "w",
 }
 
 
@@ -991,6 +995,9 @@ class RosterScreen(ctk.CTkFrame):
             Column(NEW_COL_RECORD, NEW_COLUMN_LABELS[NEW_COL_RECORD],
                    NEW_COLUMN_WIDTHS[NEW_COL_RECORD],
                    NEW_COLUMN_ANCHORS[NEW_COL_RECORD]),
+            Column(NEW_COL_GYM, NEW_COLUMN_LABELS[NEW_COL_GYM],
+                   NEW_COLUMN_WIDTHS[NEW_COL_GYM],
+                   NEW_COLUMN_ANCHORS[NEW_COL_GYM]),
         ]
 
         # The FighterTable widget itself.
@@ -1638,6 +1645,7 @@ class RosterScreen(ctk.CTkFrame):
                        f.date_of_birth,
                        wc.name AS weight_class_name,
                        n.name AS nation_name,
+                       g.name AS gym_name,
                        fd.career_phase, fd.momentum, fd.narrative_family,
                        fc.record_wins, fc.record_losses, fc.record_draws
                 FROM fighters f
@@ -1645,6 +1653,8 @@ class RosterScreen(ctk.CTkFrame):
                   ON wc.weight_class_id = f.weight_class_id
                 LEFT JOIN nations n
                   ON n.nation_id = f.birth_nation_id
+                LEFT JOIN gyms g
+                  ON g.gym_id = f.current_gym_id
                 LEFT JOIN fighter_descriptors fd
                   ON fd.fighter_id = f.fighter_id
                 LEFT JOIN fighter_career fc
@@ -1665,8 +1675,8 @@ class RosterScreen(ctk.CTkFrame):
         roster = []
         for r in rows:
             (fid, first, last, nick, dob, wc_name, nation_name,
-             phase_stored, mom_stored, narr_stored, wins, losses,
-             draws) = r
+             gym_name, phase_stored, mom_stored, narr_stored, wins,
+             losses, draws) = r
             roster.append({
                 "fighter_id": fid,
                 "first_name": first,
@@ -1676,6 +1686,7 @@ class RosterScreen(ctk.CTkFrame):
                 "date_of_birth": dob,
                 "weight_class_name": wc_name or "Unknown",
                 "nation_name": nation_name or "",
+                "gym_name": gym_name or "",
                 "career_phase_stored": phase_stored,
                 "momentum_stored": mom_stored,
                 "narrative_stored": narr_stored,
@@ -1827,6 +1838,7 @@ class RosterScreen(ctk.CTkFrame):
                     NEW_COL_STAGE: stage_phrase,
                     NEW_COL_FORM: form_phrase,
                     NEW_COL_RECORD: record_str,
+                    NEW_COL_GYM: fighter.get("gym_name") or "—",
                 })
 
             self._fighter_table.set_rows(rows)

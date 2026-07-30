@@ -80,6 +80,7 @@ class GameState:
         self._screens = {}  # name -> (instance, refresh_callback)
         self._active_screen = None
         self._theme = "office"
+        self._navigate_callback = None  # set by CageEmpireApp.__init__
 
         # UI Fix Plan 2 — Phase 1, Fix 14: navigation back-stack.
         # Tracks the screen names the player visited BEFORE the current
@@ -154,6 +155,12 @@ class GameState:
             if len(self._nav_stack) > 10:
                 self._nav_stack.pop(0)
         self._active_screen = name
+        # CRITICAL: call the navigate callback to PACK the screen
+        # into the container. Without this, set_active_screen only
+        # refreshes the data but never shows the screen — the player
+        # clicks a hyperlink and nothing happens.
+        if self._navigate_callback is not None:
+            self._navigate_callback(name)
         self.refresh(name)
 
     def go_back(self):
@@ -184,6 +191,9 @@ class GameState:
             # falls back to its default.
             return None
         self._active_screen = prev
+        # CRITICAL: call navigate callback to PACK the screen
+        if self._navigate_callback is not None:
+            self._navigate_callback(prev)
         self.refresh(prev)
         return prev
 
@@ -195,6 +205,18 @@ class GameState:
         anywhere to go back to.
         """
         return len(self._nav_stack) > 0
+
+    def set_navigate_callback(self, callback):
+        """Set the navigate callback (called by set_active_screen + go_back).
+
+        The callback receives the screen name and is responsible for
+        packing/unpacking the screen widgets in the container. This is
+        how AppState triggers the UI to show a screen — without this,
+        set_active_screen only refreshes data but never shows the screen.
+
+        Set by CageEmpireApp.__init__ after the shell is built.
+        """
+        self._navigate_callback = callback
 
     def get_active_screen(self):
         """Return the name of the currently-active screen."""

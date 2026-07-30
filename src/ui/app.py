@@ -281,6 +281,12 @@ class CageEmpireApp(ctk.CTk):
         self._build_main_content()
         self._build_bottom_bar()
 
+        # CRITICAL: Wire the navigate callback so set_active_screen
+        # (called by HyperlinkLabel, go_back, etc.) actually PACKS
+        # the screen into the container. Without this, hyperlinks
+        # refresh data but never show the screen.
+        self.game_state.set_navigate_callback(self._navigate)
+
         # ============================================================
         # Phase 1 — Fix 1.3: Register the Save/Load screen.
         # The screen is created with self.screen_container as its
