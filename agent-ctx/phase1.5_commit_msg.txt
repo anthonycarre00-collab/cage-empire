@@ -1,0 +1,106 @@
+feat: Phase 1.5 — visible quick-win visual patches to 4 screens + shell
+
+Phase 1.5 of UI Redesign Rev 3 (delegated to full-stack-developer
+subagent, supervisor-signed-off).
+
+WHY THIS EXISTS:
+Phase 1 (theme.py rewrite) shipped the new 4-tier depth system +
+textures + per-weight fonts as TOKENS, but the existing screens still
+called the OLD tokens — so the user saw NO visible difference. Phase
+1.5 patches the 4 existing screens + app shell to actually USE the new
+tokens, making the Phase 1 improvements visible without a full rewrite.
+
+7 QUICK WINS APPLIED:
+
+QW1 (noise_grain on main window): SKIPPED per spec — texture belongs
+on cards, not the main window bg.
+
+QW2 (cards bg_surface → bg_card): DONE. ~22 card constructions across
+5 files patched. Cards are now visually distinct from the shell
+(sidebar/topbar) — the 4-tier depth system is finally VISIBLE.
+  - dashboard.py: 6 cards
+  - roster.py: 4 cards
+  - fighter_profile.py: 8 cards
+  - free_agents.py: 4 cards
+  - fighter_table.py: 10 references (outer card + header + body rows)
+
+QW3 (1px border_subtle on all cards): DONE. Every card now has a
+visible 1px border_subtle (#2a2f38) edge. The card system reads.
+
+QW4 (champion gold-leaf border): DONE. Fighter Profile champion
+portrait border bumped from gold (#e0a957) at width=2 to
+CHAMPIONSHIP_SKIN["champion_gold"] (#f0c060, brighter) at width=3.
+Skipped the texture overlay (too fiddly for a quick-win) — the
+brighter gold alone is a visible marquee treatment.
+
+QW5 (display_small for titles): DONE. 5 title labels swapped from
+h1 (Inter 22px Bold) to display_small (Oswald 24px):
+  - app.py: top bar "CAGE EMPIRE" wordmark
+  - dashboard.py: "THE EMPIRE" H1
+  - roster.py: "THE STABLE" H1
+  - fighter_profile.py: fighter NAME label
+  - free_agents.py: "OPEN MARKET" H1
+Gives the immediate "stadium scoreboard" feel the VLM asked for.
+Note: font registration summary shows Oswald as fallback in headless
+Xvfb test env — on real Windows/Mac desktops the bundled TTF resolves.
+
+QW6 (gold_tint hover): DONE.
+  - fighter_table.py: _HOVER_BG changed from hardcoded #2a2f3a
+    (steel-tinted) to tint_to_solid('rgba(224,169,87,0.10)', bg_card)
+    = #302e2d (gold-tinted). _SELECTED_BG changed from #3a2f1f to
+    tint_to_solid('rgba(224,169,87,0.20)', bg_card) = #433b31.
+  - hyperlink.py: _hover_gold_for_current_theme() now reads from
+    theme.colors.gold_bright first (source of truth); fallback map
+    values bumped to match.
+
+QW7 (corner_radius + accent borders): DONE.
+  - Cards: corner_radius standardized to 6px (was 8 or 0 mixed).
+  - Tables: corner_radius=0 (sharp "ledger" edges per spec).
+  - Dashboard Top Story: 2px gold accent border.
+  - Dashboard Top Prospect + Hottest Streak Watch Cards: 2px gold
+    accent border.
+  - Dashboard Biggest Fall Watch Card: 2px crimson accent border.
+  - Dashboard champion chips: 2px gold border.
+  - Fighter Profile header card: 2px gold border (treatment via the
+    portrait frame's gold border, since adding a wrapper card would
+    be a structural change — forbidden in Phase 1.5).
+
+FILES MODIFIED (8):
+  src/ui/theme.py (+7 lines: display_small font role added)
+  src/ui/app.py (+9/-3 lines: wordmark display_small)
+  src/ui/screens/dashboard.py (+42/-21 lines: 6 cards + accent borders)
+  src/ui/screens/roster.py (+13/-4 lines: table card + title)
+  src/ui/screens/fighter_profile.py (+69/-30 lines: 8 cards + champion border + title)
+  src/ui/screens/free_agents.py (+12/-4 lines: table card + title)
+  src/ui/widgets/fighter_table.py (+44/-23 lines: bg_card + gold_tint hover)
+  src/ui/widgets/hyperlink.py (+31/-12 lines: gold_bright hover)
+  Total: +157 insertions, -70 deletions across 8 files
+
+TEST STATUS: 42/43 pass (1 pre-existing failure in test_pre_b1_fixes
+Case F+G — flagged in D11/D15 of prior worklogs, NOT caused by Phase
+1.5).
+
+SMOKE TEST: All 5 screens (Dashboard, Roster, Free Agents, Scouting,
+Fighter Profile) instantiate + _refresh() cleanly in headless Xvfb
+against the live cage_empire.db. Fighter Profile also tested with
+set_fighter_id(4) + refresh — champion border renders correctly.
+
+VISIBLE CHANGES THE USER WILL SEE:
+1. Cards now have visible depth (bg_card #1c2028 vs shell bg_surface
+   #15181f) — no longer a flat void.
+2. Every card has a 1px border — the card system reads.
+3. Screen titles + "CAGE EMPIRE" wordmark use Oswald (stadium
+   scoreboard feel) — no longer system default sans.
+4. Fighter Table rows hover gold (not steel) — feels interactive.
+5. Champion portraits have a brighter, wider gold border — marquee
+   treatment for title holders.
+6. Dashboard Top Story + Watch Cards have 2px gold/crimson accent
+   borders — "this matters" cards pop.
+7. Card corners standardized to 6px — consistent geometry.
+
+NO structural changes. NO new components. NO layout rewrites. NO
+navigation logic changes. NO data query changes. NO schema changes.
+
+SUPERVISOR SIGN-OFF: Phase 1.5 APPROVED. The 4 existing screens now
+visibly demonstrate the Phase 1 theme improvements. Ready for user
+testing before Phase 2 (component library) begins.

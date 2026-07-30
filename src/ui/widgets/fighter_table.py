@@ -135,7 +135,7 @@ from collections import namedtuple
 
 import customtkinter as ctk
 
-from ui.theme import get_theme
+from ui.theme import get_theme, tint_to_solid
 from ui.widgets.hyperlink import HyperlinkLabel
 
 
@@ -174,13 +174,21 @@ class FighterTable(ctk.CTkFrame):
       - clear_selection() — deselect any selected row.
     """
 
-    # Hover color: a steel-tinted overlay on top of the alternating
-    # row color. Computed once at module load (avoids re-stringifying
-    # on every <Enter> event).
-    _HOVER_BG = "#2a2f3a"
-    # Selected color: a gold-tinted overlay (subtle — the gold text
-    # accents carry the visual weight, not the background).
-    _SELECTED_BG = "#3a2f1f"
+    # Hover color: gold_tint (rgba(224,169,87,0.10)) composited over
+    # bg_card. Phase 1.5 QW6 — replaced the old steel-tinted
+    # "#2a2f3a" with the spec's gold_tint so hover reads as a warm
+    # brand-color cue (the spec calls this out explicitly: hover
+    # should be gold_tint, not steel). Computed once at module load
+    # via tint_to_solid() so we don't re-composite on every <Enter>.
+    _HOVER_BG = tint_to_solid(
+        "rgba(224,169,87,0.10)", "#1c2028"  # gold_tint over bg_card
+    )
+    # Selected color: stronger gold tint (20% alpha over bg_card) so
+    # the selected row reads as "active" without being garish. The
+    # gold text accents (HyperlinkLabel names) carry the visual weight.
+    _SELECTED_BG = tint_to_solid(
+        "rgba(224,169,87,0.20)", "#1c2028"  # stronger gold tint over bg_card
+    )
 
     def __init__(self, parent, columns, on_row_click=None,
                  on_row_double_click=None, on_sort_click=None,
@@ -234,12 +242,16 @@ class FighterTable(ctk.CTkFrame):
         self._row_widgets = []  # list of dicts: {frame, cells, fighter_id, index}
 
         # Theme the outer card.
+        # QW2/QW7: bg_surface → bg_card + corner_radius=0 for sharp
+        # "ledger" edges per UI_REDESIGN_VISUAL_PLAN §4.3.
         theme = get_theme()
-        self.configure(fg_color=theme.colors.bg_surface, corner_radius=8)
+        self.configure(fg_color=theme.colors.bg_card, corner_radius=0)
 
         # ---- Header row (D3) ----
+        # QW2: header row uses bg_card_elevated (was bg_surface_elevated
+        # — same value via alias, but explicit for clarity).
         self._header_row = ctk.CTkFrame(
-            self, fg_color=theme.colors.bg_surface_elevated,
+            self, fg_color=theme.colors.bg_card_elevated,
             corner_radius=0, height=36,
         )
         self._header_row.pack(side="top", fill="x")
@@ -248,8 +260,10 @@ class FighterTable(ctk.CTkFrame):
         self._build_header()
 
         # ---- Body (scrollable) ----
+        # QW2: body uses bg_card (was bg_surface — same as the shell,
+        # which made the table read as a hole in the page).
         self._body = ctk.CTkScrollableFrame(
-            self, fg_color=theme.colors.bg_surface, corner_radius=0,
+            self, fg_color=theme.colors.bg_card, corner_radius=0,
         )
         self._body.pack(side="top", fill="both", expand=True)
 
@@ -370,9 +384,13 @@ class FighterTable(ctk.CTkFrame):
             for i, row_data in enumerate(rows):
                 fighter_id = row_data.get("fighter_id")
                 # Alternating row color (D5).
-                base_bg = (theme.colors.bg_surface
+                # QW2: bg_surface/bg_surface_elevated → bg_card/bg_card_elevated
+                # (explicit; aliases resolve to the same values, but the
+                # explicit names make the 4-tier depth system visible
+                # at the call site).
+                base_bg = (theme.colors.bg_card
                            if i % 2 == 0
-                           else theme.colors.bg_surface_elevated)
+                           else theme.colors.bg_card_elevated)
 
                 row_frame = ctk.CTkFrame(
                     self._body, fg_color=base_bg, corner_radius=0,

@@ -549,9 +549,12 @@ class CageEmpireApp(ctk.CTk):
 
         if not logo_loaded:
             # Text fallback — gold wordmark, matches the brand.
+            # QW5: switched from h2 (Inter 20px Bold) to display_small
+            # (Oswald 24px Bold) for the "stadium scoreboard" feel per
+            # UI_REDESIGN_VISUAL_PLAN §3.3.
             self.logo_label = ctk.CTkLabel(
                 self.top_bar, text="CAGE EMPIRE",
-                font=theme.fonts.h2,
+                font=theme.fonts.display_small,
                 text_color=theme.colors.gold,
                 anchor="w",
             )
@@ -562,10 +565,12 @@ class CageEmpireApp(ctk.CTk):
         # mark, the wordmark is the name. Both reinforce the brand.
         # Hidden if the logo image failed (the text fallback above
         # already shows "CAGE EMPIRE").
+        # QW5: switched from h2 (Inter 20px Bold) to display_small
+        # (Oswald 24px Bold) for the "stadium scoreboard" feel.
         if logo_loaded:
             self.wordmark_label = ctk.CTkLabel(
                 self.top_bar, text="CAGE EMPIRE",
-                font=theme.fonts.h2,
+                font=theme.fonts.display_small,
                 text_color=theme.colors.gold,
                 anchor="w",
             )

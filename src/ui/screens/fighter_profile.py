@@ -251,7 +251,7 @@ try:
 except ImportError:
     HAS_PIL = False
 
-from ui.theme import get_theme
+from ui.theme import get_theme, CHAMPIONSHIP_SKIN
 from ui.state import get_state
 from ui.voice_display import title_case_phrase, display_phrase, \
     display_attr_descriptor
@@ -962,15 +962,18 @@ class FighterProfileScreen(ctk.CTkFrame):
         # ---- LEFT: Portrait (Fix 15: gold/crimson bordered frame) ----
         # The portrait_frame is a CTkFrame with border_width=2 +
         # border_color=gold. _refresh_header swaps the border to
-        # crimson when the fighter is a current champion. The
-        # portrait_label sits inside the frame + holds the actual
-        # CTkImage.
+        # CHAMPIONSHIP_SKIN["champion_gold"] + bumps width to 3 when
+        # the fighter is a current champion. The portrait_label sits
+        # inside the frame + holds the actual CTkImage.
+        # QW4: champion border bumped to width=3 + uses
+        # CHAMPIONSHIP_SKIN["champion_gold"] (brighter than the default
+        # gold). The non-champion case keeps the default gold at width=2.
         self._portrait_frame = ctk.CTkFrame(
             header_row,
-            fg_color=theme.colors.bg_surface_elevated,
-            corner_radius=8,
+            fg_color=theme.colors.bg_card_elevated,
+            corner_radius=6,
             border_width=2,
-            border_color=theme.colors.gold,  # default; crimson if champ
+            border_color=theme.colors.gold,  # default; champion_gold if champ
             width=_PORTRAIT_SIZE + 4,  # +4 for the 2px border on each side
             height=_PORTRAIT_SIZE + 4,
         )
@@ -981,7 +984,7 @@ class FighterProfileScreen(ctk.CTkFrame):
             self._portrait_frame, text="",
             width=_PORTRAIT_SIZE, height=_PORTRAIT_SIZE,
             corner_radius=6,
-            fg_color=theme.colors.bg_surface_elevated,
+            fg_color=theme.colors.bg_card_elevated,
             anchor="center",
         )
         self._portrait_label.pack(expand=True)
@@ -996,10 +999,12 @@ class FighterProfileScreen(ctk.CTkFrame):
         name_subtle_container.pack(side="left", fill="both", expand=True,
                                     pady=(0, 10))
 
-        # Name label (H1) — populated by _refresh.
+        # Name label (display_small — Oswald 24px) — populated by _refresh.
+        # QW5: switched from h1 (Inter 26px Bold) to display_small
+        # (Oswald 24px Bold) for the "stadium scoreboard" feel.
         self._name_label = ctk.CTkLabel(
             name_subtle_container, text="No fighter selected",
-            font=theme.fonts.h1, text_color=theme.colors.text_primary,
+            font=theme.fonts.display_small, text_color=theme.colors.text_primary,
             anchor="w", wraplength=700, justify="left",
         )
         self._name_label.pack(side="top", fill="x", pady=(0, 4))
@@ -1045,9 +1050,11 @@ class FighterProfileScreen(ctk.CTkFrame):
 
         # Card container. Fix 16: the card is a horizontal layout —
         # crimson accent bar (left) + content (right).
+        # QW2/QW3: bg_surface → bg_card + 1px border_subtle + corner_radius=6.
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface,
-            corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card,
+            corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1089,7 +1096,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1116,7 +1124,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1143,7 +1152,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1178,7 +1188,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._attr_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         self._attr_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1231,7 +1242,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._pers_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         self._pers_card.pack(side="top", fill="x", padx=20, pady=(0, 10))
 
@@ -1266,7 +1278,8 @@ class FighterProfileScreen(ctk.CTkFrame):
         theme = get_theme()
 
         self._scouting_card = ctk.CTkFrame(
-            self._scroll, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self._scroll, fg_color=theme.colors.bg_card, corner_radius=6,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         # NOT packed here — _refresh shows/hides it based on the
         # fighter's promotion.
@@ -1497,7 +1510,7 @@ class FighterProfileScreen(ctk.CTkFrame):
                 data["first_name"], data["last_name"], data["nickname"])
             self._name_label.configure(
                 text=name,
-                font=theme.fonts.h1,
+                font=theme.fonts.display_small,
                 text_color=theme.colors.text_primary,
             )
 
@@ -1585,11 +1598,22 @@ class FighterProfileScreen(ctk.CTkFrame):
                 pass
             try:
                 if is_champion:
+                    # QW4: champion portrait border — bump width to 3 +
+                    # use CHAMPIONSHIP_SKIN["champion_gold"] (brighter
+                    # than the default gold so the belt holder reads as
+                    # a cut above other fighters). The texture overlay
+                    # was skipped per the spec (too fiddly for a quick-
+                    # win; the brighter gold alone is a visible
+                    # improvement).
                     self._portrait_frame.configure(
-                        border_color=theme.colors.crimson)
+                        border_color=CHAMPIONSHIP_SKIN["champion_gold"],
+                        border_width=3)
                 else:
+                    # Non-champion: default gold at width=2 (the
+                    # standard "this is a portrait" treatment).
                     self._portrait_frame.configure(
-                        border_color=theme.colors.gold)
+                        border_color=theme.colors.gold,
+                        border_width=2)
             except Exception:
                 pass
 
@@ -1931,8 +1955,9 @@ class FighterProfileScreen(ctk.CTkFrame):
                 # which blended into the parent card).
                 row_card = ctk.CTkFrame(
                     self._fights_content,
-                    fg_color=theme.colors.bg_surface_elevated,
+                    fg_color=theme.colors.bg_card_elevated,
                     corner_radius=6,
+                    border_width=1, border_color=theme.colors.border_subtle,
                 )
                 row_card.pack(side="top", fill="x", pady=3, padx=2)
 

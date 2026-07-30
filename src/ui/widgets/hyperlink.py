@@ -55,23 +55,26 @@ from ui.state import get_state
 
 
 # Hover-color lookup keyed by theme name (P2-4 — UI Implementation
-# Plan v3). Each theme gets its own hover shade — slightly lighter +
-# more saturated than that theme's resting gold so the hover reads
-# as "active" without leaving the brand palette. Computed once at
-# module load (avoids re-parsing hex on every <Enter> event).
+# Plan v3). Phase 1.5 QW6: previously this map held hardcoded hex
+# values per theme. Now the entries are FALLBACKS only — the primary
+# source of truth is theme.colors.gold_bright (set in OfficeColors /
+# FightNightColors per UI_REDESIGN_VISUAL_PLAN §2.2). _hover_gold_for_
+# current_theme() reads from the theme first; the map only kicks in
+# if the theme lookup fails (defensive — keeps the widget functional
+# without crashing on theme lookup).
 #
-# - Office mode: resting gold #d4a55a → hover #f0c878 (warmer, brighter)
+# - Office mode: resting gold #e0a957 → hover #f5c878 (warmer, brighter)
 # - Fight Night mode: resting gold #f0c060 → hover #ffd700 (full gold)
 #   The Fight Night palette is already brighter/saturated, so the
 #   hover pushes into a richer gold rather than a lighter wash.
 _HOVER_GOLD_BY_THEME = {
-    "office": "#f0c878",
+    "office": "#f5c878",
     "fight_night": "#ffd700",
 }
 
 # Default fallback if a future theme adds a new name we don't know
 # about — keeps the widget functional without crashing on theme lookup.
-_HOVER_GOLD_DEFAULT = "#f0c878"
+_HOVER_GOLD_DEFAULT = "#f5c878"
 
 
 def _hover_gold_for_current_theme():
@@ -79,14 +82,24 @@ def _hover_gold_for_current_theme():
 
     P2-4: previously this was a module-level constant hardcoded to
     "#f0c878". Now it's a lookup so the hover color tracks the theme
-    (Office vs Fight Night). Called from the <Enter> handler on every
-    hover — cheap (dict lookup + get_theme() returns a cached global).
+    (Office vs Fight Night). Phase 1.5 QW6: now reads from
+    theme.colors.gold_bright FIRST (the source of truth per the
+    redesigned theme system), falling back to the per-theme map only
+    if the theme doesn't expose gold_bright (defensive). Called from
+    the <Enter> handler on every hover — cheap (cached global + dict
+    lookup).
 
     Returns:
         Hex color string suitable for CTk's text_color configure.
     """
     try:
         theme = get_theme()
+        # QW6: prefer theme.colors.gold_bright (the source of truth).
+        gold_bright = getattr(theme.colors, "gold_bright", None)
+        if gold_bright:
+            return gold_bright
+        # Fallback: per-theme map (legacy, kept for back-compat with
+        # any custom themes that don't expose gold_bright).
         return _HOVER_GOLD_BY_THEME.get(theme.name, _HOVER_GOLD_DEFAULT)
     except Exception:
         # Defensive — if get_theme() somehow fails (e.g. imported

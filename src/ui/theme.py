@@ -330,6 +330,11 @@ CHAMPIONSHIP_SKIN = {
 class FontSizes:
     """Font size constants (in px). Same for both modes."""
     DISPLAY = 36         # Splash, title bar wordmark
+    DISPLAY_SMALL = 24   # Phase 1.5 — screen H1 titles + top bar wordmark
+                         # (Oswald Bold — the "stadium scoreboard" feel per
+                         # UI_REDESIGN_VISUAL_PLAN §3.3. Smaller than DISPLAY
+                         # so it fits in the 60px top bar + reads as a title,
+                         # not a splash.)
     H1 = 26              # Screen titles
     H2 = 20              # Panel titles
     H3 = 16              # Sub-panel titles
@@ -786,6 +791,7 @@ class OfficeFonts:
     (Oswald). Per-weight families fix the Rev 2 collapse bug.
     """
     display = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY, "bold")
+    display_small = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY_SMALL, "bold")
     h1 = (INTER_BOLD_FAMILY_RESOLVED, FontSizes.H1, "normal")
     h2 = (INTER_BOLD_FAMILY_RESOLVED, FontSizes.H2, "normal")
     h3 = (INTER_SEMIBOLD_FAMILY_RESOLVED, FontSizes.H3, "normal")
@@ -805,6 +811,7 @@ class FightNightFonts:
     pundit interjections use Source Serif Pro SemiBold Italic.
     """
     display = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY, "bold")
+    display_small = (DISPLAY_FAMILY_RESOLVED, FontSizes.DISPLAY_SMALL, "bold")
     h1 = (INTER_BOLD_FAMILY_RESOLVED, FontSizes.H1, "normal")
     h2 = (INTER_BOLD_FAMILY_RESOLVED, FontSizes.H2, "normal")
     h3 = (INTER_SEMIBOLD_FAMILY_RESOLVED, FontSizes.H3, "normal")

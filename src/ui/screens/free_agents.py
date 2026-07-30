@@ -710,7 +710,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
 
         title = ctk.CTkLabel(
             title_subtitle_stack, text="OPEN MARKET",
-            font=theme.fonts.h1, text_color=theme.colors.text_primary,
+            font=theme.fonts.display_small, text_color=theme.colors.text_primary,
             anchor="w",
         )
         title.pack(side="top", fill="x")
@@ -840,8 +840,12 @@ class FreeAgentsScreen(ctk.CTkFrame):
         theme = get_theme()
 
         # Container card — gives the FighterTable a framed surface.
+        # QW2/QW3/QW7: bg_surface → bg_card (distinct from shell),
+        # border_subtle 1px border, corner_radius=0 for sharp "ledger"
+        # edges per UI_REDESIGN_VISUAL_PLAN §4.3.
         table_card = ctk.CTkFrame(
-            self, fg_color=theme.colors.bg_surface, corner_radius=8,
+            self, fg_color=theme.colors.bg_card, corner_radius=0,
+            border_width=1, border_color=theme.colors.border_subtle,
         )
         table_card.pack(side="top", fill="both", expand=True,
                         padx=20, pady=(0, 10))
@@ -872,6 +876,8 @@ class FreeAgentsScreen(ctk.CTkFrame):
         ]
 
         # The FighterTable widget itself.
+        # QW2: passes bg_card so the table interior matches the wrapper
+        # card's tier (was bg_surface — same as the shell).
         self._fighter_table = FighterTable(
             table_card,
             columns=columns,
@@ -880,7 +886,7 @@ class FreeAgentsScreen(ctk.CTkFrame):
             on_sort_click=self._on_sort_click_new,
             page_size=PAGE_SIZE,
             empty_message="No free agents available.",
-            fg_color=theme.colors.bg_surface, corner_radius=0,
+            fg_color=theme.colors.bg_card, corner_radius=0,
         )
         self._fighter_table.pack(side="top", fill="both", expand=True,
                                   padx=1, pady=1)
