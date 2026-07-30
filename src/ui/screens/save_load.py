@@ -514,9 +514,12 @@ class SaveLoadScreen(ctk.CTkFrame):
                 app.conn = new_conn
 
             # Refresh every registered screen + the app's top/bottom
-            # bars. refresh_all() is the GameState method that calls
-            # every screen's refresh callback.
-            state.refresh_all()
+            # bars. refresh_all(force=True) is used because Load
+            # replaces the entire DB state — every screen needs an
+            # eager refresh, not just the visible one (Phase 4 lazy
+            # refresh would otherwise leave stale-screen widgets
+            # showing the pre-Load state until next navigation).
+            state.refresh_all(force=True)
             if hasattr(app, "_update_top_bar"):
                 app._update_top_bar()
             if hasattr(app, "_update_bottom_bar"):

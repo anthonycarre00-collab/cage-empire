@@ -91,6 +91,20 @@ class GameState:
         # See AD-2 in docs/UI_FIX_PLAN_2.md.
         self._nav_stack = []
 
+        # Phase 4 — Performance: stale-screen tracking. After Advance
+        # Day, we don't refresh every registered screen — we refresh
+        # only the active screen + Dashboard (always-on) + mark every
+        # other screen as "stale". When the player navigates to a
+        # stale screen, set_active_screen triggers its refresh callback
+        # (which is already the existing behavior) and clears the stale
+        # flag. This skips re-rendering 5 invisible screens (Roster,
+        # Free Agents, Scouting, Fighter Profile, Save/Load) on every
+        # Advance Day — each of which would re-query the DB + rebuild
+        # ~120 widgets. The flag is a plain set of screen names; the
+        # refresh callback itself is responsible for actually doing
+        # the work when called.
+        self._stale_screens: set[str] = set()
+
         # Register for theme change callbacks from ui.theme
         on_theme_change(self._on_theme_changed)
 
@@ -98,10 +112,13 @@ class GameState:
         """Called when ui.theme.set_theme() fires.
 
         Updates internal state + triggers refresh_all so every
-        screen re-renders with the new theme's colors/fonts.
+        screen re-renders with the new theme's colors/fonts. Uses
+        force=True because every visible widget's color/font needs
+        to update immediately (lazy refresh would leave stale-screen
+        widgets with the old theme until next navigation).
         """
         self._theme = new_theme.name
-        self.refresh_all()
+        self.refresh_all(force=True)
 
     # ============================================================
     # SCREEN REGISTRATION + NAVIGATION
@@ -155,6 +172,8 @@ class GameState:
             if len(self._nav_stack) > 10:
                 self._nav_stack.pop(0)
         self._active_screen = name
+        # Phase 4 — clear the stale flag (we're about to refresh).
+        self._stale_screens.discard(name)
         # CRITICAL: call the navigate callback to PACK the screen
         # into the container. Without this, set_active_screen only
         # refreshes the data but never shows the screen — the player
@@ -249,22 +268,75 @@ class GameState:
                 print(f"Warning: refresh failed for screen '{name}': {e}",
                       flush=True)
 
-    def refresh_all(self):
-        """Refresh ALL registered screens.
+    def refresh_all(self, *, force: bool = False):
+        """Refresh screens after a major state change.
 
-        Used after major state changes:
+        Used after:
           - Advance Day button (every screen's data may have changed)
           - Resolve Fight button (roster, rankings, news, finance all change)
           - Save / Load (entire DB state replaced)
           - Theme toggle (every screen re-renders with new colors/fonts)
+
+        Phase 4 — Performance (lazy refresh): by default, only refresh
+        the currently-visible screen + the Dashboard (which is "always-
+        on" — the player returns to it constantly + it shows time-
+        sensitive headlines). Other registered screens are marked
+        "stale" in `_stale_screens` and refresh on next navigation
+        (set_active_screen calls refresh(name), which already happens
+        on every navigation). This skips re-rendering 5 invisible
+        screens on every Advance Day — saving ~5 × (DB query + 120
+        widget rebuild) = ~150-300ms on a typical laptop.
+
+        Pass `force=True` to refresh every registered screen eagerly
+        (used by Save/Load and theme toggle, where every screen's
+        visual state actually does need to update).
         """
-        for name, (instance, cb) in self._screens.items():
-            if cb:
+        if force:
+            # Full refresh — every registered screen.
+            for name, (instance, cb) in self._screens.items():
+                if cb:
+                    try:
+                        cb()
+                    except Exception as e:
+                        print(f"Warning: refresh_all failed for screen "
+                              f"'{name}': {e}", flush=True)
+            self._stale_screens.clear()
+            return
+
+        # Lazy refresh — refresh active + Dashboard, mark rest stale.
+        # Always refresh Dashboard first (it's the most-visited screen
+        # + shows time-sensitive headlines). Then refresh the active
+        # screen if it isn't the Dashboard (avoids double-refresh).
+        refreshed = set()
+        if "dashboard" in self._screens:
+            entry = self._screens["dashboard"]
+            if entry[1]:
                 try:
-                    cb()
+                    entry[1]()
                 except Exception as e:
-                    print(f"Warning: refresh_all failed for screen '{name}': {e}",
+                    print(f"Warning: refresh_all (dashboard) failed: {e}",
                           flush=True)
+            refreshed.add("dashboard")
+
+        if self._active_screen and self._active_screen not in refreshed:
+            entry = self._screens.get(self._active_screen)
+            if entry and entry[1]:
+                try:
+                    entry[1]()
+                except Exception as e:
+                    print(f"Warning: refresh_all ({self._active_screen}) "
+                          f"failed: {e}", flush=True)
+            refreshed.add(self._active_screen)
+
+        # Mark every other registered screen as stale. set_active_screen
+        # already calls refresh(name) on navigation, so the stale flag
+        # is informational (the next nav will refresh anyway). We track
+        # it so future code can decide whether a screen needs refresh
+        # without navigating to it (e.g., a "Refresh All" button could
+        # show "(stale)" badges next to screen names in the sidebar).
+        for name in self._screens:
+            if name not in refreshed:
+                self._stale_screens.add(name)
 
     # ============================================================
     # THEME

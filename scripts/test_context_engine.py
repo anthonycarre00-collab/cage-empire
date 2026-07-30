@@ -799,12 +799,20 @@ def case_i_snapshot_cache_integration():
           nulls == 0, f"got={nulls} NULLs")
 
     # I.4 — interpretation_cache_meta updated.
+    # Per CONVENTIONS §10 (dynamic-version pattern), the engine_version
+    # is read from snapshot_cache.ENGINE_VERSION at runtime — NOT
+    # hardcoded. This makes the test robust to version bumps from
+    # future interpretation-layer tasks (Task 2.3 bumped to 1.2.0,
+    # Task 2.4 will bump to 1.3.0, etc.). The semantic check is
+    # "the daily pass wrote the engine_version" — not "the version
+    # is a specific hardcoded string".
     row = conn.execute(
         "SELECT engine_version, last_built_fighter_count "
         "FROM interpretation_cache_meta WHERE meta_id=1"
     ).fetchone()
-    check("I", "interpretation_cache_meta.engine_version == '1.1.0'",
-          row and row[0] == "1.1.0", f"got={row[0] if row else None}")
+    check("I", "interpretation_cache_meta.engine_version matches snapshot_cache.ENGINE_VERSION",
+          row and row[0] == snapshot_cache.ENGINE_VERSION,
+          f"got={row[0] if row else None} (expected {snapshot_cache.ENGINE_VERSION})")
     check("I", "interpretation_cache_meta.last_built_fighter_count == 5",
           row and row[1] == 5, f"got={row[1] if row else None}")
 

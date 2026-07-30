@@ -227,6 +227,9 @@ from ui.voice_display import title_case_phrase, \
 # Mirrors the Roster's import pattern.
 from ui.widgets.fighter_table import FighterTable, Column
 
+# Phase 4 — Performance: debounce search entry (same pattern as Roster).
+from ui.perf import debounce
+
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
 # DashboardScreen's D4 + RosterScreen's D4).
@@ -1055,12 +1058,18 @@ class FreeAgentsScreen(ctk.CTkFrame):
         self._current_page = 1
         self._refresh()
 
+    @debounce(200)
     def _on_search_change(self, event=None):
         """Handle search-entry keystroke.
 
         Reads the current entry value + triggers _refresh. Page resets
-        to 1. No manual debounce — the GUI event loop naturally
-        throttles keystroke events for 600 rows.
+        to 1.
+
+        Phase 4 — Performance: @debounce(200) collapses fast typing
+        into a single refresh (same pattern as Roster). The free
+        agents pool is ~600 rows, so the per-keystroke cost is lower
+        than Roster's 4450-row query, but rebuilding 120 widgets per
+        keystroke is still noticeable on slower machines.
         """
         try:
             term = self._search_entry.get().strip()

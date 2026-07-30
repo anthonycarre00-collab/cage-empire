@@ -172,6 +172,12 @@ from ui.theme import get_theme
 from ui.state import get_state
 from ui.voice_display import title_case_phrase
 
+# Phase 4 — Performance: query cache for the hottest-streak lookup
+# (5-6ms scan of fighter_descriptors that doesn't change within a
+# single Advance Day cycle). Cached until the next Advance Day,
+# which calls clear_query_cache() from CageEmpireApp._on_advance_day.
+from ui.perf import query_cached
+
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (D4).
 from interpretation.context_engine import decode_phrase
@@ -1756,6 +1762,14 @@ class DashboardScreen(ctk.CTkFrame):
         the LABEL using the same SUBSTR + INSTR trick the
         headline_engine uses.
 
+        Phase 4 — Performance: the per-momentum-label query result
+        is cached via query_cached("dashboard", "hot_streak_<label>")
+        so a second refresh within the same Advance Day cycle
+        (e.g., navigating away + back to Dashboard) returns the
+        cached list instantly without re-scanning fighter_descriptors.
+        The cache is cleared on Advance Day by
+        CageEmpireApp._on_advance_day calling clear_query_cache().
+
         Returns:
             fighter_id (int) or None if no qualifying fighter.
         """
@@ -1763,18 +1777,22 @@ class DashboardScreen(ctk.CTkFrame):
         try:
             # Try 'very_high' first, then 'high' as fallback.
             for momentum_label in ("very_high", "high"):
-                rows = conn.execute(
-                    """
-                    SELECT fd.fighter_id
-                    FROM fighter_descriptors fd
-                    JOIN fighters f ON f.fighter_id = fd.fighter_id
-                    WHERE f.is_active = 1 AND f.is_retired = 0
-                      AND SUBSTR(fd.momentum, 1,
-                                 INSTR(fd.momentum || '||', '||') - 1) = ?
-                    ORDER BY fd.fighter_id ASC
-                    """,
-                    (momentum_label,),
-                ).fetchall()
+                cache_key = f"hot_streak_{momentum_label}"
+                rows = query_cached(
+                    "dashboard", cache_key,
+                    lambda label=momentum_label: conn.execute(
+                        """
+                        SELECT fd.fighter_id
+                        FROM fighter_descriptors fd
+                        JOIN fighters f ON f.fighter_id = fd.fighter_id
+                        WHERE f.is_active = 1 AND f.is_retired = 0
+                          AND SUBSTR(fd.momentum, 1,
+                                     INSTR(fd.momentum || '||', '||') - 1) = ?
+                        ORDER BY fd.fighter_id ASC
+                        """,
+                        (label,),
+                    ).fetchall(),
+                )
                 for (fid,) in rows:
                     if fid not in exclude_ids:
                         return fid

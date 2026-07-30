@@ -1177,12 +1177,17 @@ def case_n_schema_migration():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = OFF;")
 
-    # N.1 — schema_meta shows v3.12.0.
+    # N.1 — schema_meta shows the current CODE_SCHEMA_VERSION.
+    # Phase 4 bumped it to 3.13.0 (additive index migration). The
+    # test originally hard-coded '3.12.0' — updated to read the
+    # actual current version from build_db.CODE_SCHEMA_VERSION so
+    # future schema bumps don't break this assertion.
+    from build_db import CODE_SCHEMA_VERSION
     row = conn.execute(
         "SELECT schema_version FROM schema_meta WHERE schema_name='cage_empire'"
     ).fetchone()
-    check("N", "schema_meta.schema_version = '3.12.0'",
-          row is not None and row[0] == "3.12.0",
+    check("N", f"schema_meta.schema_version = '{CODE_SCHEMA_VERSION}'",
+          row is not None and row[0] == CODE_SCHEMA_VERSION,
           f"got={row[0] if row else None!r}")
 
     # N.2 — v3_12_0 migration is recorded in schema_migrations.

@@ -240,6 +240,12 @@ from ui.voice_display import title_case_phrase, \
 # UI Implementation Plan v3 — P2-3, ~600 LOC of dead code removed).
 from ui.widgets.fighter_table import FighterTable, Column
 
+# Phase 4 — Performance: debounce decorator for the search entry so
+# each keystroke doesn't trigger a full DB query + 120-widget rebuild.
+# The 200ms window collapses 4-5 keystrokes of fast typing into a
+# single refresh.
+from ui.perf import debounce
+
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
 # DashboardScreen's D4).
@@ -1173,13 +1179,21 @@ class RosterScreen(ctk.CTkFrame):
         self._current_page = 1
         self._refresh()
 
+    @debounce(200)
     def _on_search_change(self, event=None):
         """Handle search-entry keystroke.
 
         Reads the current entry value + triggers _refresh. Page resets
-        to 1 (D3 — page state resets when search changes). No manual
-        debounce — the GUI event loop naturally throttles keystroke
-        events for 1000 rows (D5).
+        to 1 (D3 — page state resets when search changes).
+
+        Phase 4 — Performance: @debounce(200) collapses fast typing
+        into a single refresh. Without debounce, each keystroke
+        re-queries the DB (4450 rows) + rebuilds 120 widgets (20
+        rows × 6 cells × bindings). With 200ms debounce, a player
+        typing "johnson" (7 keystrokes in ~1s) triggers ONE refresh
+        instead of 7. The decorator uses self.after(ms, ...) so it
+        integrates with Tk's event loop — no threads, no race
+        conditions.
         """
         try:
             term = self._search_entry.get().strip()

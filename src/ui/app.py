@@ -985,10 +985,31 @@ class CageEmpireApp(ctk.CTk):
 
         Calls services.clock.advance_day (which delegates to
         tick_processor.run_tick), then refreshes all screens.
+
+        Phase 4 — Performance: clears the query cache + portrait
+        cache before refreshing so the post-Advance-Day refresh
+        recomputes everything from scratch. Without this, the
+        Dashboard would show yesterday's hottest-streak fighter
+        until the next navigation forced a re-query. The portrait
+        cache is also cleared because retirements / new signings
+        may invalidate a fighter's portrait path (the cache stores
+        CTkImage by fighter_id, so even if the fighter's data
+        changed, the cached image is still correct — but clearing
+        on Advance Day is the safer default; the cost is one
+        re-render per cached portrait on next view).
         """
         try:
             advance_day(self.conn)
             self.conn.commit()
+            # Phase 4 — clear caches so the refresh shows fresh data.
+            try:
+                from ui.perf import clear_query_cache, clear_portrait_cache
+                clear_query_cache()       # Dashboard hot-query cache
+                clear_portrait_cache()     # Fighter Profile portraits
+            except Exception as e:
+                print(f"Warning: cache clear failed: {e}", flush=True)
+            # Lazy refresh: refreshes only the active screen + Dashboard.
+            # Other screens refresh on next navigation.
             self.game_state.refresh_all()
             self._update_top_bar()
             self._update_bottom_bar()

@@ -256,6 +256,13 @@ from ui.state import get_state
 from ui.voice_display import title_case_phrase, display_phrase, \
     display_attr_descriptor
 
+# Phase 4 — Performance: portrait LRU cache. The Fighter Profile
+# screen re-loads the same fighter's portrait on every refresh
+# (Advance Day, navigation back-and-forth, theme toggle). With the
+# cache, the second+ load of the same fighter_id returns the cached
+# CTkImage instantly — no PIL.Image.open, no LANCZOS resize.
+from ui.perf import get_cached_portrait, cache_portrait
+
 # Voice-phrase decoder — single source of truth for the "label||phrase"
 # storage format used by every interpretation engine (mirrors
 # DashboardScreen's D4).
@@ -1517,28 +1524,43 @@ class FighterProfileScreen(ctk.CTkFrame):
             )
 
             # ---- Portrait (UI-POLISH Fix 4 + Phase 3 Fix 15) ----
-            # Load the portrait image (or generate an initials
-            # placeholder). Wrap in CTkImage + set on the portrait label.
+            # Phase 4 — Performance: check the LRU cache first. The
+            # cache stores the already-built CTkImage (not the PIL
+            # image) so a cache hit skips both the file open + the
+            # LANCZOS resize + the CTkImage construction. On a cache
+            # miss, fall through to _load_portrait_image + cache the
+            # built CTkImage for next time. The cache is bounded at
+            # 200 entries (LRU eviction) so it doesn't grow without
+            # limit on long sessions.
+            fighter_id = data["fighter_id"]
             try:
-                pil_img = _load_portrait_image(
-                    data["fighter_id"],
-                    data.get("first_name"),
-                    data.get("last_name"),
-                )
-                if pil_img is not None:
-                    self._portrait_ctk_image = ctk.CTkImage(
-                        light_image=pil_img, dark_image=pil_img,
-                        size=(_PORTRAIT_SIZE, _PORTRAIT_SIZE),
-                    )
+                cached_img = get_cached_portrait(fighter_id)
+                if cached_img is not None:
+                    self._portrait_ctk_image = cached_img
                     self._portrait_label.configure(
                         image=self._portrait_ctk_image, text="")
                 else:
-                    # PIL not available — show a text placeholder.
-                    self._portrait_label.configure(
-                        image=None, text="?",
-                        font=theme.fonts.display,
-                        text_color=theme.colors.text_secondary,
+                    pil_img = _load_portrait_image(
+                        fighter_id,
+                        data.get("first_name"),
+                        data.get("last_name"),
                     )
+                    if pil_img is not None:
+                        self._portrait_ctk_image = ctk.CTkImage(
+                            light_image=pil_img, dark_image=pil_img,
+                            size=(_PORTRAIT_SIZE, _PORTRAIT_SIZE),
+                        )
+                        # Store in the cache for next time.
+                        cache_portrait(fighter_id, self._portrait_ctk_image)
+                        self._portrait_label.configure(
+                            image=self._portrait_ctk_image, text="")
+                    else:
+                        # PIL not available — show a text placeholder.
+                        self._portrait_label.configure(
+                            image=None, text="?",
+                            font=theme.fonts.display,
+                            text_color=theme.colors.text_secondary,
+                        )
             except Exception as e:
                 print(f"Warning: portrait display failed for "
                       f"fighter {data['fighter_id']}: {e}", flush=True)
