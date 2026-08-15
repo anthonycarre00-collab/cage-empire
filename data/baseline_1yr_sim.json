@@ -714,7 +714,7 @@
       "pid": 1,
       "name": "Alpha Combat Federation",
       "tier": "major",
-      "cash": 50000000.0,
+      "cash": 1968269335.0,
       "state": "HEALTHY",
       "roster": 70
     },
@@ -722,7 +722,7 @@
       "pid": 2,
       "name": "Rival Fight League",
       "tier": "mid",
-      "cash": 10000000.0,
+      "cash": 164096398.0,
       "state": "HEALTHY",
       "roster": 50
     },
@@ -730,7 +730,7 @@
       "pid": 3,
       "name": "Pacific Rim Championship",
       "tier": "mid",
-      "cash": 10000000.0,
+      "cash": 199835051.0,
       "state": "HEALTHY",
       "roster": 50
     },
@@ -738,7 +738,7 @@
       "pid": 4,
       "name": "European Fight Network",
       "tier": "mid",
-      "cash": 10000000.0,
+      "cash": 114815531.0,
       "state": "HEALTHY",
       "roster": 53
     },
@@ -746,7 +746,7 @@
       "pid": 5,
       "name": "South American Warriors",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 16416206.0,
       "state": "HEALTHY",
       "roster": 31
     },
@@ -754,7 +754,7 @@
       "pid": 6,
       "name": "Mexican Boxing & Brawl",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 68277762.0,
       "state": "HEALTHY",
       "roster": 30
     },
@@ -762,7 +762,7 @@
       "pid": 7,
       "name": "Nordic Fight Nights",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 7060210.0,
       "state": "HEALTHY",
       "roster": 31
     },
@@ -770,7 +770,7 @@
       "pid": 8,
       "name": "Eastern Bloc Combat",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 82518599.0,
       "state": "HEALTHY",
       "roster": 30
     },
@@ -778,7 +778,7 @@
       "pid": 9,
       "name": "Australian Outback Fights",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 58100637.0,
       "state": "HEALTHY",
       "roster": 30
     },
@@ -786,7 +786,7 @@
       "pid": 10,
       "name": "French Savate Championship",
       "tier": "small",
-      "cash": 2000000.0,
+      "cash": 26686188.0,
       "state": "HEALTHY",
       "roster": 0
     }
@@ -800,9 +800,9 @@
     "titles": 121,
     "champions": 78,
     "rivalries": 343,
-    "news": 0,
+    "news": 1884,
     "staff": 405,
-    "finance_txns": 20,
+    "finance_txns": 19440,
     "free_agents": 4075,
     "fight_history": 79823,
     "rankings": 4000,
