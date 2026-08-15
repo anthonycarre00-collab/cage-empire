@@ -1,0 +1,512 @@
+/* ============================================================
+   CAGE EMPIRE — The Archive Screen Styles
+   ============================================================
+   Voice/design (per INFO-SCREENS-BATCH-1 §2):
+     - Section header: "THE ARCHIVE" (gold accent) + "your past
+       cards" subtitle (ownership language).
+     - Filter bar: gold-bordered card with date-from + date-to +
+       min-rating + search + Reset.
+     - Event list: each row is a card with caret + name + date +
+       rating chip + main event result + venue line + fight count
+       + net profit (with voice caption).
+     - Expanded card: list of fights, each with slot chip + title
+       chip + Red vs Blue corners (winner highlighted gold left
+       border + W chip) + result + finish_round + WC.
+     - Pagination: compact 1 … 3 4 [5] 6 7 … 12 layout.
+     - Voice phrases for show rating + net profit (no raw rating
+       ints — voice phrases + tier color chips only).
+   ============================================================ */
+
+.ce-archive {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ce-archive .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   FILTER BAR
+   ============================================================ */
+.ce-archive__filter-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ce-archive__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ce-archive__filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+}
+.ce-archive__filter-group--search {
+  flex: 1;
+  min-width: 200px;
+}
+.ce-archive__filter-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-archive__date-input,
+.ce-archive__select,
+.ce-archive__search {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ce-archive__date-input {
+  font-family: var(--font-mono);
+  color: var(--gold);
+}
+.ce-archive__date-input:focus,
+.ce-archive__select:focus,
+.ce-archive__search:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-tint);
+}
+.ce-archive__clear-btn {
+  align-self: flex-end;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ce-archive__summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   EVENT LIST
+   ============================================================ */
+.ce-archive__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ce-archive__item {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  transition: border-color 0.15s;
+  overflow: hidden;
+}
+.ce-archive__item:hover {
+  border-color: var(--border-strong);
+}
+.ce-archive__item--expanded {
+  border-color: var(--gold);
+}
+
+.ce-archive__item-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ce-archive__item-row:hover {
+  background: var(--bg-card-elevated);
+}
+.ce-archive__item-row:focus {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+.ce-archive__item-caret {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--gold);
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.ce-archive__item-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ce-archive__item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ce-archive__item-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ce-archive__item-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-archive__rating-chip {
+  font-size: 9px;
+  padding: 2px 8px;
+}
+
+.ce-archive__item-me {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.ce-archive__me-winner {
+  color: var(--gold);
+  font-weight: 600;
+}
+.ce-archive__me-loser {
+  color: var(--text-secondary);
+}
+.ce-archive__me-nick {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.ce-archive__me-method {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-archive__me-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.ce-archive__title-chip {
+  font-size: 9px;
+  padding: 2px 6px;
+}
+
+.ce-archive__item-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.ce-archive__sep {
+  color: var(--text-tertiary);
+}
+.ce-archive__count {
+  color: var(--text-secondary);
+}
+
+.ce-archive__item-profit {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.ce-archive__profit {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+.ce-archive__profit--positive { color: var(--green); }
+.ce-archive__profit--negative { color: var(--crimson); }
+.ce-archive__profit--neutral   { color: var(--text-secondary); }
+.ce-archive__profit-voice {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  text-transform: lowercase;
+}
+
+/* ============================================================
+   EXPANDED CARD
+   ============================================================ */
+.ce-archive__card {
+  background: var(--bg-base);
+  border-top: 1px solid var(--border-subtle);
+  padding: 14px 16px 18px 48px;  /* align under caret */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ce-archive__card--loading,
+.ce-archive__card--empty {
+  padding: 24px;
+  text-align: center;
+}
+.ce-archive__card-empty-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.ce-archive__card-empty-body {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.ce-archive__card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-archive__card-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-archive__card-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ce-archive__fights {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Task FIGHT-NIGHT-SHOWCASE — Replay button row on the expanded card. */
+.ce-archive__card-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-archive__replay-btn {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-md);
+  padding: 8px 16px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-archive__replay-btn:hover {
+  background: var(--gold-bright);
+}
+.ce-archive__replay-btn:active {
+  transform: translateY(1px);
+}
+
+.ce-archive__fight {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-archive__fight-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-archive__fight-slot {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+}
+.ce-archive__fight-title {
+  font-size: 9px;
+  padding: 1px 5px;
+}
+
+.ce-archive__fight-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ce-archive__corner {
+  flex: 1;
+  padding: 4px 8px;
+  border-left: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.ce-archive__corner--winner {
+  border-left-color: var(--gold);
+  background: var(--gold-tint);
+}
+.ce-archive__vs {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+.ce-archive__w-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: var(--gold);
+  color: var(--text-on-gold);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.ce-archive__fighter {
+  font-size: 13px;
+}
+.ce-archive__fighter--unknown {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.ce-archive__fight-footer {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================
+   EMPTY STATE — voice-phrased
+   ============================================================ */
+.ce-archive__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-archive__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-archive__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   PAGINATION — shares .ce-page-btn styles with wire.css
+   ============================================================ */
+.ce-archive__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-archive {
+    padding: 16px 12px 60px;
+  }
+  .ce-archive__filters {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .ce-archive__filter-group,
+  .ce-archive__filter-group--search {
+    min-width: 0;
+    width: 100%;
+  }
+  .ce-archive__clear-btn {
+    align-self: flex-start;
+  }
+  .ce-archive__item-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .ce-archive__item-profit {
+    align-self: flex-end;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .ce-archive__card {
+    padding-left: 24px;
+  }
+  .ce-archive__fight-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ce-archive__vs {
+    align-self: center;
+  }
+}

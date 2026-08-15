@@ -149,12 +149,28 @@ def _set_morale(conn, fighter_id, new_morale):
 
 
 def _get_marketability(conn, fighter_id):
-    """Return the fighter's current marketability (default 50)."""
-    row = conn.execute(
-        "SELECT marketability FROM fighters WHERE fighter_id=?",
-        (fighter_id,),
-    ).fetchone()
-    return row[0] if row and row[0] is not None else 50
+    """Return the fighter's current marketability (default 50).
+
+    Delegates to the canonical ``interpretation.marketability.compute_
+    marketability`` (Tier 2 / W38 — one authoritative calculation per
+    meaning). Returns float in [0, 100]; callers that need int should
+    ``int(...)`` the result. The legacy callers (this module's
+    suspension-creation path + the show_rating + finance modules'
+    separate ``_get_main_event_marketability`` / ``_get_avg_card_
+    marketability`` helpers) are unchanged.
+    """
+    # Lazy import — keeps suspensions importable in headless test
+    # setups where the interpretation package may not be wired.
+    try:
+        from interpretation.marketability import compute_marketability
+        return compute_marketability(conn, fighter_id)
+    except ImportError:
+        # Fallback — original implementation (verbatim).
+        row = conn.execute(
+            "SELECT marketability FROM fighters WHERE fighter_id=?",
+            (fighter_id,),
+        ).fetchone()
+        return row[0] if row and row[0] is not None else 50
 
 
 def _set_marketability(conn, fighter_id, new_marketability):

@@ -1032,14 +1032,23 @@ class App(tk.Tk):
             messagebox.showerror("Error", str(e))
 
 if __name__ == "__main__":
-    # Stage 6 (Task 6.2): launch the new CustomTkinter app by default.
-    # The old tkinter App class is retained above for backwards-compat
-    # with acceptance tests that instantiate app.App(), but the user
-    # sees the new CTk dual-mode UI.
+    # PYWEBVIEW-BUILD: the CustomTkinter UI has been migrated to a
+    # pywebview desktop app (src/app_web.py). The old CTk shell lived
+    # in src/ui/app.py but has been archived to src/ui_legacy/app.py.
+    # This file remains the home of the game-logic helpers (_vacate_
+    # title_on_retirement, generate_fighter, _CAMP_FOCUS_ATTRS, etc.)
+    # that tick_processor imports — but it is NO LONGER the user-
+    # facing entry point.
     #
-    # To launch the OLD tkinter app (for debugging): python src/app.py --legacy
+    # To launch the OLD tkinter App (legacy debugging only):
+    #   python src/app.py --legacy
+    # To launch the archived CTk shell (will likely fail — deps moved):
+    #   python src/ui_legacy/app.py
+    # To launch the NEW pywebview app (default):
+    #   python src/app_web.py
     if "--legacy" in sys.argv:
         App().mainloop()
     else:
-        from ui.app import CageEmpireApp
-        CageEmpireApp().mainloop()
+        # Delegate to the new pywebview entry point.
+        from app_web import main as _web_main
+        _web_main()

@@ -243,6 +243,11 @@ def _is_monthly_tick(conn):
 def _compute_age(dob_str, current_date_str):
     """Compute a fighter's age as of current_date.
 
+    HW9.1.2 optimization: replaced datetime.strptime with direct string
+    slicing. strptime was 9.3us/call; string slicing is 1.1us/call
+    (8.6x faster). With 4452 active fighters, this saves ~177ms per
+    monthly tick.
+
     Args:
         dob_str: ISO date 'YYYY-MM-DD' (fighters.date_of_birth).
         current_date_str: ISO date 'YYYY-MM-DD' (sim current_date).
@@ -253,13 +258,14 @@ def _compute_age(dob_str, current_date_str):
     if not dob_str or not current_date_str:
         return None
     try:
-        dob = datetime.strptime(dob_str, "%Y-%m-%d")
-        cur = datetime.strptime(current_date_str, "%Y-%m-%d")
-    except (ValueError, TypeError):
+        # Direct string slicing — 8.6x faster than strptime
+        dob_y, dob_m, dob_d = int(dob_str[:4]), int(dob_str[5:7]), int(dob_str[8:10])
+        cur_y, cur_m, cur_d = int(current_date_str[:4]), int(current_date_str[5:7]), int(current_date_str[8:10])
+    except (ValueError, IndexError, TypeError):
         return None
-    age = cur.year - dob.year
+    age = cur_y - dob_y
     # Adjust if the birthday hasn't happened yet this year.
-    if (cur.month, cur.day) < (dob.month, dob.day):
+    if (cur_m, cur_d) < (dob_m, dob_d):
         age -= 1
     return age
 
@@ -369,20 +375,50 @@ def _process_career_arc(conn, event):
 
     rng = random.Random()
 
+    # HW9.1 — import the voice tier function for the tier-crossing
+    # check. If voice isn't available (headless test), fall back to
+    # always refreshing (the old behavior).
+    try:
+        from voice import _tier_for as _voice_tier_for
+    except ImportError:
+        _voice_tier_for = None
+
     # Fetch all active fighters + their attributes + career meta in
     # one query (avoids N+1 queries for 4000-fighter rosters).
+    # HW9.1: also fetch the 9 attributes that growth/decline can
+    # touch (3 growth + 6 decline) + the 2 personality fields, so
+    # we can compute changes in Python + batch the UPDATEs.
+    _GROWTH_ATTRS = [a for a, _ in GROWTH_RULES]
+    _DECLINE_ATTRS = [a for a, _, _ in DECLINE_RULES]
+    _ALL_ATTRS = list(set(_GROWTH_ATTRS + _DECLINE_ATTRS))
+    _attr_cols = ", ".join(_ALL_ATTRS)
+
     rows = conn.execute(
         "SELECT f.fighter_id, f.date_of_birth, "
         "fc.potential, fc.career_health, fc.title_reigns, "
-        "fp.discipline, fp.coachability "
+        "fp.discipline, fp.coachability, "
+        "fp.fatigue_tolerance, fp.travel_comfort, "
+        f"fa.{_attr_cols.replace(', ', ', fa.')} "
         "FROM fighters f "
         "JOIN fighter_career fc ON fc.fighter_id=f.fighter_id "
         "JOIN fighter_personality fp ON fp.fighter_id=f.fighter_id "
+        f"JOIN fighter_attributes fa ON fa.fighter_id=f.fighter_id "
         "WHERE f.is_active=1 AND f.is_retired=0"
     ).fetchall()
 
-    for (fighter_id, dob, potential, career_health, title_reigns,
-         discipline, coachability) in rows:
+    # HW9.1 — batch UPDATE accumulator. Instead of 1 UPDATE per
+    # attribute per fighter (34K+ DB calls on a 4000-fighter roster),
+    # we accumulate changes + use executemany at the end.
+    _attr_updates = []  # list of (new_val, fighter_id, attr_name)
+    # HW9.1.3 — batch personality UPDATEs too (was per-fighter conn.execute)
+    _ft_updates = []  # list of (new_ft, fighter_id)
+    _tc_updates = []  # list of (new_tc, fighter_id)
+    # HW9.1.4 — collect fighters that need decline news for bulk pre-fetch
+    _decline_news_fighters = []  # list of (fighter_id, age)
+
+    for row in rows:
+        (fighter_id, dob, potential, career_health, title_reigns,
+         discipline, coachability, cur_ft, cur_tc, *attr_vals) = row
         age = _compute_age(dob, current_date)
         if age is None:
             continue  # missing DOB — can't compute age
@@ -392,6 +428,10 @@ def _process_career_arc(conn, event):
         discipline = discipline if discipline is not None else 50
         coachability = coachability if coachability is not None else 50
 
+        # Build a dict of current attribute values (for Python-side
+        # computation — avoids per-attribute SELECTs).
+        cur_attrs = dict(zip(_ALL_ATTRS, attr_vals))
+
         # Compute the effective ceiling ONCE per fighter — used by
         # the growth phase only. Decline ignores the ceiling.
         ceiling = _effective_ceiling(
@@ -400,30 +440,32 @@ def _process_career_arc(conn, event):
 
         total_decline = 0
         total_growth = 0
+        tier_crossed = False  # HW9.1 — skip snapshot refresh if no tier changed
 
         # ---- GROWTH BAND (18-27) ----
         if GROWTH_AGE_MIN <= age <= GROWTH_AGE_MAX:
             for attr_name, prob in GROWTH_RULES:
                 if rng.random() < prob:
-                    cur_val = conn.execute(
-                        f"SELECT {attr_name} FROM fighter_attributes "
-                        "WHERE fighter_id=?",
-                        (fighter_id,),
-                    ).fetchone()
-                    if not cur_val:
+                    cur = cur_attrs.get(attr_name)
+                    if cur is None:
                         continue
-                    cur = cur_val[0] if cur_val[0] is not None else 50
+                    cur = cur if cur is not None else 50
                     # Cap at effective_ceiling — natural maturation
                     # cannot exceed what the fighter's potential +
                     # age + health + personality allow.
                     new_val = min(ceiling, cur + 1)
                     if new_val > cur:
-                        conn.execute(
-                            f"UPDATE fighter_attributes SET {attr_name}=?, "
-                            "updated_at=CURRENT_TIMESTAMP "
-                            "WHERE fighter_id=?",
-                            (new_val, fighter_id),
-                        )
+                        # HW9.1 — check if the tier boundary was
+                        # crossed. If voice is available + the tier
+                        # didn't change, the descriptor is identical
+                        # (rng is deterministic per fighter), so we
+                        # skip the snapshot refresh later.
+                        if _voice_tier_for:
+                            if _voice_tier_for(cur) != _voice_tier_for(new_val):
+                                tier_crossed = True
+                        else:
+                            tier_crossed = True  # conservative — can't check
+                        _attr_updates.append((new_val, fighter_id, attr_name))
                         total_growth += (new_val - cur)
 
         # ---- DECLINE BAND (30+) ----
@@ -432,24 +474,20 @@ def _process_career_arc(conn, event):
                 if age < onset_age:
                     continue
                 if rng.random() < prob:
-                    cur_val = conn.execute(
-                        f"SELECT {attr_name} FROM fighter_attributes "
-                        "WHERE fighter_id=?",
-                        (fighter_id,),
-                    ).fetchone()
-                    if not cur_val:
+                    cur = cur_attrs.get(attr_name)
+                    if cur is None:
                         continue
-                    cur = cur_val[0] if cur_val[0] is not None else 50
+                    cur = cur if cur is not None else 50
                     # NOT capped at effective_ceiling — decline goes
                     # below it. Floored at 0 (the schema CHECK).
                     new_val = max(ATTR_FLOOR, cur - 1)
                     if new_val < cur:
-                        conn.execute(
-                            f"UPDATE fighter_attributes SET {attr_name}=?, "
-                            "updated_at=CURRENT_TIMESTAMP "
-                            "WHERE fighter_id=?",
-                            (new_val, fighter_id),
-                        )
+                        if _voice_tier_for:
+                            if _voice_tier_for(cur) != _voice_tier_for(new_val):
+                                tier_crossed = True
+                        else:
+                            tier_crossed = True
+                        _attr_updates.append((new_val, fighter_id, attr_name))
                         total_decline += (cur - new_val)
 
         # ---- Stage5-Final — personality field monthly drift ----
@@ -458,60 +496,174 @@ def _process_career_arc(conn, event):
         #   fighters adapt to travel). Stored as REAL.
         # All changes capped at [PERSONALITY_FLOOR=10, PERSONALITY_CEIL=95]
         # per the brief — tighter than the schema's 0-100 CHECK.
+        # HW9.1.3: batch the UPDATEs (was per-fighter conn.execute)
         pers_changed = False
+        pers_tier_crossed = False
         if age >= FATIGUE_TOLERANCE_DECLINE_AGE:
-            row = conn.execute(
-                "SELECT fatigue_tolerance FROM fighter_personality "
-                "WHERE fighter_id=?",
-                (fighter_id,),
-            ).fetchone()
-            if row:
-                cur_ft = row[0] if row[0] is not None else 50
+            if cur_ft is not None:
                 new_ft = max(PERSONALITY_FLOOR, int(cur_ft) - 1)
                 if new_ft != cur_ft:
-                    conn.execute(
-                        "UPDATE fighter_personality "
-                        "SET fatigue_tolerance=? WHERE fighter_id=?",
-                        (new_ft, fighter_id),
-                    )
+                    _ft_updates.append((new_ft, fighter_id))
                     pers_changed = True
+                    if _voice_tier_for:
+                        if _voice_tier_for(int(cur_ft)) != _voice_tier_for(new_ft):
+                            pers_tier_crossed = True
+                    else:
+                        pers_tier_crossed = True
         if age <= TRAVEL_COMFORT_GROWTH_AGE_MAX:
-            row = conn.execute(
-                "SELECT travel_comfort FROM fighter_personality "
-                "WHERE fighter_id=?",
-                (fighter_id,),
-            ).fetchone()
-            if row:
-                cur_tc = row[0] if row[0] is not None else 50
+            if cur_tc is not None:
                 # Preserve REAL type if the current value is REAL
                 # (e.g., 50.5 + 0.5 = 51.0 — keep as float).
                 base_tc = float(cur_tc) if not isinstance(cur_tc, float) else cur_tc
                 new_tc = min(float(PERSONALITY_CEIL), base_tc + 0.5)
                 if new_tc != cur_tc:
-                    conn.execute(
-                        "UPDATE fighter_personality "
-                        "SET travel_comfort=? WHERE fighter_id=?",
-                        (new_tc, fighter_id),
-                    )
+                    _tc_updates.append((new_tc, fighter_id))
                     pers_changed = True
+                    if _voice_tier_for:
+                        if _voice_tier_for(int(base_tc)) != _voice_tier_for(int(new_tc)):
+                            pers_tier_crossed = True
+                    else:
+                        pers_tier_crossed = True
 
         # ---- Refresh the descriptor snapshot (one pass per fighter
         # that actually changed). Skip the refresh if no attributes
         # changed this month — saves work on the 80%+ of monthly
         # ticks where the RNG didn't fire for this fighter.
-        if total_growth > 0 or total_decline > 0 or pers_changed:
+        #
+        # HW9.1 — additionally skip the refresh if NO tier boundary
+        # was crossed. The descriptor snapshot uses
+        # `rng = Random(fighter_id)` (deterministic), so if no
+        # attribute's tier changed, the descriptor string is
+        # IDENTICAL to the cached version. This skips ~90% of
+        # refreshes (since ±1 changes rarely cross tier boundaries
+        # at 90/75/60/40/25/10). The 0.8s voice layer cost drops
+        # to ~0.08s on a typical monthly tick.
+        #
+        # TIER1-365DAY (2027-02): when tier_crossed OR pers_tier_
+        # crossed is True, ALSO mark the fighter dirty for the
+        # next WEEKLY rebuild. The weekly rebuild tick (current_
+        # day % 7 == 0) used to rebuild ALL 4450 active fighters
+        # (~333ms). Now it only rebuilds the dirty-for-rebuild
+        # subset (~15-50ms). Without this mark, the weekly rebuild
+        # would miss fighters whose attributes crossed a tier
+        # boundary since the last weekly rebuild — their momentum /
+        # pressure / career_phase / narrative_family / legacy_state
+        # cache rows would stay stale until the next FIGHT_RESOLVED
+        # / TITLE_CHANGED / etc. event for that fighter (which might
+        # not happen for weeks of sim time).
+        if (total_growth > 0 or total_decline > 0 or pers_changed) \
+                and (tier_crossed or pers_tier_crossed or not _voice_tier_for):
             _refresh_snapshot(conn, fighter_id)
+            # TIER1-365DAY — mark dirty for the next weekly rebuild.
+            # The per-event refresh above keeps the cache fresh
+            # immediately; this mark ensures the weekly dirty
+            # rebuild re-touches the fighter (catches any drift
+            # between the per-event refresh and downstream writes).
+            try:
+                from interpretation.snapshot_cache import (
+                    mark_fighter_dirty_for_rebuild,
+                )
+                mark_fighter_dirty_for_rebuild(fighter_id)
+            except ImportError:
+                pass  # interpretation layer not available — skip.
 
         # ---- NEWS: "father time catches up" for cliff declines ----
         # Only fires for fighters losing 5+ attribute points in a
         # single month — the storyline-worthy collapse. Most monthly
         # ticks generate no news at all (with ~4000 fighters, a
         # looser threshold would spam the feed).
+        # HW9.1.4: collect for bulk pre-fetch (was per-fighter queries)
         if total_decline >= DECLINE_NEWS_THRESHOLD:
-            _write_decline_news(conn, fighter_id, age, current_date)
+            _decline_news_fighters.append((fighter_id, age))
+
+    # HW9.1 — batch-write all attribute updates via executemany.
+    # This replaces 34K+ individual UPDATE calls with a single
+    # executemany per attribute name. The UPDATEs are grouped by
+    # attribute name so each executemany uses the same SQL template
+    # (SQLite's prepared statement cache keeps this fast).
+    if _attr_updates:
+        _by_attr = {}
+        for new_val, fid, attr_name in _attr_updates:
+            _by_attr.setdefault(attr_name, []).append((new_val, fid))
+        for attr_name, pairs in _by_attr.items():
+            conn.executemany(
+                f"UPDATE fighter_attributes SET {attr_name}=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
+                pairs,
+            )
+
+    # HW9.1.3 — batch-write personality field updates via executemany.
+    # Was per-fighter conn.execute (4000+ calls); now 2 executemany calls.
+    if _ft_updates:
+        conn.executemany(
+            "UPDATE fighter_personality SET fatigue_tolerance=? "
+            "WHERE fighter_id=?",
+            _ft_updates,
+        )
+    if _tc_updates:
+        conn.executemany(
+            "UPDATE fighter_personality SET travel_comfort=? "
+            "WHERE fighter_id=?",
+            _tc_updates,
+        )
+
+    # HW9.1.4 — bulk pre-fetch decline-news data + write all decline news.
+    # Was: 281 fighters × 3 queries each = 843 DB calls inside _write_decline_news.
+    # Now: 1 query for news_source_id + 1 query for all fighter names +
+    # 1 query for all career data = 3 DB calls total.
+    if _decline_news_fighters:
+        src_id = _get_news_source_id(conn)
+        # Bulk-fetch fighter names
+        fighter_ids = [fid for fid, _ in _decline_news_fighters]
+        placeholders = ",".join("?" for _ in fighter_ids)
+        name_rows = conn.execute(
+            f"SELECT fighter_id, first_name || ' ' || last_name "
+            f"FROM fighters WHERE fighter_id IN ({placeholders})",
+            fighter_ids,
+        ).fetchall()
+        name_map = {r[0]: r[1] for r in name_rows}
+        # Bulk-fetch career data for stage descriptors
+        career_rows = conn.execute(
+            f"SELECT fc.fighter_id, fc.record_wins, fc.record_losses, "
+            f"fc.record_draws, fc.title_reigns, fc.win_streak, fc.loss_streak "
+            f"FROM fighter_career fc WHERE fc.fighter_id IN ({placeholders})",
+            fighter_ids,
+        ).fetchall()
+        career_map = {r[0]: r[1:] for r in career_rows}
+        # Bulk-fetch champion status
+        champ_rows = conn.execute(
+            f"SELECT DISTINCT current_champion_fighter_id FROM titles "
+            f"WHERE current_champion_fighter_id IN ({placeholders})",
+            fighter_ids,
+        ).fetchall()
+        champ_set = {r[0] for r in champ_rows}
+        # Write decline news for each fighter using pre-fetched data
+        import random as _rng_mod
+        for fid, age in _decline_news_fighters:
+            name = name_map.get(fid, f"Fighter {fid}")
+            career = career_map.get(fid, (0, 0, 0, 0, 0, 0))
+            wins, losses, draws, reigns, ws, ls = career
+            is_champion = fid in champ_set
+            rng = _rng_mod.Random(fid)
+            try:
+                import voice
+                stage_desc = voice.describe_career_stage(
+                    age, wins or 0, losses or 0, draws or 0,
+                    is_champion=is_champion,
+                    title_reigns=reigns or 0,
+                    win_streak=ws or 0,
+                    loss_streak=ls or 0,
+                    rng=rng,
+                )
+            except ImportError:
+                stage_desc = "veteran fighter"
+            _write_decline_news(conn, fid, age, current_date,
+                                src_id=src_id, name=name,
+                                stage_desc=stage_desc)
 
 
-def _write_decline_news(conn, fighter_id, age, current_date):
+def _write_decline_news(conn, fighter_id, age, current_date,
+                         src_id=None, name=None, stage_desc=None):
     """Write a 'father time catches up' news item for a cliff decline.
 
     Uses voice.describe_career_stage for the career-stage descriptor
@@ -524,10 +676,17 @@ def _write_decline_news(conn, fighter_id, age, current_date):
     filters can group career-arc news together. sentiment='negative'
     — a decline is bad news for the fighter (and the player if they
     own the fighter).
+
+    HW9.1.4: src_id, name, stage_desc can be passed in to avoid
+    per-fighter queries when called from _process_career_arc (which
+    pre-fetches them in bulk).
     """
-    src_id = _get_news_source_id(conn)
-    name = _fighter_name(conn, fighter_id)
-    stage_desc = _describe_career_stage_for_news(conn, fighter_id, age)
+    if src_id is None:
+        src_id = _get_news_source_id(conn)
+    if name is None:
+        name = _fighter_name(conn, fighter_id)
+    if stage_desc is None:
+        stage_desc = _describe_career_stage_for_news(conn, fighter_id, age)
 
     headline = f"Father time catches up with {name}"
     body = (f"{name} — the {stage_desc} — shows signs of slowing "

@@ -408,21 +408,34 @@ def _compute_asking_price(conn, fighter_id):
     The formula is deliberately non-linear so elite potential (75+)
     commands a meaningful premium — a potential-90 fighter should
     feel expensive, not just slightly pricier than a potential-50.
+
+    PHASE M3.3 (docs/MASTER_PLAN_MATCHMAKING.md §2.2): the asking
+    price now uses `effective_ceiling = potential * realization`
+    instead of raw potential. A "bust" (potential=85, realization=0.5,
+    effective_ceiling=42) is priced like a 42-potential fighter — not
+    the same as a "realizer" (potential=85, realization=1.0, ceiling=85).
+    The rival AI's fair-value formula (signing_agent._fair_value) was
+    also updated to use effective_ceiling, so neither side overpays
+    for busts.
     """
     if fighter_id is None:
         return ASKING_PRICE_MIN
     row = conn.execute(
-        "SELECT potential FROM fighter_career WHERE fighter_id=?",
+        "SELECT potential, realization FROM fighter_career WHERE fighter_id=?",
         (fighter_id,),
     ).fetchone()
     potential = row[0] if row and row[0] is not None else 50
-    # Linear 10k–100k mapping: potential 0 → $10k, potential 100 → $100k.
-    # A potential-50 fighter costs $50k; a potential-90 costs $90k.
-    price = ASKING_PRICE_MIN + (potential / 100.0) * (
+    realization = row[1] if row and row[1] is not None else 0.7
+    # M3.3: effective_ceiling = potential * realization.
+    effective_ceiling = potential * realization
+    # Linear 10k–100k mapping: effective_ceiling 0 → $10k, 100 → $100k.
+    # A bust (potential=85, realization=0.5, ceiling=42) costs ~$46k;
+    # a realizer (potential=85, realization=1.0, ceiling=85) costs ~$86k.
+    price = ASKING_PRICE_MIN + (effective_ceiling / 100.0) * (
         ASKING_PRICE_MAX - ASKING_PRICE_MIN
     )
-    # Add ±10% noise so two potential-72 fighters don't have identical
-    # prices (the agent's asking price has some wiggle room).
+    # Add ±10% noise so two effective_ceiling=72 fighters don't have
+    # identical prices (the agent's asking price has some wiggle room).
     noise = 1.0 + random.uniform(-0.10, 0.10)
     price = price * noise
     return round(max(ASKING_PRICE_MIN, min(ASKING_PRICE_MAX, price)), 2)

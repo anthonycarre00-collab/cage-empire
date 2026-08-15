@@ -1,0 +1,495 @@
+/* ============================================================
+   CAGE EMPIRE — Deals (Contracts) Screen Styles
+   ============================================================
+   Voice/design (per P2_PLAN_FINANCE_CONTRACTS.md §2):
+     - Section header: "DEALS" (gold accent) + active count subtitle.
+     - Expiring Soon alert: red banner with ⚠ icon.
+     - Filter bar: 4 tab buttons (All / Expiring Soon / Fighters /
+       Staff) + name search input. Tabs have count badges.
+     - Fighter Contracts table: 6 columns (Fighter / Salary / Dates /
+       Expires In / Bonus / Status). Clickable fighter name → Profile.
+     - Staff Contracts table: 7 columns (Staff / Role / Skill /
+       Salary / Dates / Expires In / Status). Skill in voice phrase.
+     - Days-until-expiry color-coded: red ≤30d, yellow ≤60d, green
+       >60d, grey unknown.
+     - Status chip: green Active, yellow Expiring, crimson Expired.
+     - Click row → expand detail panel (buyout, exclusivity, bonus
+       structure breakdown).
+     - Voice empty state: "No deals on the table."
+   ============================================================ */
+
+.ce-contracts {
+  position: relative;
+  z-index: 1;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ce-contracts__sec-sub {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-weight: 400;
+}
+
+/* ============================================================
+   EXPIRING SOON ALERT BANNER
+   ============================================================ */
+.ce-contracts__alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--crimson-tint);
+  border: 1px solid var(--crimson);
+  border-left: 4px solid var(--crimson);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+}
+.ce-contracts__alert-icon {
+  font-size: 22px;
+  color: var(--crimson);
+  flex-shrink: 0;
+}
+.ce-contracts__alert-text {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-contracts__alert-text strong {
+  font-family: var(--font-display);
+  font-weight: 800;
+  color: var(--crimson);
+  margin-right: 2px;
+}
+
+/* ============================================================
+   FILTER BAR — tabs + search
+   ============================================================ */
+.ce-contracts__filter-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ce-contracts__tabs {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+.ce-contracts__tab {
+  padding: 8px 14px;
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  border: none;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ce-contracts__tab:hover:not(.ce-contracts__tab--active) {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+}
+.ce-contracts__tab--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+.ce-contracts__tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+.ce-contracts__tab:not(.ce-contracts__tab--active) .ce-contracts__tab-badge {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+}
+.ce-contracts__search-wrap {
+  margin-left: auto;
+  min-width: 200px;
+}
+.ce-contracts__search-input {
+  width: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ce-contracts__search-input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-tint);
+}
+
+/* ============================================================
+   SECTION + TABLE
+   ============================================================ */
+.ce-contracts__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-contracts__section-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.ce-contracts__section-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.ce-contracts__table-wrap {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ce-contracts__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.ce-contracts__th {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card-elevated);
+  white-space: nowrap;
+}
+.ce-contracts__th--salary { width: 110px; }
+.ce-contracts__th--dates  { width: 200px; }
+.ce-contracts__th--days   { width: 110px; }
+.ce-contracts__th--bonus  { width: 180px; }
+.ce-contracts__th--role   { width: 140px; }
+.ce-contracts__th--skill  { width: 130px; }
+.ce-contracts__th--status { width: 100px; }
+
+.ce-contracts__row {
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.ce-contracts__row:last-child {
+  border-bottom: none;
+}
+.ce-contracts__row:hover {
+  background: var(--bg-card-elevated);
+}
+.ce-contracts__row--expanded {
+  background: var(--bg-card-elevated);
+}
+
+.ce-contracts__td {
+  padding: 12px;
+  vertical-align: middle;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.ce-contracts__td--name {
+  position: relative;
+}
+.ce-contracts__expand {
+  display: inline-block;
+  width: 14px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  margin-right: 6px;
+  transition: transform 0.15s;
+}
+.ce-contracts__row--expanded .ce-contracts__expand {
+  color: var(--gold);
+}
+.ce-contracts__name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.ce-contracts__name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-contracts__nick {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.ce-contracts__staff-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ce-contracts__td--salary {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.ce-contracts__td--role {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ce-contracts__td--skill {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 500;
+}
+.ce-contracts__skill--world-class { color: var(--gold); }
+.ce-contracts__skill--established { color: var(--green); }
+.ce-contracts__skill--promising   { color: var(--text-primary); }
+.ce-contracts__skill--unproven    { color: var(--text-tertiary); }
+
+.ce-contracts__td--dates {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ce-contracts__date-start,
+.ce-contracts__date-end {
+  display: inline-block;
+}
+.ce-contracts__date-arrow {
+  margin: 0 6px;
+  color: var(--text-tertiary);
+}
+
+.ce-contracts__td--days {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ce-contracts__days--critical {
+  color: var(--crimson);
+  background: var(--crimson-tint);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  display: inline-block;
+}
+.ce-contracts__days--soon {
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.12);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  display: inline-block;
+}
+.ce-contracts__days--ok {
+  color: var(--green);
+}
+.ce-contracts__days--expired {
+  color: var(--crimson);
+  font-style: italic;
+}
+.ce-contracts__days--unknown {
+  color: var(--text-tertiary);
+}
+
+.ce-contracts__td--bonus {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.ce-contracts__status-chip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: inline-block;
+}
+
+/* ============================================================
+   EXPANDED DETAIL ROW
+   ============================================================ */
+.ce-contracts__detail-row {
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-contracts__detail-cell {
+  padding: 14px 16px 16px 36px;
+}
+.ce-contracts__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px 24px;
+}
+.ce-contracts__detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-contracts__detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-contracts__detail-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   EMPTY STATES
+   ============================================================ */
+.ce-contracts__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 32px 24px;
+  text-align: center;
+}
+.ce-contracts__empty-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.ce-contracts__empty-body {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.ce-contracts__empty-state {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 56px 24px;
+  text-align: center;
+}
+.ce-contracts__empty-state-icon {
+  font-size: 48px;
+  color: var(--gold);
+  margin-bottom: 12px;
+  filter: drop-shadow(0 0 8px rgba(224, 169, 87, 0.25));
+}
+.ce-contracts__empty-state-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-contracts__empty-state-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   PAGINATION — reuses .ce-page-btn from wire.css
+   ============================================================ */
+.ce-contracts__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 14px 0 4px;
+}
+.ce-page-btn--ellipsis {
+  cursor: default;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .ce-contracts__detail-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .ce-contracts {
+    padding: 16px 12px 60px;
+  }
+  .ce-contracts__filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ce-contracts__tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .ce-contracts__search-wrap {
+    margin-left: 0;
+    min-width: 0;
+  }
+  .ce-contracts__table-wrap {
+    overflow-x: auto;
+  }
+  .ce-contracts__table {
+    min-width: 720px;
+  }
+  .ce-contracts__detail-grid {
+    grid-template-columns: 1fr;
+  }
+}

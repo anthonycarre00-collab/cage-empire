@@ -1,0 +1,991 @@
+/* ============================================================
+   CAGE EMPIRE — App Shell (top bar + sidebar + screen container)
+   ============================================================
+   Per the task spec:
+     - Top bar (56px): logo + wordmark + sim date (mono) + cash
+       (mono, green if positive) + Advance Day button (gold)
+     - Sidebar (220px): 5 nav groups (HOME/FIGHTERS/EVENTS/
+       BUSINESS/WORLD) with 14 nav items. Active item: gold left
+       border + gold-tint bg
+     - Screen container: <div id="screen-content"> populated by JS
+   ============================================================ */
+
+/* ============================================================
+   APP ROOT LAYOUT
+   ============================================================ */
+#ce-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Cage watermark — branded paper feel (GUI_PLAN §4.6) */
+.ce-watermark {
+  position: fixed;
+  bottom: 16px;
+  right: 24px;
+  font-family: var(--font-display);
+  font-size: 110px;
+  font-weight: 700;
+  color: var(--gold);
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: 0;
+  letter-spacing: -0.05em;
+}
+
+/* ============================================================
+   TOP BAR (56px)
+   ============================================================ */
+.ce-top-bar {
+  height: var(--top-bar-h);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-bottom: 2px solid var(--crimson); /* P2-2 crimson accent line */
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 16px;
+  position: relative;
+  z-index: 10;
+}
+
+.ce-top-bar__logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.ce-top-bar__wordmark {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ce-top-bar__divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* The sim-date is shown in mono (statboard register) */
+.ce-top-bar__date {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Cash — green if positive, crimson if negative (visual cue) */
+.ce-top-bar__cash {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--green);
+  white-space: nowrap;
+}
+.ce-top-bar__cash.is-negative { color: var(--crimson); }
+
+/* Flex spacer pushes the Advance Day button to the right */
+.ce-top-bar__spacer { flex: 1; }
+
+/* Advance Day button — gold, prominent (the dopamine button) */
+.ce-advance-btn {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-xl);
+  padding: 10px 22px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(224, 169, 87, 0.25);
+}
+.ce-advance-btn:hover {
+  background: var(--gold-bright);
+  box-shadow: 0 4px 12px rgba(224, 169, 87, 0.35);
+}
+.ce-advance-btn:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 4px rgba(224, 169, 87, 0.2);
+}
+.ce-advance-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+/* P3.4 — when Fight Night locks the Advance Day button during live
+   commentary, add a "LOCKED" visual cue so the player understands
+   why the button is disabled (it's not a bug — they have to finish
+   watching the fight first). */
+.ce-advance-btn.ce-top-bar__btn--locked {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  opacity: 0.7;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.ce-advance-btn__icon { font-size: 12px; }
+
+/* Phase F2.2 — secondary variant for Sim Week + Skip to Show buttons.
+   Lower visual weight than the primary gold Advance Day (which is the
+   dopamine button). Outlined / muted-gold so the three buttons form a
+   visual hierarchy: primary (gold fill) → secondary (gold outline). */
+.ce-advance-btn--secondary {
+  background: transparent;
+  color: var(--gold);
+  border: 1px solid rgba(224, 169, 87, 0.55);
+  box-shadow: none;
+  padding: 8px 14px;  /* slightly tighter than the primary 10/22 */
+  font-size: 13px;
+}
+.ce-advance-btn--secondary:hover {
+  background: rgba(224, 169, 87, 0.10);
+  border-color: var(--gold);
+  box-shadow: none;
+}
+.ce-advance-btn--secondary:active {
+  transform: translateY(1px);
+}
+.ce-advance-btn--secondary:disabled {
+  opacity: 0.4;
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+}
+
+/* ============================================================
+   PROCESSING OVERLAY (Phase F2.2)
+   Full-screen semi-transparent overlay shown during Sim Week +
+   Skip to Show. Tells the player the sim is processing (so they
+   don't think the app froze) + cycles a random fighter profile
+   snapshot every ~3s for visual interest.
+   ============================================================ */
+.ce-processing-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 17, 22, 0.82);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: none;  /* hidden by default; .ce-processing-overlay--visible shows */
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.ce-processing-overlay--visible {
+  display: flex;
+  animation: ce-overlay-fade-in 0.18s ease-out;
+}
+@keyframes ce-overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ce-processing-overlay__panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-top: 3px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 32px 40px;
+  min-width: 360px;
+  max-width: 460px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+.ce-processing-overlay__spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 16px;
+  border: 3px solid rgba(224, 169, 87, 0.20);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: ce-overlay-spin 0.8s linear infinite;
+}
+@keyframes ce-overlay-spin {
+  to { transform: rotate(360deg); }
+}
+.ce-processing-overlay__title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.ce-processing-overlay__progress {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 22px;
+  letter-spacing: 0.02em;
+}
+.ce-processing-overlay__fighter {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  text-align: left;
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ce-processing-overlay__fighter-placeholder {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  width: 100%;
+}
+.ce-processing-overlay__fighter-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  margin-bottom: 2px;
+}
+.ce-processing-overlay__fighter-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.ce-processing-overlay__fighter-phrase {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ============================================================
+   MAIN AREA — sidebar + screen container side by side
+   ============================================================ */
+.ce-main {
+  flex: 1;
+  display: flex;
+  min-height: 0; /* allows children to scroll */
+  position: relative;
+  z-index: 1;
+}
+
+/* ============================================================
+   SIDEBAR (220px) — 5 nav groups, 14 nav items
+   ============================================================ */
+.ce-sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 0 24px 0;
+}
+
+.ce-nav-group {
+  margin-bottom: 16px;
+}
+
+.ce-nav-group__label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 16px 8px 16px;
+}
+
+.ce-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px 8px 13px;
+  margin: 1px 8px;
+  border-radius: var(--r-md);
+  border-left: 3px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  user-select: none;
+}
+.ce-nav-item:hover {
+  background: var(--gold-tint);
+  color: var(--text-primary);
+}
+.ce-nav-item--active {
+  background: var(--gold-tint-strong);
+  color: var(--text-primary);
+  border-left-color: var(--gold);
+  font-weight: 600;
+}
+.ce-nav-item__icon {
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.ce-nav-item__name { flex: 1; }
+
+/* ============================================================
+   SCREEN CONTENT CONTAINER
+   ============================================================ */
+.ce-screen {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  /* Subtle noise grain layer behind the screen content */
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.03) 1px, transparent 0);
+  background-size: 3px 3px;
+}
+
+#screen-content {
+  min-height: 100%;
+  width: 100%;
+}
+
+/* ============================================================
+   GENERIC PLACEHOLDER SCREEN (for unimplemented nav items)
+   ============================================================ */
+.ce-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+  padding: 48px 24px;
+  text-align: center;
+  gap: 16px;
+}
+.ce-placeholder__icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+.ce-placeholder__title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ce-placeholder__body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 480px;
+  line-height: 1.6;
+  font-style: italic;
+}
+.ce-placeholder__hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+}
+
+/* ============================================================
+   PROMOTION SELECTION SCREEN (first-launch)
+   ============================================================ */
+.ce-promo-select {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  gap: 32px;
+  position: relative;
+  z-index: 2;
+}
+.ce-promo-select__header {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-promo-select__eyebrow {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.ce-promo-select__title {
+  font-family: var(--font-display);
+  font-size: 42px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ce-promo-select__subtitle {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 640px;
+}
+.ce-promo-select__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  width: 100%;
+  max-width: 1100px;
+}
+.ce-promo-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ce-promo-card:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
+}
+.ce-promo-card__logo {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-md);
+  border: 2px solid var(--gold);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.ce-promo-card__name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+}
+.ce-promo-card__meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ce-promo-card__cash {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--green);
+  margin-top: 2px;
+}
+
+/* ============================================================
+   LOADING INDICATOR (shown while Python API responds)
+   ============================================================ */
+.ce-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 16px;
+}
+.ce-loading__spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border-subtle);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: ce-spin 0.8s linear infinite;
+}
+@keyframes ce-spin { to { transform: rotate(360deg); } }
+.ce-loading__text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ============================================================
+   ERROR BANNER (shown if the Python API throws)
+   ============================================================ */
+.ce-error-banner {
+  background: var(--crimson-tint-strong);
+  border: 1px solid var(--crimson);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  margin: 16px 24px;
+  color: var(--crimson);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ce-error-banner__title {
+  font-weight: 700;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+
+/* ============================================================
+   PRE-GAME SCREEN — full screen, no app shell
+   ============================================================ */
+.ce-pregame {
+  position: fixed;
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-base);
+  background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.04) 1px, transparent 0);
+  background-size: 3px 3px;
+  z-index: 100;
+  overflow-y: auto;
+  padding: 40px 20px;
+}
+
+.ce-pregame__content {
+  max-width: 1000px;
+  width: 100%;
+  text-align: center;
+}
+
+.ce-pregame__logo img {
+  width: 120px;
+  height: auto;
+  margin: 0 auto 16px;
+  display: block;
+  border-radius: 12px;
+}
+
+.ce-pregame__eyebrow {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+}
+
+.ce-pregame__title {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  letter-spacing: 0.01em;
+}
+
+.ce-pregame__subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.6;
+}
+
+.ce-pregame__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  text-align: left;
+}
+
+.ce-promo-card {
+  background: var(--bg-card);
+  border: 2px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ce-promo-card:hover {
+  border-color: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.ce-promo-card__logo {
+  width: 100%;
+  height: 80px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.ce-promo-card__logo--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card-elevated);
+  font-family: var(--font-display);
+  font-size: 32px;
+  color: var(--gold);
+}
+
+.ce-promo-card__name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ce-promo-card__cash {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.ce-promo-card__meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Hide app shell until promo is selected */
+.ce-app--hidden {
+  display: none !important;
+}
+
+/* ============================================================
+   PRE-GAME: Name Input + Section Title
+   ============================================================ */
+.ce-pregame__name-section {
+  margin: 0 auto 24px;
+  max-width: 400px;
+  text-align: left;
+}
+
+.ce-pregame__name-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.ce-pregame__name-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ce-pregame__name-input:focus {
+  border-color: var(--gold);
+}
+
+.ce-pregame__name-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.ce-pregame__section-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 12px;
+}
+
+/* ============================================================
+   P5.2 — SAVE/LOAD MODAL STYLES
+   ============================================================
+   The Save button (top bar, next to Advance Day) + Load button
+   (pre-game, below promo grid) open these modals. Reuses the
+   existing .ce-modal-overlay / .ce-modal-dialog / .ce-modal-header
+   / .ce-modal-title / .ce-modal-close / .ce-modal-body styles from
+   free_agents.css. Only the Save/Load-specific styles live here.
+   ============================================================ */
+
+/* Save button in the top bar — slightly tighter padding than the
+   secondary Sim Week / Skip to Show buttons so the four-button row
+   (Save / Advance Day / Sim Week / Skip to Show) fits at 1280px. */
+.ce-save-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+/* Pre-game "Load Saved Empire" button + hint */
+.ce-pregame__load-section {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.ce-pregame__load-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  background: transparent;
+  color: var(--gold);
+  border: 1px solid rgba(224, 169, 87, 0.55);
+  border-radius: var(--r-xl);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.ce-pregame__load-btn:hover {
+  background: var(--gold-tint);
+  border-color: var(--gold);
+}
+.ce-pregame__load-btn:active { transform: translateY(1px); }
+.ce-pregame__load-btn-icon { font-size: 14px; }
+.ce-pregame__load-hint {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ----- Save modal ----- */
+.ce-save-modal {
+  width: 90%;
+  max-width: 460px;
+}
+.ce-save-modal__label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.ce-save-modal__input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  transition: border-color 0.15s ease;
+}
+.ce-save-modal__input:focus {
+  outline: none;
+  border-color: var(--gold);
+  background: var(--bg-card);
+}
+.ce-save-modal__input::placeholder {
+  color: var(--text-tertiary);
+}
+.ce-save-modal__hint {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.ce-save-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.ce-save-modal__status {
+  margin-top: 10px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-height: 16px;
+}
+.ce-save-modal__status--error {
+  color: var(--crimson);
+}
+
+/* ----- Load modal ----- */
+.ce-load-modal {
+  width: 90%;
+  max-width: 620px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.ce-load-modal .ce-modal-body {
+  padding: 12px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.ce-load-modal__loading {
+  padding: 32px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+.ce-load-modal__empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ce-load-modal__empty-icon {
+  font-size: 36px;
+  margin-bottom: 8px;
+  opacity: 0.6;
+}
+.ce-load-modal__empty-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.ce-load-modal__empty-body {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 360px;
+  margin: 0 auto;
+}
+.ce-load-modal__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-load-modal__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  gap: 12px;
+}
+.ce-load-modal__row:hover {
+  border-color: var(--gold);
+  background: var(--gold-tint);
+}
+.ce-load-modal__row:active { transform: translateY(1px); }
+.ce-load-modal__row:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.ce-load-modal__row--loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.ce-load-modal__row--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.ce-load-modal__row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-load-modal__row-name {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ce-load-modal__autosave {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--text-tertiary);
+  color: var(--text-tertiary);
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 2px;
+}
+.ce-load-modal__row-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.ce-load-modal__row-promo { color: var(--gold); }
+.ce-load-modal__row-cash { color: var(--text-primary); }
+.ce-load-modal__row-sep { color: var(--text-tertiary); }
+.ce-load-modal__row-ts {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ----- Save button positioning on narrow viewports ----- */
+@media (max-width: 1100px) {
+  /* The top bar gets crowded below 1100px — hide the Save button text,
+     keep just the icon. The title attribute still shows "Save your
+     empire" on hover. */
+  .ce-save-btn span:not(.ce-advance-btn__icon) {
+    display: none;
+  }
+  .ce-save-btn { padding: 8px 10px; }
+}

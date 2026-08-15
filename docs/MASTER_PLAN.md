@@ -1,334 +1,223 @@
-# CAGE EMPIRE — Master Plan
-
-> **Status:** Living document. Every task this supervisor delegates will
-> reference this file. Update it whenever a stage is closed out.
-> **Last revised:** 2026-07-21 — Task ID 14 (Stage 2 complete, audit pass).
+> ⚠️ **OBSOLETE** — This is a historical planning doc. The current source of truth is
+> [`docs/Hardening_Phase.md`](Hardening_Phase.md) (the canonical hardening plan) +
+> [`docs/CURRENT_SYSTEM_STATE.md`](CURRENT_SYSTEM_STATE.md) (what exists, what works,
+> what's broken). This doc is preserved for historical context only.
 
 ---
 
-## 1. Where we actually are right now
+# CAGE EMPIRE — MASTER PLAN (Working Doc Index)
 
-CAGE EMPIRE is a **working simulation** with a full career lifecycle
-loop. Stage 1 (skeleton close-out) and Stage 2 (career systems) are
-complete. The game now simulates end-to-end: real attribute-based
-fight resolution, event lifecycle, repeatable events, contracts,
-rankings, titles, retirement, free agency, and regen.
+> **Status:** ACTIVE — this is the canonical planning index as of the
+> pre-game bridge fix (commit 4e4a4aa). All future phases reference
+> the documents listed below.
+> **Maintained by:** Supervisor (main agent)
+> **Last updated:** session following "start screen error4" fix.
 
-### Built (v2.5.0, Task 16)
+---
 
-| Layer | State |
-|---|---|
-| Database | 40 tables (SQLite) |
-| Schema versioning | `schema_meta` + `schema_migrations` + version-check gate (Task 5) |
-| Fighter attributes | 25 stored (Task 14.5): punch/kick power+accuracy, head_movement, footwork, clinch striking/offense/defense, takedown off/def, top/bottom control, submission off/def, scramble, cage_wrestling, recovery_rate, speed_explosiveness, strength, durability, flexibility, adaptability, cardio, fight_iq, chin. |
-| Fighter personality | 20 stored (Task 14.5): aggression, composure, morale, risk_taking, killer_instinct, grit, discipline, patience, ambition, loyalty, charisma, attention_seeking, coachability, professionalism, ego, resilience, sportsmanship, travel_comfort, focus, fatigue_tolerance. |
-| Tick processor | Advances clock + checks retirements (Task 12) + checks contract expiry (Task 13) + checks injury recovery (Task 15) + progresses + completes training camps (Task 16). |
-| Fight resolution | Real probabilistic resolver (Task 3): power score from 4 attrs + Gaussian noise + morale/composure modifiers + margin-based result type |
-| Event lifecycle | scheduled → in_progress → completed (Task 7) |
-| Repeatable events | Auto-schedules next card ~4 weeks out when event completes (Task 8) |
-| Contracts | 4 tables (Task 9): polymorphic base + fighter/staff/broadcast subtypes. 12-month exclusive default. UI Contracts tab. |
-| Rankings | ELO-style (Task 10): K=32, zero-sum, auto-update on fight resolution. UI Rankings tab. |
-| Titles | 10 columns (Task 11): vacant/held, 5-case resolution logic, vacated on retirement. Seeded main event is a title fight. |
-| Retirement | Age + career_health based (Task 12): age ≥45 mandatory, age 40-44 + health <60 optional. Retiring champions vacate titles. |
-| Free agency | Contract expiry on tick (Task 13): fighter becomes free agent. UI Free Agents tab with Sign button. |
-| Regen | Name pools + style DNA (Task 14): retiring fighter generates replacement with same archetype. 96 seeded names. |
-| UI | Tkinter 3-pane: left (fighters with promotion filter), center (events + fights), right (Notebook: News & Commentary / Contracts / Rankings / Free Agents). Top bar: Advance Day, Resolve Fight, Refresh, Filter dropdown, clock. |
-| Staff | Table exists and seeded (Nina Cross), **but no dedicated Staff UI tab** — see §Z.5. |
-| Rival promotions | Rival Fight League seeded (inert, 3 fighters, no events, no AI) — Task 25 will add AI. |
-| Finances | `promotions.current_cash` column only — no P&L, no burn rate. Task 20 will add. |
-| Scouting | **none** — Task 18. |
-| Injuries | 15-column `injuries` table (Task 15): doctor-stoppage guaranteed, KO/TKO 30% head, submission 15% joint, decision 5% base + damage-scaled. Recovery via tick. Severity 8+ has 30% chance of permanent attribute reduction. |
-| Training camps | 19-column `training_camps` table (Task 16): 14-day pre-event camp per fighter. Camp_focus from style archetype. Per-tick progression (fatigue, morale, injury_risk). Completion applies +1 to +3 to 2-4 attributes, capped at potential. Camp fatigue > 50 reduces starting gas. Injury risk > 80 spawns training injury. |
-| Weight cuts | **none** — Task 17. |
-| Social / rivalries / news templates | **none** (enriched hardcoded strings only) — Tasks 21-23. |
-| Voice / interpretation layer | **none** — Task 19. |
-| Mod tools | **none** — Task 29. |
-| Audit trail / changelog | `schema_meta` + `schema_migrations` + `CHANGELOG.md` + `worklog.md` (5,800+ lines) + 12 acceptance tests (500+ sub-checks). |
+## 0. Purpose of this document
 
-### The "playable forever" loop (closed in Task 14)
+This file is the **single index** that ties together every planning
+doc, audit, and architecture note in `docs/`. Each downstream phase
+of work MUST cite one or more of the documents listed in §2 as its
+source of truth. If a phase requires something not covered by an
+existing doc, a new doc is added here FIRST, then the phase is
+planned against it.
 
-```
-contracts → fights → rankings → titles → retirement → regen → free agency → signing → contracts (repeat)
-```
+This document supersedes any informal "next steps" sections at the
+bottom of older docs. When in doubt, this file is authoritative.
 
-This is the lifecycle the user asked for in their very first message.
-The roster turns over: old fighters retire, new prospects enter as
-free agents, the player signs them, they fight, they win titles, they
-age, they retire, and the cycle continues.
+---
 
-### Designed (per the v1.6 spec, 509-page chat transcript)
+## 1. Current state — what works, what doesn't
 
-| Layer | Target | Gap |
+### 1.1 Working (verified live)
+
+| Layer | State | Notes |
 |---|---|---|
-| Database | ~60 logical tables | 37 built, ~23 remaining (see SCHEMA_DRIFT_AUDIT.md) |
-| Fighter attributes | 24 combat stats | **4 built (CRITICAL)** — blocks Tasks 16, 18, 19, 24 |
-| Fighter personality | 17+ traits | **3 built (CRITICAL)** — same blocker |
-| fight_rounds | Per-round stats | **MISSING** — blocks Tasks 23, 24, 26 |
-| Tick | day / week / event / season | Day only (advance + retirements + contract expiry) |
-| Fight resolution | Attribute-driven, round-by-round, commentary beats | Attribute-driven ✓, round-by-round ✗ (no fight_rounds table), commentary beats ✗ (hardcoded strings) |
-| Finances | Full P&L, burn rate, forecasts | `current_cash` column only |
-| Scouting | Scout reports as objects | **none** |
-| Injuries / camps / weight cuts | Severity, recovery, camp morale/fatigue | **none** |
-| Social / rivalries | Posts, replies, beefs, fan reactions | **none** |
-| Voice / interpretation layer | Numeric stats → readable descriptors | **none** |
-| Mod tools | Editors, CSV+JSON+portrait import | **none** |
+| **pywebview desktop shell** | ✅ Working | Native window, top bar + sidebar + screen container. |
+| **Pre-game screen** | ✅ Working (after fix 4e4a4aa) | Bridge now correctly waits for `pywebviewready` event before invoking API methods. |
+| **App shell navigation** | ✅ Working | 18-item sidebar, back-stack (cap 10), stale-screen tracking. |
+| **Advance Day button** | ✅ Working | Calls Python `advance_day()`, refreshes active screen, marks others stale. |
+| **Dashboard screen** | ✅ Working | 8 sections, live DB data, interpretation phrases. |
+| **Roster screen** | ✅ Working | 9-column fighter table, filters, sort, pagination (60 fighters). |
+| **Free Agents screen** | ✅ Working | 4,082 FAs, ceiling display, sticky sign bar, sign flow. |
+| **Fighter Profile screen** | ✅ Working | Header + 6 tabs, collapsable StatBars, fights timeline. |
+| **Interpretation layer** | ✅ Working | 8 modules, SHORT (≤25 char) + LONG variants, 224 short phrases, 40 show-rating descriptors, 36+ news templates. |
+| **Rival AI** | ✅ Working | 4 archetypes, 7 decision modules, 6 imperfection mechanisms. |
+| **Tick processor** | ✅ Working | Targeted interpretation pass (dirty fighters only), per-section dirty flags. 899ms→430ms after re-engineering. |
+| **DB pruning service** | ✅ Working | Monthly cleanup of news/headlines/social/injuries. |
+| **Save / Load** | ✅ Working | `save_game(name)` + `load_game(name)` + `list_saves()`. |
 
----
+### 1.2 Known broken / missing (drives the upcoming phases)
 
-## 2. Why we are not doing the original Task 2 (big-bang v1.6 schema dump)
-
-The original plan was: delegate one task to a subagent that adds all ~60
-missing tables in a single pass. **That plan is killed.** Reasons:
-
-1. **It already failed twice.** The schema went 37 → 24 tables between two
-   earlier "reset bundles" with no flag raised.
-2. **It is untestable.** One broken FK in a 60-table dump is hard to find.
-3. **It produces dead tables.** Tables with no code path rot silently.
-4. **It blocks the real priority.** The fight engine is the spine of
-   every downstream system.
-
-**This decision has been validated.** Tasks 3-14 delivered 13 new tables
-across 12 focused, testable commits. Each table shipped with a writer
-and a reader. No silent drift occurred. The incremental approach works.
-
----
-
-## 3. Revised principle — incremental, tested, versioned
-
-Every task from here on must satisfy these rules. Subagents that violate
-them will have their work rejected.
-
-1. **One table-group per task.** A task may add at most one logical group
-   of tables.
-2. **Every new table must have a writer and a reader in the same task.**
-3. **Every schema change bumps `schema_meta.schema_version`** and adds
-   a row to `schema_migrations`.
-4. **Every task gets a `CHANGELOG.md` entry** under `[Unreleased]`.
-5. **Every task is smoke-tested locally** before commit.
-6. **Every task appends to `worklog.md`** with the Task ID, schema
-   version, and decisions made.
-7. **No task removes a table or column without an explicit migration.**
-8. **NEW (Task 9+): Every new acceptance test MUST use
-   `build_db.CODE_SCHEMA_VERSION` dynamically** — do NOT hardcode the
-   version string. This prevents test breakage on version bumps.
-9. **NEW (Task 9+): The "don't modify existing tests" rule has an
-   escalation protocol.** If a version bump or behavior change breaks
-   an existing test's hardcoded assertion, the subagent flags it (D-number
-   in the worklog) and the supervisor applies the fix. This has happened
-   in Tasks 9, 10, 11, 13, and 14.
-
----
-
-## 4. The schema drift problem — and how we closed it
-
-Between two earlier "reset bundle" drafts and the v1.2.0 commit, the
-schema lost 13+ tables and dozens of fields without anyone flagging it.
-
-**Closed in Task ID 2:**
-- Restored `schema_meta` and `schema_migrations` tables.
-- Added `CHANGELOG.md` at the repo root.
-- Wrote `docs/SCHEMA_DRIFT_AUDIT.md`.
-- Wrote `docs/CONVENTIONS.md`.
-- Wrote `docs/STAGES.md`.
-
-**Closed in Task ID 5:**
-- `build_db.py` refuses to run if on-disk schema is newer than code.
-- Semver comparison (`_compare_versions`) correctly handles 1.10.0 > 1.9.0.
-
-**Validated through Tasks 3-14:**
-- No silent drift occurred across 12 tasks and 7 schema version bumps.
-- The dynamic-version pattern (adopted Task 9+) means tests no longer
-  break on version bumps — the last 2 tasks (12, 13) needed no
-  supervisor test fix.
-
----
-
-## 5. Stage breakdown (high-level — see `STAGES.md` for detail)
-
-| Stage | Theme | Tasks | Status |
-|---|---|---|---|
-| **1 close-out** | Make the skeleton actually simulate | 3 – 8 | **COMPLETE** (all 6 tasks signed off) |
-| **2** | Career systems | 9 – 14 | **COMPLETE** (all 6 tasks signed off) |
-| **3** | Human layer | 15 – 19 | **NOT STARTED** — briefs need expansion (see §8) |
-| **4** | Media & economy | 20 – 24 | **NOT STARTED** — briefs need expansion |
-| **5** | AI & polish | 25 – 30 | **NOT STARTED** — briefs need expansion |
-
-Each stage is gated: the next stage does not start until every task in
-the previous stage is signed off in `worklog.md`.
-
----
-
-## 6. What landed in Stage 1 (Tasks 3-8)
-
-| Task | What it delivered | Schema version | Commit |
-|---|---|---|---|
-| 3 | Real attribute-based fight resolver (no more coin flip) | 1.2.1 (no change) | `7915181` |
-| 4 | `fight_history` table (per-fighter per-fight, separate from mutable counters) | 1.3.0 | `1627c87` |
-| 5 | Schema version-check gate (refuses to clobber newer schema) | 1.3.0 (no change) | `ccc5d24` |
-| 6 | Promotion filter dropdown in UI (multi-promotion awareness) | 1.3.0 (no change) | `9e1e924` |
-| 7 | Event lifecycle (scheduled → in_progress → completed) | 1.3.0 (no change) | `93b9910` |
-| 8 | Repeatable event generator (auto-schedule next card ~4 weeks out) | 1.3.0 (no change) | `f463a0b` |
-
-**Stage 1 result:** The skeleton actually simulates. Click "Resolve
-Fight" repeatedly and the world keeps going: events complete, new
-events auto-schedule, career counters accumulate, fight history is
-recorded. 6 acceptance tests, 155+ sub-checks.
-
----
-
-## 7. What landed in Stage 2 (Tasks 9-14)
-
-| Task | What it delivered | Schema version | Commit |
-|---|---|---|---|
-| 9 | Contracts (4 tables, seed, UI Contracts tab) | 1.4.0 | `7f656f6` |
-| 10 | Rankings (ELO, auto-update, UI Rankings tab) | 1.5.0 | `9caa315` |
-| 11 | Titles (champion per weight class, 5-case resolution, vacated on retirement) | 1.6.0 | `9f34c8a` |
-| 12 | Retirement (age + health-based, vacates titles, news items) | 1.7.0 | `24ef7bd` |
-| 13 | Free agency (contract expiry, sign free agents, UI Free Agents tab) | 1.8.0 | `51ca8f7` |
-| 14 | Regen (name pools, style DNA, replacement on retirement) | 1.9.0 | `347b339` |
-
-**Stage 2 result:** The full career lifecycle loop is closed:
-contracts → fights → rankings → titles → retirement → regen → free
-agency → signing → contracts (repeat forever). 6 acceptance tests,
-350+ sub-checks.
-
----
-
-## 8. New tasks identified during audit (before Stage 3) — RESOLVED
-
-The audit (see `SCHEMA_DRIFT_AUDIT.md §Z`) identified gaps that must
-be addressed before or during Stage 3. The 6 open questions from
-`STAGE3_EXPANSION_PLAN.md §8` have been resolved by the supervisor
-(see `STAGES.md` Stage 2.5 for the full decisions).
-
-### Resolved decisions
-
-1. **Task 14.5+14.6+14.7 combined** — YES, one commit, schema 2.0.0
-   (MAJOR). 68 new columns across 6 tables + `current_date` quirk fix
-   + `src/fighter_gen.py` module + 12 archetype seeds.
-2. **Beat engine split** — B1 (basic beat loop + decision scoring,
-   schema 2.1.0) and B2 (fatigue + momentum + finishes + commentary,
-   schema 2.2.0).
-3. **Archetype seed data** — 7 style + 5 personality archetypes with
-   bias JSON, seeded in Task 14.5.
-4. **Anticipation Feed** — Task 31 (Stage 5), depends on many systems.
-5. **Design Law enforcement** — Added to CONVENTIONS.md §13. Enforced
-   at every task review.
-6. **Execution order** — 14.5+14.6+14.7 → B1 → B2 → 15 → 16 → 17 →
-   19 → 18.
-
-### Stage 2.5 task list (resolved)
-
-| Task | What | Schema | Pillars |
-|---|---|---|---|
-| 14.5+14.6+14.7 | Fighter schema expansion (68 columns, fighter_gen.py, quirk fix, archetype seeds) | 2.0.0 | Growth, Discovery |
-| B1 | Beat-level engine (tables + basic loop + decision scoring) | 2.1.0 | Conflict, Watch Rise |
-| B2 | Engine depth (fatigue + momentum + finishes + commentary) | 2.2.0 | Conflict, Watch Rise |
-| B-regen-update | Update generate_fighter to use fighter_gen.py | 2.2.0 | Discovery |
-
-### Stage 3a — Fighter Welfare (after Stage 2.5)
-
-| Task | What | Schema | Pillars |
-|---|---|---|---|
-| 15 | Injuries + medical recovery | 2.3.0 | Investment, Conflict |
-| 16 | Training camps | 2.4.0 | Growth, Investment |
-| 17 | Weight cuts | 2.5.0 | Conflict, Investment |
-
-### Stage 3b — Presentation (after Stage 3a)
-
-| Task | What | Schema | Pillars |
-|---|---|---|---|
-| 19 | Voice / interpretation layer | 2.6.0 | ALL 5 (translates simulation into emotion) |
-| 18 | Scouting system | 2.7.0 | Discovery (Fantasy 1: Talent Hunter) |
-
----
-
-## 9. Stage 3-5 briefs need expansion
-
-The user correctly identified that Stages 3-5 are "thinly designed and
-planned." The current briefs in `STAGES.md` for Tasks 15-30 are 2-3
-line summaries. Before any coding begins on Stage 3, each task brief
-must be expanded to include:
-- Detailed schema (column names, types, constraints, FKs)
-- Approach (algorithm, formulas, hook points)
-- Acceptance checklist (testable criteria)
-- Dependencies (which prior tasks must be complete)
-- Scope boundaries (what NOT to do)
-
-**This expansion is the next planning step.** No coding until the
-expanded briefs are reviewed and approved.
-
----
-
-## 10. Decision log
-
-| Date | Decision | Rationale |
+| Issue | Severity | Source doc |
 |---|---|---|
-| 2026-07-21 | Repo stays private | User request |
-| 2026-07-21 | DB renamed to `cage_empire.db` | Branding consistency |
-| 2026-07-21 | Original Task 2 (big-bang v1.6 schema dump) killed | Would replay the 37→24 drift failure mode |
-| 2026-07-21 | `schema_meta` + `schema_migrations` restored before any new tables | Cheap insurance against silent drift |
-| 2026-07-21 | One table-group per task enforced as a hard rule | Makes each task testable; small blast radius |
-| 2026-07-21 | Stages are gated | Prevents half-built systems stacking up |
-| 2026-07-21 (Task 3) | Fight resolver deviates from spec's literal "margin > 30 → ko_tko" — at any finish margin both KO and submission are possible, weighted by winner's punch_power vs fight_iq | Required to pass the no-single-type-60% assertion in the symmetric all-90-vs-all-30 matchup |
-| 2026-07-21 (Task 3) | Explicit draw handling added (was a bug in the original spec — draws would have corrupted career counters) | Bug fix |
-| 2026-07-21 (Task 4) | Defensive `DELETE FROM fight_history WHERE fight_id=?` before INSERTs | Makes resolver idempotent for re-resolution (required by test_fight_resolver.py's 100x re-resolve pattern) |
-| 2026-07-21 (Task 9) | Dynamic-version pattern adopted for tests | Tests read `build_db.CODE_SCHEMA_VERSION` instead of hardcoding version strings. Prevents test breakage on version bumps. Applied to test_fight_history, test_schema_versioning, test_contracts, test_rankings, test_titles, test_retirement, test_free_agency, test_regen. |
-| 2026-07-21 (Task 9) | "Don't modify existing tests" rule with supervisor escalation protocol | Subagents flag stale assertions (D-number in worklog) instead of modifying tests. Supervisor applies the fix. Happened in Tasks 9, 10, 11, 13, 14. |
-| 2026-07-21 (Task 11) | `write_news`/`write_commentary` reordered to after rankings + title resolution | News can now mention title changes. Required reorder because the original code had write_news BEFORE rankings update. |
-| 2026-07-21 (Task 12) | Retirement runs BEFORE contract expiry on tick | Retired fighters' contracts expire but they don't become free agents (they're retired, not unsigned) |
-| 2026-07-21 (Task 13) | Free Agents tab does NOT respect promotion filter | Free agents have no promotion — scoping would always return empty |
-| 2026-07-21 (Task 13) | `fighter_id` stored as Treeview item iid | Clean lookup for the Sign button — no fragile name matching |
-| 2026-07-21 (Task 14) | 10 designed regen tables consolidated into 3 | `name_pools` (one table with name_type column) replaces 4 separate tables. `regen_lineage` replaces `fighter_lineage` + `fighter_generation_history`. `used_names` dropped (check against fighters table instead). Simpler, same functionality. |
-| 2026-07-21 (Task 14) | `fighter_memory_links` created but NOT populated | Memory resurfacing is a future enhancement. Table exists so future tasks can populate without schema change. |
-| 2026-07-21 (audit) | Tasks 14.5, 14.6, 14.7, 14.8, 6.5 identified as new tasks | Audit of Stages 1-2 revealed critical gaps: fighter_attributes/personality still at 4/3 (not 24/17), fight_rounds still missing, fighters table missing ~14 columns, pre-existing current_date quirk, no Staff UI tab |
-| 2026-07-21 (audit) | Stage 3-5 briefs need expansion before coding | Current briefs are 2-3 line summaries. Must expand to full briefs (schema, approach, acceptance checklist, dependencies, scope) before any Stage 3 work begins. |
-| 2026-07-21 (Soul) | CAGE EMPIRE SOUL adopted as prime directive | "The player collects stories, not fighters." Design Law added to CONVENTIONS.md §13. 5 pillars: Discovery, Investment, Growth, Conflict, Legacy. Every task reviewed against these pillars. |
-| 2026-07-21 (Soul) | Voice/interpretation layer reframed | Not a technical utility — it is "the machinery that translates simulation into emotion." Moved to front of Stage 3b (before scouting). |
-| 2026-07-21 (supervisor) | Task 14.5+14.6+14.7 combined as one-off | 68 new columns across 6 tables in one commit. Schema 2.0.0 (MAJOR — first major version). Thorough testing required. |
-| 2026-07-21 (supervisor) | Beat engine split into B1 + B2 | B1: tables + basic beat loop + decision scoring (2.1.0). B2: fatigue + momentum + finishes + commentary (2.2.0). Keeps each task testable. |
-| 2026-07-21 (supervisor) | 7 style + 5 personality archetypes seeded with bias JSON | Variety in regen from the start. Generic 50-everything prospects don't generate stories. |
-| 2026-07-21 (supervisor) | Anticipation Feed added as Task 31 (Stage 5) | UI feature showing "what's coming." Depends on many systems. Too early now. |
-| 2026-07-21 (supervisor) | Execution order: 14.5 → B1 → B2 → 15 → 16 → 17 → 19 → 18 | Voice layer (19) before scouting (18) because scouting reports use the voice layer. Injuries (15) before camps (16) because camp injury risk feeds injury system. |
-| 2026-07-21 (supervisor) | Schema version jumps to 2.0.0 for fighter expansion | MAJOR bump marks the transition from thin skeleton (4 attributes, coin-flip resolver) to real simulation depth (25 attributes, beat-level engine). |
-| 2026-07-21 (user) | Raw Data Rule: no raw numbers in player-facing UI | All numbers pass through the interpretation layer (Task 19). Raw numbers are for debugging only. The player sees descriptors, not spreadsheets. Added to CONVENTIONS.md §14. |
-| 2026-07-21 (user) | Interpretation layer is a core directive, not a feature | The Soul document says "translate simulation into emotion." The interpretation layer is the machinery that does this. It must be implemented early (Stage 3b) and every subsequent system routes through it. Added to CONVENTIONS.md §14. |
-| 2026-07-21 (user) | Memory resurfacing scope is broader than champion successor links | The `fighter_memory_links` table handles successor links. Broader memory resurfacing (milestones, beefs histories, fight histories, career arc comparisons) is handled by the news engine (Task 23) and voice layer (Task 19) querying existing tables (fight_history, titles, rankings, regen_lineage). No additional table needed. |
-| 2026-07-21 (user) | Gameworld seed task added (Task 31) | A "living history" seed generating 100+ fighters, 5+ promotions, historical events, rivalries, retired legends. Positioned in Stage 5 after all systems are in place. |
-| 2026-07-21 (user) | Event bus refactor deferred to Task 18.5 | Currently `resolve_next_fight()` has ~15 hardcoded side effects. After Stage 3 (~25 side effects), refactor to event-publishing pattern. Positioned between Stage 3b and Stage 4. Added to CONVENTIONS.md §15. |
-| 2026-07-21 (user) | Fight importance system: card_slot + is_title_fight + pressure modifiers | `bout_type` was doing double duty (card position + title fight). Split into `fights.card_slot` (main_event/co_main/featured_prelim/prelim/opener) + `fights.is_title_fight` (0/1). Fight importance is computed (not stored) from card_slot + title + rivalry + marketability. Pressure response from clutch_factor/composure/consistency/focus/grit affects beat engine scores in high-importance fights. Pre-B2 schema fix (2.1.1) adds the columns; B2 implements the pressure modifiers. No new tables needed — all fields already exist (clutch_factor, consistency on fighters; composure, grit, focus on fighter_personality; marketability on fighters). |
-| 2026-07-22 (Task 16) | 19 columns implemented (not 20) | The brief's parenthetical list enumerates 19 column names; the prose header says "20". The list is authoritative — the "20" is an off-by-one typo (same pattern as Task 14.5's "21 vs 22"). |
-| 2026-07-22 (Task 16) | Training-injury pool uses body_area from the injuries CHECK | The brief listed "leg" as a body_area, but the injuries CHECK constraint (Task 15) doesn't include "leg" — only hip/knee/ankle/foot for the lower body. Changed "leg" → "hip" for hamstring strain to satisfy the CHECK. |
-| 2026-07-22 (Task 16) | Camp lifecycle: schedule_next_event creates camps; tick_processor progresses + completes them | One table = one writer (schedule_next_event via _create_training_camp) + one reader (resolve_next_fight via _get_camp_fatigue_for_event) per CONVENTIONS §5.3. The tick-time progression is a third "reader" that also writes — acceptable because camps are inherently a tick-driven system. |
-| 2026-07-22 (Task 16) | camp_focus 'weight_cut' reserved for Task 17 | The 8th camp_focus value is in the CHECK but not mapped from any archetype. Task 17 (weight cuts) will use it. |
-| 2026-07-22 (Task 16) | schema_migrations now records ALL known migrations on rebuild | Task 16 subagent had replaced the v2_4_0 migration with v2_5_0 — losing the v2_4_0 row. Fixed to INSERT OR IGNORE all 4 migrations (v2_2_0, v2_3_0, v2_4_0, v2_5_0) on every rebuild. Per CONVENTIONS §1.4, the migrations table is the complete history. |
-| 2026-07-23 (v2.6.2) | Bios for ALL fighters, not just top 200 | The top-200-only bio approach created a scouting tell — the player could identify "featured" fighters by the presence of a bio. Now all 4000 active fighters get bios. The bio TONE is selected from observable career state only (champion, age, record, streaks, fan_friendliness, aggression) and NEVER reveals hidden `potential`. A limited-potential prospect and an elite-potential prospect both get `unproven_prospect` with identical text. |
-| 2026-07-23 (v2.6.2) | Regen DNA inheritance is occasional (30%), not always | Always copying the retiring fighter's archetype makes the DB repeat itself over time — the same archetypes cycle through the same weight classes forever. Now 30% chance to inherit, 70% chance to pick a random archetype (weighted by the retiring fighter's nation). National identity is preserved (a Brazilian successor is still likely to be a Grappler) but exact archetype matching is rare. |
-| 2026-07-23 (v2.6.2) | Not all fighters get a gym | Previously all fighters were assigned a gym. Now: signed fighters 85% get a gym (15% between gyms), free agents 50% get a gym (50% train independently), regen fighters 50% get a gym. Future gym-joining logic will use personality + attributes + age to decide whether a fighter joins a gym and which one. |
-| 2026-07-23 (v2.6.2) | Tightened attribute growth factors | Veterans now diverge MORE from their potential: prime/declining/veteran growth factor raised from 0.70-0.95 to 0.80-0.95. Result: elite veterans avg 70.7 attrs vs limited veterans avg 50.9 (spread 19.7, was 13.6). This makes the career arc visible — by prime, you can read a fighter's ceiling from their attributes (but by then they have a fight record too). |
-| 2026-07-23 (v2.6.2) | Removed `hype_prospect` bio tone | The `hype_prospect` tone was assigned to young + elite-potential fighters, which REVEALED their potential — a scouting tell. Replaced with `unproven_prospect` which is assigned to ALL young fighters regardless of potential. The bio reads "could go either way" — true for both elite and limited prospects. |
-| 2026-07-23 (v2.6.2) | Regen bio for ALL regen fighters, not just elite | Previously only elite-potential (70+) regen fighters got bios. Now ALL regen fighters get a bio (unproven_prospect tone). This matches the Phase 5 change where all 4000 active fighters get bios. |
-| 2026-07-23 (Task 17) | Weight cut miss probability: base from weight_cut_difficulty (0-40%), +age (+15% max), +camp_pressure (20%), -gym_support (15%), capped 75% | Produces realistic miss rates: easy cutters ~5%, hard cutters ~40%, max 75%. Age + camp pressure + gym support create meaningful management decisions. |
-| 2026-07-23 (Task 17) | Miss distribution: 50% small, 35% medium, 15% large | Most misses are minor (< 1kg, catch-weight + purse penalty). Severe misses (> 3kg, fight cancelled) are rare — 15% of 40% = 6% of fights cancelled. Realistic UFC rate is ~3-5%. |
-| 2026-07-23 (Task 17) | Cardio penalty only for missed_medium (1-3kg), not missed_small | A small miss is just a weight management issue; a medium miss means the fighter depleted themselves cutting. The 15-point gas penalty (floored at 50) makes the "hard cut cost the fighter his gas" story visible in the fight engine. |
-| 2026-07-23 (Task 17) | no_contest result_type added to fights + fight_history outcome='nc' | The fights.result_type column had no CHECK constraint (TEXT), so 'no_contest' was accepted. fight_history.outcome had CHECK IN ('win','loss','draw','nc') — 'nc' was already allowed. The test_beat_engine_depth valid set was updated (supervisor fix per §11). |
-| 2026-07-23 (Task 19) | Voice layer = pure module (voice.py) + snapshot cache (fighter_descriptors table) | voice.py has no DB access (pure functions, fast, testable). fighter_descriptors caches computed descriptors as JSON, updated on trigger events only (camp, fight, injury). The UI reads from the cache — no recomputation on every view. |
-| 2026-07-23 (Task 19) | Per-fighter deterministic RNG (seed=fighter_id) for descriptor variants | Descriptors are stable across calls (no flickering) but different fighters with the same attrs get different variants (variety). The rng is seeded by fighter_id in update_fighter_descriptor_snapshot. |
-| 2026-07-23 (Task 19) | 7 tiers per CONVENTIONS §14.3: 90-100 elite, 75-89 strong, 60-74 capable, 40-59 average, 25-39 limited, 10-24 poor, 0-9 abysmal | Wider bands than the brief's suggestion (prevents descriptor flickering on small attribute changes). Each tier has 2-3 variant descriptors for variety. |
-| 2026-07-23 (Task 19) | Trigger events: camp completion, fight resolution, injury creation/recovery | NOT every UI view. The snapshot is recomputed only when a fighter's state meaningfully changes. snapshot_version increments on each update for cache busting + tracking. |
-| 2026-07-23 (Task 18) | Effective ceiling: potential × age_factor × health_factor × personality_factor | Potential is NOT guaranteed success. Most fighters plateau well below their ceiling. Only young, healthy, disciplined fighters in good gyms get close. Diminishing returns make the last 10 points 2x harder. |
-| 2026-07-23 (Task 18) | Scout attributes in staff.specialty JSON | Avoids schema change to staff table. Scouts have eye_for_talent, technical_analysis, character_reading, mistake_rate, bias_style, bias_nationality, bias_aggression. All stored as JSON in the existing specialty TEXT column. |
-| 2026-07-23 (Task 18) | Scout mistakes: 5 types triggered by mistake_rate% | Scouts are real people who make mistakes: overestimate potential, underestimate potential, misread strength as weakness, miss key trait, confidence mismatch (very confident but very wrong). Creates "bust" and "steal" narratives. |
-| 2026-07-23 (Task 18) | Scouting reports use voice.py descriptors, NOT raw numbers | Per CONVENTIONS §14 — player sees "high ceiling, above-average power" not "potential=72, punch_power=78." The voice layer (Task 19) is the translation machinery. |
-| 2026-07-23 (Task 18) | Report staleness: marked stale on camp/fight/injury | Reports become stale when the fighter's state changes. Stale reports show a warning but remain readable. The player must re-scout to get fresh estimates. |
-| 2026-07-25 (pre-Stage 6, Rev 1) | GUI framework decision: CustomTkinter + Pillow + ttkbootstrap-Treeview | Rejected PySide6 (license/size), pywebview (two-language overhead), Flet (maturity), DearPyGui (wrong paradigm). See docs/GUI_PLAN.md §2. |
-| 2026-07-25 (pre-Stage 6, Rev 2) | Visual design direction REVISED to dual-mode "Calm Empire, Violent Canvas" | Office Mode (90% of gameplay, calm data-dense institutional) + Fight Night Mode (10% of gameplay, visceral dramatic narrative). Crimson and Gold elevated to co-primary colours. Source Serif Pro added for fight commentary. See docs/GUI_PLAN.md §3. |
-| 2026-07-25 (pre-Stage 6, Rev 2) | Fight Resolution screen declared a first-class design centrepiece (D-GUI-4) | Four live zones: cage heatmap + fighter damage silhouettes + beat-synced commentary feed + named pundit panel with memory resurfacing. Goal: outdo WMMA5's play-by-play. See docs/GUI_PLAN.md §4. |
-| 2026-07-25 (pre-Stage 6, Rev 2) | app.py refactor prerequisite retained | Split 7700-line app.py into src/services/ + src/ui/ before any GUI code is written. See docs/GUI_PLAN.md §2.3 + docs/TASK_6_0_PLAN.md. |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Existing highlights system confirmed | The Quick=3-6 / Standard=6-10 / Extended=10-14 beats-by-importance system was already designed in STAGE3_EXPANSION_PLAN.md Task B2 and implemented in app.py _select_commentary_beats. The GUI fight playback IS the highlights package — no new "playback speed default" needed. |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Memory resurfacing audit: only 'successor' link_type populated | fighter_memory_links has 4 link_types in CHECK (successor, style_echo, gym_heir, regional_rival) but only 'successor' is written (by tick_processor._check_retirements on champion regen). The other 3 are dead schema. NO pruning exists. Fix planned in Task 6.0: populate the 3 dead types in services/memory_svc.py, add context_note + last_surfaced_at columns (deferred to Task 6.7 schema bump 3.8.0 → 3.9.0), add pruning policy (successor links where legend in HoF >10 sim years). See docs/TASK_6_0_PLAN.md §3. |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Schema bump 3.7.0 → 3.8.0 (staff.pundit_bias) | Added nullable TEXT JSON column on staff for broadcast pundit per-attribute bias (style, age, nation_ids, gym_ids, aggression, skepticism, catchphrases). Used by the upcoming Fight Resolution screen's named-pundit interjection generator. Migration v3_8_0_add_staff_pundit_bias is idempotent. Only schema change in the entire GUI phase (the +2 columns on fighter_memory_links in Task 6.7 will be the second). |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Logo locked: supervisor-designed primary + compact variants | After rejecting 7 AI-generated concepts as "cheap-looking," the supervisor designed their own logo. VLM scored it 9/10 dual-messaging, 8.5/10 overall fit. The supervisor's design IS the official CAGE EMPIRE brand. Brand system extends it to 5 variants (Primary, Compact, Fight Night, Championship, Favicon) — derived variants commissioned as Task 6.1.5. See docs/GUI_PLAN.md §1. |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Player entity deferred to Task 6.15 | The supervisor confirmed the player runs ONE promotion (Empire Builder fantasy). Player-as-entity (resign/takeover flow) is a real feature but doesn't block any of the 22 GUI screens. Deferred to Task 6.15 (post-GUI polish). Until then, "player = promotion_id=1" implicit. |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Portrait strategy: headshots (per-fighter, supervisor-generated) + fight silhouettes (2 template figures, supervisor-generated) | Two separate asset classes. Profile portraits are unique per fighter (4000 total, supervisor generating). Fight screen silhouettes are 2 template figures (1 male + 1 female) with body-zone overlays — NOT per-fighter, to keep asset budget reasonable and visual language consistent. Fight Resolution screen uses BOTH (portrait in corner card, silhouette in damage widget). |
-| 2026-07-25 (pre-Stage 6, Rev 3) | Task 6.0 subagent: dedicated agent (NOT general-purpose), supervisor-monitored | Supervisor rejected general-purpose catch-all. For Task 6.0 (Python code refactor with strict CONVENTIONS compliance), the Plan agent (software architect) validates the implementation strategy first, then the supervisor executes step-by-step with worklog entries, OR a more specialized agent is used. Push to git only after supervisor sign-off — never the subagent. |
+| **Finance service not registered in `app_web.py`** — promo 1 has 1 finance_transaction row despite 431 events. Rival promos have rows only because `run_sim_forward.py` registers `finance`. | 🔴 Critical | `docs/ECON_STAFF_PLAN.md` §0, §2 |
+| **Staff system is dead weight** — 300 coaches have no contracts and no effect on training; 25 commentators have no `broadcast_staff` rows; 24 scouts have never been used (scouting_reports empty). | 🔴 Critical | `docs/ECON_STAFF_PLAN.md` §3 |
+| **Player has zero financial levers** — ticket prices auto-computed, broadcast tier fixed, no marketing system, no contract negotiation (sign_free_agent uses hardcoded $50k). | 🔴 Critical | `docs/ECON_STAFF_PLAN.md` §0, §4 |
+| **Agency reward is the weakest reward (3/10 on 3 of 4 screens)** — player decisions aren't acknowledged, no "echoes" of past bookings/signings/cuts. | 🟠 High | `docs/REWARD_REVIEW.md` §0, §1 |
+| **14 of 18 screens are placeholders** — only Dashboard, Roster, Free Agents, Fighter Profile are wired. | 🟠 High | `docs/SCREEN_DATA_AUDIT.md`, `docs/NAV_BUTTONS_AUDIT.md` |
+| **30 of 31 action buttons are wired but many return hardcoded values** — e.g. `sign_free_agent` ignores fighter market value. | 🟡 Medium | `docs/NAV_BUTTONS_AUDIT.md` §3 |
+
+---
+
+## 2. Canonical planning documents
+
+These are the **working docs** for the upcoming phases. Each is the
+single source of truth for its domain. New work in that domain MUST
+consult the relevant doc before any code is written.
+
+### 2.1 Vision + voice
+
+| Document | Drives | Status |
+|---|---|---|
+| `docs/CAGE_EMPIRE_SOUL.md` | The 5 player fantasies. Every screen, phrase, and reward must reinforce one of these. | Reference (stable) |
+| `docs/VOICE_ENFORCEMENT.md` | Claude's voice directive. Interpretation layer must obey. | Reference (stable) |
+| `docs/REWARD_REVIEW.md` | GPT's 5 player rewards applied to each of the 4 built screens + the "every screen has a hook" principle + the "Echoes" data channel proposal. | **Active — drives Phase R** |
+
+### 2.2 Architecture + audit
+
+| Document | Drives | Status |
+|---|---|---|
+| `docs/PERF_ARCH_AUDIT.md` | Performance architecture (tick processor, dirty flags, interpretation pass). | Reference (stable) |
+| `docs/RIVAL_AI_ARCHITECTURE.md` | Rival AI archetypes, decision modules, imperfection mechanisms. | Reference (stable) |
+| `docs/UI_MIGRATION_PYWEBVIEW.md` | CustomTkinter → pywebview migration notes. | Reference (historical) |
+| `docs/SCREEN_DATA_AUDIT.md` | Per-screen DB field + interpretation-layer inventory. | **Active — drives every screen build** |
+| `docs/NAV_BUTTONS_AUDIT.md` | Per-screen nav, hyperlinks, action buttons, save/load. | **Active — drives every screen build** |
+
+### 2.3 Economics + staff (the upcoming focus)
+
+| Document | Drives | Status |
+|---|---|---|
+| `docs/ECON_STAFF_PLAN.md` | Financial model audit + 7 player levers + 5 new screens + 6-phase plan. | **Active — drives Phases E1–E6** |
+
+---
+
+## 3. Phase roadmap (working plan)
+
+The phases below are the **canonical working plan**. Each phase cites
+its source doc. Phases are not strictly sequential — a phase can be
+paused to do another, but each phase's scope is fixed by its source
+doc.
+
+### Phase 0 — Pre-game bridge fix ✅ DONE (commit 4e4a4aa)
+
+**Source:** (this doc, §1.2)
+**Scope:** Fix the `Cannot read properties of undefined (reading 'apply')` error on the pre-game screen.
+**Root cause:** `bridge.js` resolved `waitForApi()` the instant `window.pywebview.api` was truthy, but pywebview 6.x initializes `api` as `{}` and populates methods later via `_createApi()` + the `pywebviewready` event.
+**Fix:** `waitForApi()` now waits for `pywebviewready` (preferred) + polls until `api.get_clock` is callable (fallback). `callPython()` defensively checks `typeof fn === 'function'` before `.apply()`.
+**Done:** user can now launch the app and the pre-game screen will load promotions correctly.
+
+### Phase R — Reward layer (Echoes + Ownership language) 🟡 NEXT
+
+**Source:** `docs/REWARD_REVIEW.md`
+**Scope (proposed):**
+- Build the **`player_decisions` log table** — every player action (sign, cut, book, scout, hire staff) writes a row with `{decision_type, target_fighter_id, target_promo_id, decision_date, context_json}`.
+- Build the **Echoes generator** — on Advance Day, pick 2-3 past decisions whose consequences are now visible (e.g. "Three months ago you cut Marcus Reyes. He just won the Pacific Rim title.").
+- Surface Echoes on the Dashboard as a new section (between Fighter Watch and News Wire).
+- Apply Ownership language across all 4 built screens ("Your Champion", "Record Under You", "Stable Pulse").
+- Add small-reward generators on Advance Day (15 examples in §5 of REWARD_REVIEW.md).
+**Estimated effort:** 4–5 dev-days.
+**Why before econ:** The reward layer is screen-level + interpretation-layer work. It can be done in parallel with the econ wiring (Phase E1) without conflict. Doing it first also gives the player something to DO while econ is being fixed.
+
+### Phase E1 — Fix finance wiring 🟡 PARALLEL-WITH-R
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §2
+**Scope:**
+- Add `finance.register_subscribers()` to `app_web.py::register_all_subscribers()`.
+- Backfill promo 1's missing finance_transactions for the 431 events that have already happened (one-time script).
+- Verify: after fix, every `advance_day` from the GUI writes ≥1 finance row per owned event.
+**Estimated effort:** 1 dev-day.
+**Why critical:** Without this, the entire Finance screen (Phase E6) would show $80M and never move. This is a 1-day fix that unblocks the entire econ track.
+
+### Phase E2 — Real PPV/broadcast revenue model
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §3
+**Scope:**
+- Replace flat `broadcast_tier` lookup with: `gate = venue_cap × fill_rate × avg_ticket_price` + `ppv_revenue = buyrate × ppv_price × households` + `broadcast_rights = tier × fixed_fee`.
+- Buyrate scales with card quality (main event star power + co-main + title fight bonus).
+- Per-event variance: main event star power, fan_trust modifier, market_heat modifier.
+- Sponsorship: recurring sponsor slots (banner, kit, title) tied to reputation tier.
+**Estimated effort:** 3–4 dev-days.
+**Depends on:** E1.
+
+### Phase E3 — Player financial levers
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §4
+**Scope:**
+- Ticket pricing slider (low/standard/premium/VIP) → affects fill_rate inversely.
+- Marketing spend slider ($0–$500k/event) → boosts market_heat (with diminishing returns).
+- Broadcast negotiation (accept/reject PPV partner offers per event).
+- Venue picker in Event Builder (small/mid/large/stadium → different caps + rental costs).
+- Contract negotiation for `sign_free_agent` — replace hardcoded $50k with fighter market value × signing bonus % × contract length.
+**Estimated effort:** 4–5 dev-days.
+**Depends on:** E2.
+
+### Phase E4 — Staff Market screen + hire/fire flows
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §5
+**Scope:**
+- New `Staff Market` screen (free-agent pool of coaches, scouts, doctors, cutmen, GMs, commentators).
+- Hire flow: select staff → see salary demand → confirm → writes `staff_contracts` row + decrements promo cash.
+- Fire flow: terminate contract → pay severance (50% of remaining) → frees roster spot.
+- Assign flow: assign coach to gym, assign scout to region, assign doctor/cutman to active roster.
+**Estimated effort:** 3–4 dev-days.
+**Depends on:** E1 (so salaries actually hit finance).
+
+### Phase E5 — Wire staff effects into simulation
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §6
+**Scope:**
+- Coaches: training camp quality → attribute development rate. Camp with no coach = -50% dev rate. Camp with elite coach = +25% dev rate + unlocks specialisation tracks.
+- Scouts: scouting_reports actually populated. Scout quality determines report accuracy + reveal depth.
+- Doctors: injury recovery time reduced by doctor skill (top doctor = -40% recovery time).
+- Cutmen: cut/stoppage probability reduced on fight night.
+- GMs: overhead cost reduction (better GM = lower day-to-day operating cost).
+- Commentators: show_rating bonus on events they work (top commentator = +5% show_rating).
+**Estimated effort:** 5–6 dev-days.
+**Depends on:** E4.
+
+### Phase E6 — Finance ("The Books") + Contracts ("Deals") screens
+
+**Source:** `docs/ECON_STAFF_PLAN.md` §7, `docs/SCREEN_DATA_AUDIT.md`
+**Scope:**
+- Finance screen: 4 sections (cash flow statement, last event P&L, salary breakdown, projected next-month outlook).
+- Contracts screen: list of all fighter contracts (expiry, salary, status) + staff contracts + negotiations queue.
+- Both screens follow the Dashboard visual pattern (color-coded section headers, voice phrases, no raw numbers where a phrase exists).
+**Estimated effort:** 4–5 dev-days.
+**Depends on:** E2, E3, E4.
+
+### Phase S — Remaining 14 screens (placeholder replacement)
+
+**Source:** `docs/SCREEN_DATA_AUDIT.md`, `docs/NAV_BUTTONS_AUDIT.md`
+**Scope:** Replace placeholder screens with full implementations:
+- HOME: Calendar (Schedule), The Wire (News).
+- FIGHTERS: Scouting, Legends (Hall of Fame).
+- EVENTS: Build a Card (Event Builder), Matchmaking, Fight Night (Fight Resolution), The Archive (Past Events).
+- BUSINESS: The Books (Finance), Deals (Contracts), The Competition (Rival Promotions), Training Camps (Gyms).
+- WORLD: The Rankings, Belts (Titles), Bad Blood (Rivalries), The Record Book (Records).
+**Estimated effort:** 12–18 dev-days (screen-by-screen, parallelisable in batches of 3–4).
+**Depends on:** Phase R (for reward hooks), Phase E1 (for any finance-related screen), E4 (for Staff Market).
+
+---
+
+## 4. Working rules for future phases
+
+1. **Always cite the source doc.** Every phase's first commit message MUST name the doc(s) it implements.
+2. **No code without a doc.** If a phase needs something not in any existing doc, write the doc first, add it to §2 of this file, then start coding.
+3. **One fix per commit when feasible.** Bridge timing bugs, finance wiring, reward hooks — each is its own commit so bisects stay clean.
+4. **Interpretation layer is the voice.** Every number that has a phrase in `fighter_descriptors` or `daily_headlines` MUST be displayed as the phrase, not the number. New screens must follow this rule.
+5. **Player decisions are logged.** Once Phase R ships, every player action writes a `player_decisions` row. New actions added in later phases MUST also log.
+6. **Test before sign-off.** Each phase ends with: (a) VLM screenshot review, (b) `python -m pytest scripts/test_*.py` green, (c) user-facing summary in `worklog.md`.
+
+---
+
+## 5. What the user should do next
+
+1. **Test the pre-game fix.** Run `PLAY.bat` (Windows) or `./run.sh` (Mac/Linux). Pre-game should now load 10 promotion cards. Pick one → Dashboard should render.
+2. **Read the two key planning docs:**
+   - `docs/REWARD_REVIEW.md` — the reward layer plan (Phase R).
+   - `docs/ECON_STAFF_PLAN.md` — the econ + staff plan (Phases E1–E6).
+3. **Approve or amend the phase order.** The default order is R → E1 (parallel) → E2 → E3 → E4 → E5 → E6 → S. If the user wants a different order (e.g. finance first because they want to feel the money pressure), say so before work starts.
+4. **After approval, work begins on Phase R + E1 in parallel.** Both are scoped in their source docs.

@@ -1,0 +1,2348 @@
+/* ============================================================
+   CAGE EMPIRE — Matchmaking V2 ("The Heartbeat")
+   ============================================================
+   Per docs/MASTER_PLAN_MATCHMAKING_V2.md (MM1.1–MM1.5).
+
+   TWO-ROW LAYOUT (BIG and BOLD):
+     ┌─────────────────────────────────────────────────────────┐
+     │  EVENT STRIP (name + date + levers + reopen card btn)   │
+     ├─────────────────────────────────────────────────────────┤
+     │  MATCHUP ZONE  (55% height — the decision zone)         │
+     │  ┌────────────┬──────┬────────────┐                     │
+     │  │ RED CORNER │ VS   │ BLUE CORNER│  each ~45% width    │
+     │  │ 120×120    │strip │ 120×120    │  9 fields each      │
+     │  │ portrait   │      │ portrait   │                     │
+     │  └────────────┴──────┴────────────┘                     │
+     │  [ Pick Red Corner ]  [ ADD TO CARD ]  [ Pick Blue ]    │
+     ├─────────────────────────────────────────────────────────┤
+     │  CARD LIST (60%)         │ STATUS PANEL (40%)           │
+     │  drag-drop BIG cards     │ "Confirm card to see         │
+     │  MAIN EVENT / CO-MAIN /  │  projected revenue" OR       │
+     │  PRELIM 1 / PRELIM 2     │  full projection (locked)    │
+     │  80px+ tall each         │  CONFIRM CARD / RE-OPEN CARD │
+     └─────────────────────────────────────────────────────────┘
+
+   Voice/design compliance (per VOICE_ENFORCEMENT + CONVENTIONS §14):
+     - NO raw potential/ceiling numbers in UI text — voice phrases only
+     - Matchup chip shows the voice phrase TIER ONLY ("elite matchup"
+       / "solid fight" / "tune-up" / "mismatch") — NO raw 73/100 score
+     - NO "Predicted Winner" cell, NO confidence_word, NO upset_risk
+     - "Might" advice phrases only — pundit register, business-page
+     - Ownership language: "YOUR NEXT CARD", "YOUR WAR CHEST"
+   ============================================================ */
+
+/* ============================================================
+   CONTAINER — flex column, two rows + event strip
+   ============================================================ */
+.ce-mm-v2 {
+  display: flex;
+  flex-direction: column;
+  /* P1.4 — was height: calc(100vh - top-bar-h) which clipped content
+     on shorter viewports. Use min-height so the layout fills the
+     screen when there's room but grows taller when the matchup zone +
+     bottom zone need more vertical space. The whole screen scrolls
+     as a fallback instead of silently clipping. */
+  min-height: calc(100vh - var(--top-bar-h, 56px));
+  padding: 12px;
+  gap: 10px;
+  max-width: 1700px;
+  margin: 0 auto;
+  overflow-y: auto;
+}
+
+/* ============================================================
+   EVENT STRIP — name + date + levers + reopen button
+   ============================================================ */
+.ce-mm-v2__event-strip {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-md);
+  flex-shrink: 0;
+}
+.ce-mm-v2__event-name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+.ce-mm-v2__event-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+}
+.ce-mm-v2__event-levers {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ce-mm-v2__lever-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-mm-v2__lever-chip strong {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ce-mm-v2__status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid;
+}
+.ce-mm-v2__status-badge--building {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.ce-mm-v2__status-badge--confirmed {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.25) 0%,
+    rgba(224, 169, 87, 0.1) 100%);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+/* ============================================================
+   MATCHUP ZONE — top row (55% height)
+   ============================================================ */
+.ce-mm-v2__matchup-zone {
+  flex: 0 0 55%;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* ============================================================
+   CORNER SLOT — the 9-field BIG corner
+   ============================================================ */
+.ce-mm-corner-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: var(--bg-card);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  position: relative;
+  transition: all 0.18s ease;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ce-mm-corner-v2--red { border-color: var(--crimson); }
+.ce-mm-corner-v2--blue { border-color: #3b82f6; }
+.ce-mm-corner-v2--filled {
+  border-style: solid;
+  background: var(--bg-card-elevated);
+}
+.ce-mm-corner-v2--red.ce-mm-corner-v2--filled {
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.12) 0%,
+    rgba(214, 58, 63, 0.03) 100%);
+}
+.ce-mm-corner-v2--blue.ce-mm-corner-v2--filled {
+  background: linear-gradient(135deg,
+    rgba(59, 130, 246, 0.12) 0%,
+    rgba(59, 130, 246, 0.03) 100%);
+}
+
+/* Corner header (label + clear button) */
+.ce-mm-corner-v2__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+.ce-mm-corner-v2__label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+.ce-mm-corner-v2--red .ce-mm-corner-v2__label { color: var(--crimson); }
+.ce-mm-corner-v2--blue .ce-mm-corner-v2__label { color: #60a5fa; }
+
+.ce-mm-corner-v2__clear {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+}
+.ce-mm-corner-v2__clear:hover {
+  background: var(--bg-card);
+  color: var(--crimson);
+  border-color: var(--crimson);
+}
+
+/* Portrait (120×120 — the BIG portrait per MM1.2 #1) */
+.ce-mm-corner-v2__portrait {
+  width: 120px;
+  height: 120px;
+  border-radius: var(--r-md);
+  background: var(--bg-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--gold);
+  border: 3px solid var(--border-subtle);
+  background-size: cover;
+  background-position: center top;
+  flex-shrink: 0;
+  align-self: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.ce-mm-corner-v2--red .ce-mm-corner-v2__portrait { border-color: var(--crimson); }
+.ce-mm-corner-v2--blue .ce-mm-corner-v2__portrait { border-color: #3b82f6; }
+
+/* Name + nickname (18px display font per MM1.2 #2) */
+.ce-mm-corner-v2__name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.2;
+}
+.ce-mm-corner-v2__nickname {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Chip row — rank chip + title chip + momentum + popularity tier */
+.ce-mm-corner-v2__chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ce-mm-chip-v2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.ce-mm-chip-v2--rank-champion {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.25) 0%,
+    rgba(224, 169, 87, 0.1) 100%);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+.ce-mm-chip-v2--rank-top5 {
+  background: rgba(192, 192, 192, 0.15);
+  color: #d1d5db;
+  border-color: #9ca3af;
+}
+.ce-mm-chip-v2--rank-steel {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-chip-v2--title {
+  background: rgba(224, 169, 87, 0.15);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+.ce-mm-chip-v2--title-none {
+  background: transparent;
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+  font-weight: 500;
+}
+.ce-mm-chip-v2--popularity {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+.ce-mm-chip-v2--popularity-cult {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.2) 0%,
+    rgba(224, 169, 87, 0.05) 100%);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+/* Momentum indicator (▲/▼/→ + streak number per MM1.2 #6) */
+.ce-mm-chip-v2--momentum-hot {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--green);
+  border-color: var(--green);
+}
+.ce-mm-chip-v2--momentum-cold {
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border-color: var(--crimson);
+}
+.ce-mm-chip-v2--momentum-flat {
+  background: var(--bg-card);
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+}
+
+/* Dense info line (record + WC + age + style per MM1.2 #7) */
+.ce-mm-corner-v2__info-line {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  letter-spacing: 0.02em;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-mm-corner-v2__info-line strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Recent form — last 5 W/L/D chips (MM1.2 #9) */
+.ce-mm-corner-v2__form {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  align-items: center;
+}
+.ce-mm-corner-v2__form-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin-right: 4px;
+}
+.ce-mm-form-chip {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bg-base);
+  border: 1px solid transparent;
+}
+.ce-mm-form-chip--W {
+  background: var(--green);
+  border-color: var(--green);
+}
+.ce-mm-form-chip--L {
+  background: var(--crimson);
+  border-color: var(--crimson);
+}
+.ce-mm-form-chip--D {
+  background: var(--text-tertiary);
+  border-color: var(--text-tertiary);
+}
+.ce-mm-form-chip--N {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-form-empty {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* Empty corner slot — Pick button */
+.ce-mm-corner-v2__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+.ce-mm-corner-v2__empty-icon {
+  font-size: 32px;
+  opacity: 0.4;
+}
+.ce-mm-corner-v2__empty-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+}
+.ce-mm-corner-v2__pick-btn {
+  padding: 8px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ce-mm-corner-v2__pick-btn:hover {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+
+/* ============================================================
+   VS STRIP — center column, with rivalry chip
+   ============================================================ */
+.ce-mm-vs-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 8px;
+  min-width: 80px;
+}
+.ce-mm-vs-strip__vs {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--gold);
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 16px rgba(224, 169, 87, 0.4);
+}
+.ce-mm-vs-strip__rivalry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.25) 0%,
+    rgba(214, 58, 63, 0.08) 100%);
+  border: 1px solid var(--crimson);
+  border-radius: var(--r-sm);
+  animation: ce-mm-rivalry-pulse 2s ease-in-out infinite;
+}
+@keyframes ce-mm-rivalry-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(214, 58, 63, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(214, 58, 63, 0); }
+}
+.ce-mm-vs-strip__rivalry-icon {
+  font-size: 20px;
+  color: var(--crimson);
+}
+.ce-mm-vs-strip__rivalry-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--crimson);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-vs-strip__rivalry-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* ============================================================
+   ACTION BAR — below matchup zone (Add to Card / Confirm)
+   ============================================================ */
+.ce-mm-v2__action-bar {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+.ce-mm-action-btn {
+  padding: 12px 28px;
+  border: none;
+  border-radius: var(--r-md);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.18s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ce-mm-action-btn--primary {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  box-shadow: 0 4px 12px rgba(224, 169, 87, 0.3);
+}
+.ce-mm-action-btn--primary:hover:not(:disabled) {
+  background: var(--gold-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(224, 169, 87, 0.4);
+}
+.ce-mm-action-btn--primary:disabled {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.ce-mm-action-btn--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+.ce-mm-action-btn--ghost:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+.ce-mm-action-btn--danger {
+  background: transparent;
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+}
+.ce-mm-action-btn--danger:hover {
+  background: var(--crimson);
+  color: var(--bg-base);
+}
+
+/* ============================================================
+   BOTTOM ZONE — card list (60%) + status panel (40%)
+   ============================================================ */
+.ce-mm-v2__bottom-zone {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 60fr 40fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* ============================================================
+   CARD LIST — BIG drag-drop cards (MM1.5)
+   ============================================================ */
+.ce-mm-card-list-v2 {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  min-height: 0;
+}
+.ce-mm-card-list-v2__header {
+  padding: 10px 14px;
+  background: var(--bg-card-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ce-mm-card-list-v2__title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-mm-card-list-v2__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ce-mm-card-list-v2__count strong {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ce-mm-card-list-v2__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* Each booked fight is a LARGE card (80px+ tall) */
+.ce-mm-fight-card-v2 {
+  display: grid;
+  grid-template-columns: 28px 72px 1fr 28px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  cursor: grab;
+  transition: all 0.15s;
+  min-height: 72px;
+  position: relative;
+}
+.ce-mm-fight-card-v2:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-card);
+}
+.ce-mm-fight-card-v2--dragging {
+  opacity: 0.6;
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  border-color: var(--gold);
+  z-index: 10;
+}
+.ce-mm-fight-card-v2--drag-over {
+  border-top: 3px solid var(--gold);
+}
+.ce-mm-fight-card-v2--main-event {
+  border-left: 4px solid var(--gold);
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.08) 0%,
+    rgba(224, 169, 87, 0.02) 100%);
+}
+.ce-mm-fight-card-v2--co-main {
+  border-left: 4px solid #60a5fa;
+}
+.ce-mm-fight-card-v2--confirmed {
+  border-color: var(--gold);
+  border-width: 2px;
+  cursor: default;
+}
+.ce-mm-fight-card-v2__lock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gold);
+  font-size: 14px;
+  width: 28px;
+}
+.ce-mm-fight-card-v2__matchup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Drag handle (⠿ icon) */
+.ce-mm-fight-card-v2__drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: var(--text-tertiary);
+  cursor: grab;
+  user-select: none;
+  line-height: 1;
+}
+.ce-mm-fight-card-v2__drag-handle:hover {
+  color: var(--gold);
+}
+
+/* Slot label (BIG: MAIN EVENT / CO-MAIN / PRELIM 1) */
+.ce-mm-fight-card-v2__slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid;
+  text-align: center;
+}
+.ce-mm-fight-card-v2__slot--main-event {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.25) 0%,
+    rgba(224, 169, 87, 0.08) 100%);
+  border-color: var(--gold);
+}
+.ce-mm-fight-card-v2__slot--co-main {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3b82f6;
+}
+.ce-mm-fight-card-v2__slot--prelim {
+  background: var(--bg-card);
+  border-color: var(--border-subtle);
+}
+.ce-mm-fight-card-v2__slot-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+}
+.ce-mm-fight-card-v2__slot--main-event .ce-mm-fight-card-v2__slot-label {
+  color: var(--gold);
+}
+.ce-mm-fight-card-v2__slot--co-main .ce-mm-fight-card-v2__slot-label {
+  color: #60a5fa;
+}
+.ce-mm-fight-card-v2__slot--prelim .ce-mm-fight-card-v2__slot-label {
+  color: var(--text-secondary);
+}
+.ce-mm-fight-card-v2__slot-meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+/* Matchup block — both fighters + voices */
+.ce-mm-fight-card-v2__matchup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.ce-mm-fight-card-v2__fighters {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.ce-mm-fight-card-v2__fighter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.ce-mm-fight-card-v2__fighter-portrait {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--bg-base);
+  background-size: cover;
+  background-position: center top;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  border: 2px solid;
+  flex-shrink: 0;
+}
+.ce-mm-fight-card-v2__fighter--red .ce-mm-fight-card-v2__fighter-portrait {
+  border-color: var(--crimson);
+}
+.ce-mm-fight-card-v2__fighter--blue .ce-mm-fight-card-v2__fighter-portrait {
+  border-color: #3b82f6;
+}
+.ce-mm-fight-card-v2__fighter-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ce-mm-fight-card-v2__fighter-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ce-mm-fight-card-v2__fighter-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.ce-mm-fight-card-v2__fighter--blue .ce-mm-fight-card-v2__fighter-info {
+  align-items: flex-end;
+}
+.ce-mm-fight-card-v2__fighter--blue .ce-mm-fight-card-v2__fighter-name {
+  text-align: right;
+}
+.ce-mm-fight-card-v2__fighter--blue .ce-mm-fight-card-v2__fighter-meta {
+  justify-content: flex-end;
+}
+.ce-mm-fight-card-v2__vs {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  padding: 0 4px;
+}
+
+/* Voice phrase row — matchup chip (NO raw score) + rivalry + buttons */
+.ce-mm-fight-card-v2__voices {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ce-mm-fight-card-v2__quality-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid;
+}
+/* Matchup quality color tiers (NO raw number — tier phrase only) */
+.ce-mm-fight-card-v2__quality-chip--gold {
+  background: rgba(224, 169, 87, 0.18);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+.ce-mm-fight-card-v2__quality-chip--green {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--green);
+  border-color: var(--green);
+}
+.ce-mm-fight-card-v2__quality-chip--default {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-fight-card-v2__quality-chip--warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.ce-mm-fight-card-v2__quality-chip--crimson {
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border-color: var(--crimson);
+}
+.ce-mm-fight-card-v2__rivalry-chip {
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.ce-mm-fight-card-v2__voice-line {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Action buttons (Compare/Tape/Stakes/Pulse) — icon-buttons with tooltips */
+.ce-mm-fight-card-v2__actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-subtle);
+}
+.ce-mm-fight-card-v2__action {
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: all 0.12s;
+  position: relative;
+}
+.ce-mm-fight-card-v2__action:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-tint);
+}
+.ce-mm-fight-card-v2__action--remove {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-fight-card-v2__action--remove:hover {
+  color: var(--crimson);
+  border-color: var(--crimson);
+  background: var(--crimson-tint);
+}
+
+/* Card list empty state */
+.ce-mm-card-list-v2__empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: var(--font-serif);
+}
+.ce-mm-card-list-v2__empty strong {
+  color: var(--gold);
+  font-style: normal;
+  font-family: var(--font-display);
+}
+
+/* ============================================================
+   STATUS PANEL — projection (when confirmed) OR placeholder
+   ============================================================ */
+.ce-mm-status-v2 {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  min-height: 0;
+}
+.ce-mm-status-v2__header {
+  padding: 10px 14px;
+  background: var(--bg-card-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ce-mm-status-v2__title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-mm-status-v2__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* Build-phase placeholder */
+.ce-mm-status-v2__placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 30px 20px;
+  gap: 14px;
+}
+.ce-mm-status-v2__placeholder-icon {
+  font-size: 40px;
+  opacity: 0.4;
+}
+.ce-mm-status-v2__placeholder-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-status-v2__placeholder-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  max-width: 320px;
+}
+.ce-mm-status-v2__placeholder-tip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  border: 1px dashed var(--gold);
+  border-radius: var(--r-sm);
+  background: rgba(224, 169, 87, 0.05);
+}
+
+/* Confirmed projection block — reuses the old projection styles */
+.ce-mm-status-v2__card-draw {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.12) 0%,
+    rgba(224, 169, 87, 0.03) 100%);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px;
+  text-align: center;
+}
+.ce-mm-status-v2__card-draw-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+.ce-mm-status-v2__card-draw-phrase {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-mm-status-v2__card-draw-bar {
+  height: 6px;
+  background: var(--border-subtle);
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.ce-mm-status-v2__card-draw-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg,
+    var(--crimson) 0%,
+    var(--warning) 50%,
+    var(--gold) 100%);
+  border-radius: 3px;
+  transition: width 0.25s ease-out;
+}
+
+.ce-mm-status-v2__breakdown {
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+.ce-mm-status-v2__breakdown-title {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+.ce-mm-status-v2__breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.ce-mm-status-v2__breakdown-row > span:first-child {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.ce-mm-status-v2__breakdown-row > span:last-child {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.ce-mm-status-v2__breakdown-row--total {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+.ce-mm-status-v2__breakdown-row--total > span:first-child {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ce-mm-status-v2__breakdown-row--total > span:last-child {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ce-mm-status-v2__breakdown-row--expense > span:last-child {
+  color: var(--crimson);
+}
+
+.ce-mm-status-v2__net {
+  border: 1px solid;
+  border-radius: var(--r-md);
+  padding: 14px;
+  text-align: center;
+}
+.ce-mm-status-v2__net--safe {
+  background: linear-gradient(135deg,
+    rgba(74, 222, 128, 0.15) 0%,
+    rgba(74, 222, 128, 0.05) 100%);
+  border-color: var(--green);
+}
+.ce-mm-status-v2__net--risky {
+  background: linear-gradient(135deg,
+    rgba(251, 191, 36, 0.15) 0%,
+    rgba(251, 191, 36, 0.05) 100%);
+  border-color: var(--warning);
+}
+.ce-mm-status-v2__net--lethal {
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.18) 0%,
+    rgba(214, 58, 63, 0.05) 100%);
+  border-color: var(--crimson);
+}
+.ce-mm-status-v2__net-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.ce-mm-status-v2__net-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.ce-mm-status-v2__net--safe .ce-mm-status-v2__net-value { color: var(--green); }
+.ce-mm-status-v2__net--risky .ce-mm-status-v2__net-value { color: var(--warning); }
+.ce-mm-status-v2__net--lethal .ce-mm-status-v2__net-value { color: var(--crimson); }
+.ce-mm-status-v2__net-phrase {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-mm-status-v2__net-cash-after {
+  margin-top: 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.ce-mm-status-v2__net-cash-after strong { color: var(--gold); }
+
+/* Phase F1.3 — range-value variant (slightly smaller font + tighter
+   line-height so the "low - high" range fits without wrapping). */
+.ce-mm-status-v2__net-value--range {
+  font-size: 20px;  /* was 26px — range needs less emphasis than a single number */
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* Phase F2.1 — min fights enforcement message (shown when the player
+   hasn't staged enough fights to confirm the card). Red-tinted,
+   italic — clearly reads as a "you need to do more" hint, not a
+   passive status line. */
+.ce-mm-status-v2__min-fights-msg {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: rgba(214, 58, 63, 0.10);
+  border: 1px solid rgba(214, 58, 63, 0.35);
+  border-radius: var(--r-sm);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--crimson);
+  line-height: 1.4;
+}
+
+/* Phase F1.3 — variance hint banner (mirrors the event_builder hint).
+   Tells the player WHY the projection is a range. */
+.ce-mm-status-v2__variance-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.10) 0%,
+    rgba(224, 169, 87, 0.03) 100%);
+  border: 1px solid rgba(224, 169, 87, 0.35);
+  border-radius: var(--r-sm);
+}
+.ce-mm-status-v2__variance-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.ce-mm-status-v2__variance-text {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.ce-mm-status-v2__health-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-family: var(--font-serif);
+  font-style: italic;
+  color: var(--text-primary);
+}
+.ce-mm-status-v2__health-flag-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+  font-style: normal;
+}
+.ce-mm-status-v2__health-flag--warning .ce-mm-status-v2__health-flag-icon {
+  color: var(--warning);
+}
+.ce-mm-status-v2__health-flag--info .ce-mm-status-v2__health-flag-icon {
+  color: var(--text-secondary);
+}
+
+.ce-mm-status-v2__cta {
+  padding: 14px 16px;
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-md);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.18s;
+  box-shadow: 0 4px 12px rgba(224, 169, 87, 0.3);
+  width: 100%;
+}
+.ce-mm-status-v2__cta:hover:not(:disabled) {
+  background: var(--gold-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(224, 169, 87, 0.4);
+}
+.ce-mm-status-v2__cta:disabled {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.ce-mm-status-v2__cta--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  box-shadow: none;
+}
+.ce-mm-status-v2__cta--ghost:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-tint);
+}
+.ce-mm-status-v2__cta--danger {
+  background: transparent;
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+  box-shadow: none;
+}
+.ce-mm-status-v2__cta--danger:hover {
+  background: var(--crimson);
+  color: var(--bg-base);
+}
+
+/* ============================================================
+   ROSTER BROWSER OVERLAY (modal)
+   ============================================================ */
+.ce-mm-roster-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  animation: ce-modal-fade 0.15s ease-out;
+}
+.ce-mm-roster {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  width: 92%;
+  max-width: 880px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  animation: ce-modal-slide 0.18s ease-out;
+}
+.ce-mm-roster__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  background: var(--bg-card-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+  flex-shrink: 0;
+}
+.ce-mm-roster__title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-mm-roster__title-corner {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  border: 1px solid;
+}
+.ce-mm-roster__title-corner--red {
+  color: var(--crimson);
+  border-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.1);
+}
+.ce-mm-roster__title-corner--blue {
+  color: #60a5fa;
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
+.ce-mm-roster__close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.ce-mm-roster__close:hover { color: var(--text-primary); }
+.ce-mm-roster__filters {
+  padding: 10px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.ce-mm-roster__filter-chip {
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.ce-mm-roster__filter-chip:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+.ce-mm-roster__filter-chip--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border-color: var(--gold);
+}
+.ce-mm-roster__search {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-body);
+}
+.ce-mm-roster__search:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+.ce-mm-roster__search::placeholder {
+  color: var(--text-tertiary);
+}
+.ce-mm-roster__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+/* Roster row — denser info (popularity tier, rank, title, momentum, form) */
+.ce-mm-roster__row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.ce-mm-roster__row:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--border-strong);
+}
+.ce-mm-roster__row--incompatible {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ce-mm-roster__row--rivalry {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.06);
+}
+.ce-mm-roster__row--rivalry:hover {
+  background: rgba(214, 58, 63, 0.12);
+}
+.ce-mm-roster__portrait {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--bg-card-elevated);
+  background-size: cover;
+  background-position: center top;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  border: 1px solid var(--border-subtle);
+}
+.ce-mm-roster__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ce-mm-roster__name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ce-mm-roster__nickname {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ce-mm-roster__meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.ce-mm-roster__meta .ce-mm-chip-v2 {
+  padding: 1px 6px;
+  font-size: 9px;
+}
+.ce-mm-roster__form {
+  display: inline-flex;
+  gap: 2px;
+}
+.ce-mm-roster__form .ce-mm-form-chip {
+  width: 14px;
+  height: 14px;
+  font-size: 8px;
+}
+.ce-mm-roster__rivalry-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-mm-roster__rank {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+  font-weight: 700;
+  padding: 3px 6px;
+  background: var(--gold-tint);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-sm);
+  text-align: center;
+  min-width: 32px;
+}
+.ce-mm-roster__rank--top5 {
+  background: rgba(192, 192, 192, 0.15);
+  color: #d1d5db;
+  border-color: #9ca3af;
+}
+.ce-mm-roster__rank--steel {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-roster__empty {
+  padding: 30px 12px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* ============================================================
+   PLACEHOLDER — no event selected
+   ============================================================ */
+.ce-mm-v2__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+}
+.ce-mm-v2__placeholder-icon {
+  font-size: 56px;
+  margin-bottom: 20px;
+  opacity: 0.5;
+}
+.ce-mm-v2__placeholder-title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-v2__placeholder-body {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-width: 520px;
+}
+.ce-mm-v2__placeholder-cta {
+  margin-top: 24px;
+  padding: 12px 24px;
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-md);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ce-mm-v2__placeholder-cta:hover { background: var(--gold-bright); }
+
+/* ============================================================
+   MODAL — Compare / Tale of Tape / Stakes / Fan Pulse
+   (kept from old file — only the Compare modal contents changed
+   in MM1.3 to use might-framed analysis)
+   ============================================================ */
+.ce-mm-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: ce-modal-fade 0.15s ease-out;
+}
+.ce-mm-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  width: 92%;
+  max-width: 760px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  animation: ce-modal-slide 0.15s ease-out;
+}
+.ce-mm-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card-elevated);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.ce-mm-modal-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.ce-mm-modal-close:hover { color: var(--text-primary); }
+.ce-mm-modal-body {
+  padding: 20px;
+}
+
+/* Compare modal — radar chart container (might-framed analysis) */
+.ce-mm-radar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-mm-radar__svg-wrap {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px;
+  display: flex;
+  justify-content: center;
+}
+.ce-mm-radar__legend {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  font-size: 12px;
+}
+.ce-mm-radar__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-mm-radar__legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+/* MM1.3 — might-advice analysis blocks (no predictions) */
+.ce-mm-radar__might-block {
+  background: var(--bg-base);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+}
+.ce-mm-radar__might-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.ce-mm-radar__might-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+/* Rivalry chip in the compare modal (MM1.2 #8) */
+.ce-mm-radar__rivalry {
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.15) 0%,
+    rgba(214, 58, 63, 0.05) 100%);
+  border: 1px solid var(--crimson);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ce-mm-radar__rivalry-icon {
+  font-size: 18px;
+  color: var(--crimson);
+}
+.ce-mm-radar__rivalry-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.4;
+  flex: 1;
+}
+/* Matchup quality chip — voice phrase TIER ONLY (no raw score) */
+.ce-mm-radar__quality-row {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
+}
+.ce-mm-radar__quality-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 16px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid;
+}
+/* Reuse the same color tiers as the card chip (NO raw number) */
+.ce-mm-radar__quality-chip--gold {
+  background: rgba(224, 169, 87, 0.18);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+.ce-mm-radar__quality-chip--green {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--green);
+  border-color: var(--green);
+}
+.ce-mm-radar__quality-chip--default {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.ce-mm-radar__quality-chip--warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.ce-mm-radar__quality-chip--crimson {
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border-color: var(--crimson);
+}
+
+/* Tale of Tape modal */
+.ce-mm-tot {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ce-mm-tot__header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 16px;
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.08) 0%,
+    rgba(0, 0, 0, 0) 50%,
+    rgba(59, 130, 246, 0.08) 100%);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle);
+}
+.ce-mm-tot__corner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.ce-mm-tot__portrait {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: var(--bg-card-elevated);
+  border: 3px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 700;
+  background-size: cover;
+  background-position: center top;
+}
+.ce-mm-tot__portrait--red { border-color: var(--crimson); color: var(--crimson); }
+.ce-mm-tot__portrait--blue { border-color: #3b82f6; color: #60a5fa; }
+.ce-mm-tot__name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+.ce-mm-tot__nickname {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-mm-tot__center {
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-tot__center-vs {
+  font-size: 28px;
+  font-weight: 700;
+  display: block;
+  margin: 2px 0;
+}
+.ce-mm-tot__bout {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.ce-mm-tot__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ce-mm-tot__cell {
+  padding: 8px 10px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-mm-tot__cell:nth-child(3n) {
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+}
+.ce-mm-tot__cell--label {
+  background: var(--bg-card-elevated);
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-mm-tot__cell--value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ce-mm-tot__cell--value-red { color: var(--crimson); }
+.ce-mm-tot__cell--value-blue { color: #60a5fa; }
+.ce-mm-tot__form {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+}
+
+/* Stakes modal */
+.ce-mm-stakes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-mm-stakes__row {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+}
+.ce-mm-stakes__row--red { border-left-color: var(--crimson); }
+.ce-mm-stakes__row--blue { border-left-color: #3b82f6; }
+.ce-mm-stakes__row-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.ce-mm-stakes__row-text {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.ce-mm-stakes__title-shot {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.15) 0%,
+    rgba(224, 169, 87, 0.05) 100%);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px;
+  text-align: center;
+}
+.ce-mm-stakes__title-shot-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.ce-mm-stakes__title-shot-text {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* Fan Pulse modal */
+.ce-mm-fan-pulse {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-mm-fan-pulse__headline {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.15) 0%,
+    rgba(224, 169, 87, 0.05) 100%);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 16px;
+  text-align: center;
+}
+.ce-mm-fan-pulse__headline-text {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.ce-mm-fan-pulse__row {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+}
+.ce-mm-fan-pulse__row-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.ce-mm-fan-pulse__row-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+.ce-mm-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-body);
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  max-width: 360px;
+  animation: ce-mm-toast-in 0.2s ease-out;
+}
+@keyframes ce-mm-toast-in {
+  from { transform: translateX(40px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.ce-mm-toast--error { border-color: var(--crimson); }
+.ce-mm-toast--success { border-color: var(--green); }
+.ce-mm-toast--info { border-color: var(--gold); }
+
+/* ============================================================
+   ANIMATIONS
+   ============================================================ */
+@keyframes ce-modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ce-modal-slide {
+  from { transform: translateY(-20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ============================================================
+   RESPONSIVE — collapse to single column under 1100px
+   ============================================================ */
+@media (max-width: 1100px) {
+  .ce-mm-v2 {
+    height: auto;
+    overflow: visible;
+  }
+  .ce-mm-v2__matchup-zone {
+    flex: 0 0 auto;
+    grid-template-columns: 1fr;
+  }
+  .ce-mm-vs-strip {
+    flex-direction: row;
+    padding: 8px 0;
+  }
+  .ce-mm-vs-strip__vs { font-size: 22px; }
+  .ce-mm-v2__bottom-zone {
+    grid-template-columns: 1fr;
+  }
+  .ce-mm-corner-v2__portrait {
+    width: 100px;
+    height: 100px;
+    font-size: 28px;
+  }
+}
+
+@media (max-width: 700px) {
+  .ce-mm-v2 { padding: 8px; gap: 8px; }
+  .ce-mm-fight-card-v2 {
+    grid-template-columns: 24px 70px 1fr 28px;
+    padding: 8px;
+    gap: 6px;
+  }
+  .ce-mm-fight-card-v2__slot-label { font-size: 10px; }
+  .ce-mm-fight-card-v2__fighter-portrait { width: 32px; height: 32px; }
+  .ce-mm-fight-card-v2__fighter-name { font-size: 12px; }
+  .ce-mm-corner-v2__name { font-size: 15px; }
+}
+
+/* ============================================================
+   P5.1 — SUGGESTED MATCHUPS PANEL (Booking Adviser)
+   Collapsible panel below the bottom zone. Shows 3-5 matchup
+   suggestions the matchmaker sees (hometown / title contender /
+   bad blood / debut / hot streak). Click a row → fills Red/Blue
+   corners. NOT auto-booking.
+   ============================================================ */
+.ce-mm-suggest {
+  flex: 0 0 auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.ce-mm-suggest__header {
+  padding: 10px 14px;
+  background: var(--bg-card-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.ce-mm-suggest__header:hover { background: var(--gold-tint); }
+.ce-mm-suggest--collapsed .ce-mm-suggest__header { border-bottom: none; }
+
+.ce-mm-suggest__title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.ce-mm-suggest__subhead {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+  flex: 1 1 auto;
+}
+
+.ce-mm-suggest__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+  white-space: nowrap;
+}
+.ce-mm-suggest__count--empty {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.ce-mm-suggest__body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.ce-mm-suggest__loading,
+.ce-mm-suggest__empty {
+  padding: 16px 14px;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.ce-mm-suggest__row {
+  display: grid;
+  grid-template-columns: 1fr 32px 1fr 1.5fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.ce-mm-suggest__row:hover {
+  border-color: var(--gold);
+  background: var(--gold-tint);
+}
+.ce-mm-suggest__row:active { transform: translateY(1px); }
+.ce-mm-suggest__row:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.ce-mm-suggest__corner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ce-mm-suggest__corner--red { padding-right: 4px; }
+.ce-mm-suggest__corner--blue { padding-left: 4px; }
+
+.ce-mm-suggest__portrait {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 4px;
+  background-color: var(--bg-card);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.ce-mm-suggest__corner-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ce-mm-suggest__name {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ce-mm-suggest__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ce-mm-suggest__vs {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gold);
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+
+.ce-mm-suggest__reason {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ce-mm-suggest__chip {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 2px 8px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  white-space: nowrap;
+}
+.ce-mm-suggest__chip--hometown { border-color: #5fc9a3; color: #5fc9a3; }
+.ce-mm-suggest__chip--title-contender { border-color: var(--gold-bright); color: var(--gold-bright); }
+.ce-mm-suggest__chip--bad-blood { border-color: #d65a5a; color: #d65a5a; }
+.ce-mm-suggest__chip--debut { border-color: #6fa8d6; color: #6fa8d6; }
+.ce-mm-suggest__chip--hot-streak { border-color: #e8a458; color: #e8a458; }
+
+.ce-mm-suggest__reason-phrase {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.ce-mm-suggest__quality-phrase {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
+.ce-mm-suggest__cta {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--bg-card);
+}
+
+.ce-mm-suggest__row:hover .ce-mm-suggest__cta {
+  border-color: var(--gold);
+  background: var(--gold-tint);
+}
+
+/* Responsive — stack the suggestion row on narrow viewports. */
+@media (max-width: 900px) {
+  .ce-mm-suggest__row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 10px;
+  }
+  .ce-mm-suggest__vs {
+    text-align: left;
+    padding: 0 4px;
+  }
+  .ce-mm-suggest__cta {
+    align-self: flex-start;
+  }
+}

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CAGE EMPIRE</title>
+  <link rel="stylesheet" href="css/theme.css" />
+  <link rel="stylesheet" href="css/shell.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/dashboard.css" />
+  <link rel="stylesheet" href="css/roster.css" />
+  <link rel="stylesheet" href="css/free_agents.css" />
+  <link rel="stylesheet" href="css/fighter_profile.css" />
+  <link rel="stylesheet" href="css/rival_promotions.css" />
+  <link rel="stylesheet" href="css/event_builder.css" />
+  <link rel="stylesheet" href="css/staff_market.css" />
+  <link rel="stylesheet" href="css/matchmaking.css" />
+  <link rel="stylesheet" href="css/calendar.css" />
+  <link rel="stylesheet" href="css/wire.css" />
+  <link rel="stylesheet" href="css/archive.css" />
+  <link rel="stylesheet" href="css/rankings.css" />
+  <link rel="stylesheet" href="css/titles.css" />
+  <link rel="stylesheet" href="css/rivalries.css" />
+  <link rel="stylesheet" href="css/hall_of_fame.css" />
+  <link rel="stylesheet" href="css/scouting.css" />
+  <link rel="stylesheet" href="css/gyms.css" />
+  <link rel="stylesheet" href="css/fight_night.css" />
+  <link rel="stylesheet" href="css/finance.css" />
+  <link rel="stylesheet" href="css/contracts.css" />
+  <link rel="stylesheet" href="css/agent_offers.css" />
+  <link rel="stylesheet" href="css/records.css" />
+</head>
+<body>
+  <div class="ce-watermark">CE</div>
+
+  <!-- ============================================================
+       PRE-GAME SCREEN — shown BEFORE the app shell.
+       The player picks their promotion here. No top bar, no sidebar.
+       Once selected, this is hidden + the app shell is shown.
+       ============================================================ -->
+  <div id="ce-pregame" class="ce-pregame">
+    <div class="ce-pregame__content">
+      <div class="ce-pregame__logo">
+        <img src="assets/logo/cage_empire_primary.png" alt="CAGE EMPIRE" />
+      </div>
+      <div class="ce-pregame__eyebrow">CAGE EMPIRE</div>
+      <h1 class="ce-pregame__title">Build Your Empire</h1>
+      <p class="ce-pregame__subtitle">Enter your name, pick a promotion, and start shaping the history of the sport.</p>
+
+      <!-- Player name input -->
+      <div class="ce-pregame__name-section">
+        <label for="pregame-name-input" class="ce-pregame__name-label">Your Name</label>
+        <input type="text" id="pregame-name-input" class="ce-pregame__name-input" placeholder="Promoter name…" maxlength="50" />
+      </div>
+
+      <div class="ce-pregame__section-title">Choose Your Promotion</div>
+      <div id="pregame-promo-grid" class="ce-pregame__grid">
+        <div class="ce-loading"><div class="ce-loading__spinner"></div><div class="ce-loading__text">Loading promotions…</div></div>
+      </div>
+
+      <!-- P5.2 — Load Game button. Below the promotion grid. Opens a
+           save-slots modal → calls bridge.loadGame(name) → reloads. -->
+      <div class="ce-pregame__load-section">
+        <button id="pregame-load-btn" class="ce-pregame__load-btn" type="button">
+          <span class="ce-pregame__load-btn-icon">📂</span>
+          <span>Load Saved Empire</span>
+        </button>
+        <div class="ce-pregame__load-hint">Resume a previously saved game</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       APP SHELL — hidden until a promotion is selected.
+       ============================================================ -->
+  <div id="ce-app" class="ce-app ce-app--hidden">
+    <header class="ce-top-bar" role="banner">
+      <img src="assets/logo/cage_empire_compact.png" alt="CAGE EMPIRE logo" class="ce-top-bar__logo" />
+      <span class="ce-top-bar__wordmark">CAGE EMPIRE</span>
+      <span class="ce-top-bar__divider" aria-hidden="true"></span>
+      <span id="top-bar-date" class="ce-top-bar__date">Loading…</span>
+      <span class="ce-top-bar__spacer"></span>
+      <span id="top-bar-cash" class="ce-top-bar__cash"></span>
+      <!-- P5.2 — Save Game button. Sits next to Advance Day in the
+           top bar. Opens a save-name modal → calls bridge.saveGame. -->
+      <button id="save-game-btn" class="ce-advance-btn ce-advance-btn--secondary ce-save-btn" type="button" title="Save your empire">
+        <span class="ce-advance-btn__icon">💾</span>
+        <span>Save</span>
+      </button>
+      <button id="advance-day-btn" class="ce-advance-btn" type="button" disabled>
+        <span class="ce-advance-btn__icon">▶</span>
+        <span>Advance Day</span>
+      </button>
+      <!-- Phase F2.2 — Sim Week + Skip to Show buttons. Sit next to
+           Advance Day in the top bar. Both open the processing
+           overlay (CSS .ce-processing-overlay) which shows progress
+           + cycles random fighter profile snapshots while the sim
+           ticks in the background. -->
+      <button id="sim-week-btn" class="ce-advance-btn ce-advance-btn--secondary" type="button" disabled title="Simulate 7 days in one go">
+        <span class="ce-advance-btn__icon">⏩</span>
+        <span>Sim Week</span>
+      </button>
+      <button id="skip-to-show-btn" class="ce-advance-btn ce-advance-btn--secondary" type="button" disabled title="Skip to your next scheduled event">
+        <span class="ce-advance-btn__icon">⏭</span>
+        <span>Skip to Show</span>
+      </button>
+    </header>
+    <div class="ce-main">
+      <nav class="ce-sidebar" id="ce-sidebar" role="navigation" aria-label="Main navigation"></nav>
+      <main class="ce-screen" id="ce-screen" role="main">
+        <div id="screen-content">
+          <div class="ce-loading"><div class="ce-loading__spinner"></div><div class="ce-loading__text">Loading…</div></div>
+        </div>
+      </main>
+    </div>
+    <!-- Phase F2.2 — Processing overlay (shown during Sim Week +
+         Skip to Show). Hidden by default; .ce-processing-overlay--visible
+         toggles display. Cycles a random fighter profile snapshot
+         every ~3s while the sim ticks in the background. -->
+    <div id="ce-processing-overlay" class="ce-processing-overlay" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="ce-processing-overlay__title">
+      <div class="ce-processing-overlay__panel">
+        <div class="ce-processing-overlay__spinner" aria-hidden="true"></div>
+        <div id="ce-processing-overlay__title" class="ce-processing-overlay__title">Processing simulation…</div>
+        <div id="ce-processing-overlay__progress" class="ce-processing-overlay__progress">Day 1 of 7…</div>
+        <div id="ce-processing-overlay__fighter" class="ce-processing-overlay__fighter" aria-live="polite">
+          <div class="ce-processing-overlay__fighter-placeholder">Loading a fighter snapshot…</div>
+        </div>
+        <button id="ce-processing-overlay__cancel" class="ce-btn ce-btn-ghost" type="button" style="margin-top:12px;font-size:12px;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/bridge.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/roster.js"></script>
+  <script src="js/free_agents.js"></script>
+  <script src="js/fighter_profile.js"></script>
+  <script src="js/rival_promotions.js"></script>
+  <script src="js/event_builder.js"></script>
+  <script src="js/staff_market.js"></script>
+  <script src="js/matchmaking.js"></script>
+  <script src="js/calendar.js"></script>
+  <script src="js/wire.js"></script>
+  <script src="js/archive.js"></script>
+  <script src="js/rankings.js"></script>
+  <script src="js/titles.js"></script>
+  <script src="js/rivalries.js"></script>
+  <script src="js/hall_of_fame.js"></script>
+  <script src="js/scouting.js"></script>
+  <script src="js/gyms.js"></script>
+  <script src="js/fight_night.js"></script>
+  <script src="js/finance.js"></script>
+  <script src="js/contracts.js"></script>
+  <script src="js/agent_offers.js"></script>
+  <script src="js/records.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

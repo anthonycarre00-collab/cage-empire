@@ -1,0 +1,471 @@
+/* ============================================================
+   CAGE EMPIRE — Training Camps (Gyms) Screen Styles
+   ============================================================
+   Voice/design (per P1_PLAN_WIRE_SCREENS §4 + CONVENTIONS §14):
+     - Section header: "TRAINING CAMPS" (gold accent — Investment).
+     - Summary strip: gyms / active camps / completed camps.
+     - Two tabs: Active Camps + Gym Directory.
+     - Camp cards: fighter (clickable → profile) + gym + focus chip
+       + 3 meters (fatigue / morale / injury_risk) + linked event +
+       days-remaining countdown + attribute-changes chips (for
+       completed camps) + result summary.
+     - Gym cards (grid): name, city + nation, reputation badge,
+       quality phrase (large gold), 5 stat bars, culture chip
+       (color-coded), membership cost, fighter + camp count chips.
+     - Pagination on both tabs.
+     - Empty states with voice-appropriate phrasing.
+   ============================================================ */
+
+.ce-gym {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ce-gym .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   SUMMARY STRIP
+   ============================================================ */
+.ce-gym__summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-gym__stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-gym__stat--gold {
+  border-left: 3px solid var(--gold);
+  background: var(--gold-tint);
+}
+.ce-gym__stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-gym__stat-val {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-gym__stat--gold .ce-gym__stat-val { color: var(--gold); }
+
+/* ============================================================
+   TABS
+   ============================================================ */
+.ce-gym__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 4px;
+}
+.ce-gym__tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.ce-gym__tab:hover { color: var(--text-primary); }
+.ce-gym__tab--active {
+  color: var(--gold);
+  border-bottom-color: var(--gold);
+}
+
+/* ============================================================
+   FILTERS (shared)
+   ============================================================ */
+.ce-gym__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ce-gym__filters .ce-filter-group { min-width: 140px; }
+.ce-gym__filters .ce-filter-search { flex: 1; min-width: 200px; }
+.ce-gym__filters .ce-filter-clear { margin-left: auto; }
+
+/* ============================================================
+   CAMP CARDS (Active Camps tab)
+   ============================================================ */
+.ce-gym__camp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-gym__camp-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+.ce-gym__camp-card:hover {
+  border-color: var(--gold);
+}
+
+.ce-gym__camp-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ce-gym__camp-portrait {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-sm);
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--gold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.ce-gym__camp-info { flex: 1; min-width: 0; }
+.ce-gym__camp-name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+}
+.ce-gym__camp-name:hover { color: var(--gold-bright); text-decoration: underline; }
+.ce-gym__camp-nick {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ce-gym__camp-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.ce-gym__camp-event {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.ce-gym__focus-chip {
+  font-size: 10px;
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+
+/* Camp meters — fatigue / morale / injury_risk */
+.ce-gym__meters {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-gym__meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ce-gym__meter-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-gym__meter-track {
+  height: 6px;
+  background: var(--border-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ce-gym__meter-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+.ce-gym__meter-bar--fatigue { background: var(--gold); }
+.ce-gym__meter-bar--morale  { background: var(--green); }
+.ce-gym__meter-bar--risk    { background: var(--gold); opacity: 0.6; }
+.ce-gym__meter-bar--warning { background: var(--warning); }
+.ce-gym__meter-bar--danger  { background: var(--crimson); }
+.ce-gym__meter-val {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.ce-gym__camp-attr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: var(--green-tint);
+  border-left: 2px solid var(--green);
+  border-radius: var(--r-sm);
+}
+.ce-gym__camp-attr-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-gym__attr-chip {
+  font-size: 10px;
+  padding: 3px 8px;
+}
+.ce-gym__camp-summary {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  padding: 6px 10px;
+  background: var(--bg-base);
+  border-radius: var(--r-sm);
+}
+
+/* ============================================================
+   GYM CARDS (Gym Directory tab) — grid
+   ============================================================ */
+.ce-gym__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+.ce-gym__gym-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.ce-gym__gym-card:hover {
+  border-color: var(--gold);
+  transform: translateY(-1px);
+}
+
+.ce-gym__gym-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ce-gym__gym-info { flex: 1; min-width: 0; }
+.ce-gym__gym-name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+.ce-gym__gym-loc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.ce-gym__gym-rep {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  background: var(--bg-base);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+}
+.ce-gym__gym-rep-val {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  line-height: 1;
+}
+.ce-gym__gym-rep-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+}
+
+/* Quality phrase */
+.ce-gym__gym-quality {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-gym__gym-quality-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-gym__gym-quality-phrase {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  font-weight: 600;
+  color: var(--gold);
+}
+
+/* Gym stat bars */
+.ce-gym__gym-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-gym__gym-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-gym__gym-stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+.ce-gym__gym-stat-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-gym__gym-stat-val {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-gym__gym-stat-track {
+  height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ce-gym__gym-stat-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.2s;
+}
+.ce-gym__gym-stat-bar--gold { background: var(--gold); }
+.ce-gym__gym-stat-bar--mid  { background: var(--gold); opacity: 0.6; }
+.ce-gym__gym-stat-bar--low  { background: var(--text-tertiary); }
+
+/* Gym footer */
+.ce-gym__gym-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-gym__culture-chip { font-size: 10px; padding: 3px 8px; }
+.ce-gym__gym-cost {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.ce-gym__gym-count-chip { font-size: 10px; padding: 3px 8px; }
+.ce-gym__gym-cost { margin-left: auto; }
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.ce-gym__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-gym__empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+.ce-gym__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.ce-gym__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 520px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-gym { padding: 16px 12px 60px; }
+  .ce-gym__summary { grid-template-columns: 1fr; }
+  .ce-gym__grid { grid-template-columns: 1fr; }
+  .ce-gym__meters { grid-template-columns: 1fr; gap: 8px; }
+  .ce-gym__filters { flex-direction: column; align-items: stretch; }
+  .ce-gym__filters .ce-filter-clear { margin-left: 0; }
+  .ce-gym__camp-header { flex-wrap: wrap; }
+  .ce-gym__focus-chip { flex-basis: 100%; text-align: center; }
+}

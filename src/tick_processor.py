@@ -2,6 +2,8 @@ import sqlite3
 import json
 import random
 import sys
+import time
+import traceback as _tb_mod
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -604,26 +606,37 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
     #     no growth; past 36, decline.
     #   - Injury history: career_health < 80 reduces growth; < 50 =
     #     almost no growth.
-    #   - Personality: low discipline/coachability reduces the ceiling.
     #   - Diminishing returns: as attributes approach potential, growth
     #     rate decreases (the last 10 points are 2x harder than the
     #     first 10).
     #
-    # effective_ceiling = potential * age_factor * health_factor *
-    #   personality_factor
+    # CR-10 fix (docs/CR10_14_FIX_PLAN.md §1): the ceiling is now
+    # bounded ONLY by age + health (real physiological limits).
+    # personality_factor (discipline + coachability) used to multiply
+    # into the ceiling, which collapsed it for typical fighters
+    # (potential=60 × 0.5 personality = 30, below the seeded attr
+    # average of 52 → 99.7% of camps produced zero gains).
+    # personality_factor now scales the GAIN, not the ceiling — a
+    # low-discipline fighter grows SLOWER but can still reach their
+    # age+health-bounded ceiling.
     #
-    # A 20-year-old with potential=90, perfect health, high discipline
-    # (90) + coachability (90): ceiling = 90 * 1.0 * 1.0 * 0.9 = 81.
-    # Can reach ~81, NOT 90.
+    # effective_ceiling = potential * age_factor * health_factor
+    # gain = base * gym_spec_mult * coach_mult * fatigue_factor *
+    #        dim_factor * personality_factor
     #
-    # A 32-year-old with potential=90, health=70, avg discipline (50):
-    # ceiling = 90 * 0.85 * 0.90 * 0.5 = 34. Already past their growth
-    # window — they're declining, not growing.
+    # A 20-year-old with potential=90, perfect health: ceiling =
+    # 90 * 1.0 * 1.0 = 90. Can reach ~90 if disciplined enough.
+    #
+    # A 32-year-old with potential=90, health=70: ceiling =
+    # 90 * 0.85 * 0.90 = 69. Age + health cap their upside.
+    #
+    # A 38-year-old with potential=90, health=50: ceiling =
+    # 90 * 0.35 * 0.40 = 13. Deep decline — barely above floor.
     #
     # This ensures "potential ≠ guaranteed success" per the user's
     # directive. Scouting reports (Task 18) estimate potential, but
-    # the player must also consider age, health, personality, and gym
-    # quality when deciding whether to invest in a prospect.
+    # the player must also consider age, health, and gym quality
+    # when deciding whether to invest in a prospect.
 
     # Load fighter age + career_health for the effective ceiling calc.
     f_meta = conn.execute(
@@ -669,9 +682,33 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
 
     # Personality factor: average of discipline + coachability / 200
     # Range: 0.0 (both at 0) to 1.0 (both at 100). Most fighters ~0.5.
+    #
+    # CR-10 fix (docs/CR10_14_FIX_PLAN.md §1): personality_factor
+    # previously multiplied into effective_ceiling, which collapsed
+    # the ceiling for typical fighters (potential=60 × 1.0 × 1.0 ×
+    # 0.5 = 30 — below seeded attr avg of 52 → dim_factor=0.0 →
+    # 99.7% of camps produced zero gains).
+    #
+    # personality_factor now scales the GAIN, not the CEILING. A
+    # low-discipline fighter grows SLOWER but can still reach their
+    # potential. The ceiling is bounded only by age + health (real
+    # physiological limits) — discipline/coachability affect HOW
+    # FAST the fighter gets there, not whether they can.
     personality_factor = (discipline + coachability) / 200.0
 
-    effective_ceiling = int(potential * age_factor * health_factor * personality_factor)
+    # CR-DESIGN: realization variable — not every fighter hits their
+    # theoretical potential. Personality (discipline, coachability,
+    # professionalism, ego, risk_taking, attention_seeking) determines
+    # how close they get. A "bust" (realization=0.5) with potential=85
+    # has effective_ceiling=42, not 85. This prevents the unrealistic
+    # "every prospect reaches peak" outcome. See docs/DESIGN_REVIEW_E5.md §3.
+    realization_row = conn.execute(
+        "SELECT realization FROM fighter_career WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    realization = realization_row[0] if realization_row and realization_row[0] is not None else 0.7
+
+    effective_ceiling = int(potential * age_factor * health_factor * realization)
     # Floor at 10 — even the most degraded fighter can maintain some baseline
     effective_ceiling = max(10, effective_ceiling)
 
@@ -700,11 +737,18 @@ def _complete_training_camp(conn, camp_id, fighter_id, camp_focus,
         # Base gain +1 to +3.
         base = random.randint(1, 3)
         # Final gain = round(base * gym_mult * coach_mult * fatigue_
-        # factor * dim_factor), min 0 (if dim_factor=0, no gain —
-        # fighter has plateaued). If dim_factor > 0, min 1.
+        # factor * dim_factor * personality_factor), min 0 (if
+        # dim_factor=0 OR personality_factor=0, no gain — fighter has
+        # plateaued or has zero trainability). If dim_factor > 0 AND
+        # personality_factor > 0, min 1.
+        #
+        # CR-10 fix: personality_factor moved from the ceiling (line
+        # ~686) into the gain multiplier. A low-discipline fighter
+        # grows SLOWER but can still reach their effective_ceiling.
         gain = int(round(base * gym_spec_mult * coach_mult
-                         * fatigue_factor * dim_factor))
-        if dim_factor > 0:
+                         * fatigue_factor * dim_factor
+                         * personality_factor))
+        if dim_factor > 0 and personality_factor > 0:
             gain = max(1, gain)
         else:
             gain = 0
@@ -963,6 +1007,115 @@ def _compute_retirement_probability(age, career_health, loss_streak,
     return max(0.0, min(RETIREMENT_PROB_CEIL, base))
 
 
+# ----------------------------------------------------------------
+# Staff annual lifecycle (Phase M2 — docs/MASTER_PLAN_MATCHMAKING.md §2.3).
+#
+# Staff NEVER aged, NEVER retired, NEVER died, and their contracts
+# NEVER expired — the staff world was completely static (per
+# docs/RESEARCH_FIGHTERGEN_RIVALAI_STAFFLIFE.md §C).
+#
+# Phase M2 builds the lifecycle in 4 deliverables:
+#   M2.1 — Staff aging on the annual tick (January 1 of each sim
+#          year). All staff.age += 1. This commit (aging only).
+#   M2.2 — Staff retirement probability curve (65-69: 10%, 70-74:
+#          25%, 75+: 50%). On retirement: fire STAFF_RETIRED event,
+#          void contract, write news item, generate replacement.
+#   M2.3 — Staff regen: generate replacement staff + write to the
+#          new staff_regen_lineage table (schema v3.25.0).
+#   M2.4 — Staff contract expiry: extend _check_contract_expiry to
+#          handle staff_contracts.
+#
+# WHY AN ANNUAL TICK (JANUARY 1)?
+#   Unlike fighters (who have DOB and are checked on their birthday,
+#   spreading retirements across the year), staff have NO DOB column
+#   — just an integer `age`. The cleanest lifecycle tick is "everyone
+#   ages +1 on January 1, then retirement rolls happen that same
+#   day." This mirrors how sports leagues handle annual staff
+#   reviews (a "new year" roster shakeup) and keeps the staff world
+#   in sync with the calendar.
+#
+# ORDER IN run_tick (annual tick only — Jan 1):
+#   clock advance → _check_retirements (fighters) →
+#   _check_staff_annual_lifecycle (staff aging + retirement + regen) →
+#   _check_contract_expiry (fighters + staff) → ...
+#
+# The annual tick is placed BEFORE _check_contract_expiry so that a
+# staff member who retires on Jan 1 has their contract voided
+# (status='terminated') by the retirement path; _check_contract_expiry
+# then only processes status='active' contracts — no double-processing.
+# ----------------------------------------------------------------
+
+
+def _check_staff_annual_lifecycle(conn, current_date):
+    """Run the annual staff lifecycle tick (Phase M2).
+
+    Fires ONLY on January 1 of each sim-year (current_date month==1
+    AND day==1). On every other tick, this function is a no-op and
+    returns 0.
+
+    On the annual tick:
+      1. **M2.1 — Staff aging**: `UPDATE staff SET age = age + 1`.
+         All staff age by 1 simultaneously (staff have no DOB
+         column, so there's no per-staff birthday to gate on).
+      2. **M2.2 — Staff retirement** (added in the next commit):
+         for each staff member who hit a retirement-eligible age
+         band, roll rng.random() against the probability curve
+         (65-69: 10%, 70-74: 25%, 75+: 50%). On retirement: void
+         the staff contract, set promotion_id=NULL + gym_id=NULL,
+         fire STAFF_RETIRED event, write a news item, and generate
+         a replacement staff (M2.3).
+
+    Args:
+        conn: sqlite3.Connection (caller commits).
+        current_date: ISO date string 'YYYY-MM-DD' (the current sim
+            date — must be January 1 for the lifecycle to fire).
+
+    Returns:
+        Dict with keys:
+          'aged_count': int — total staff aged on this tick (0 if
+              not Jan 1).
+          'retired': list of staff_ids retired on this tick (0 if
+              not Jan 1; populated by M2.2 in the next commit).
+    """
+    try:
+        current_dt = datetime.strptime(current_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return {'aged_count': 0, 'retired': []}
+
+    # Only fire on January 1 of each sim-year.
+    if current_dt.month != 1 or current_dt.day != 1:
+        return {'aged_count': 0, 'retired': []}
+
+    # ---- M2.1: Staff aging --------------------------------------
+    # Single UPDATE — bumps every staff row's age by 1. This includes
+    # coaches (gym-bound), broadcast staff, retired staff (defensive
+    # — even retired staff age in the real world; keeping their age
+    # in sync avoids a "ghost staff forever 65" anomaly if the UI
+    # ever surfaces them). The age column has no upper CHECK bound,
+    # so this never fails.
+    cur = conn.execute("UPDATE staff SET age = age + 1, updated_at = CURRENT_TIMESTAMP")
+    aged_count = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    # ---- M2.2: Staff retirement ---------------------------------
+    # Deferred to the next commit — `_check_staff_retirements` in
+    # retirement_svc.py will be called here once added.
+    retired_staff = []
+    try:
+        from services.retirement_svc import check_staff_retirements
+        retired_staff = check_staff_retirements(conn, current_date) or []
+    except ImportError:
+        # retirement_svc.check_staff_retirements not yet implemented
+        # (this branch is hit only between commits M2.1 and M2.2).
+        pass
+    except Exception as e:
+        # Defensive — never let a staff-retirement failure crash
+        # the tick. Log + continue (mirrors the rival_ai pattern).
+        print(f"WARNING: staff retirement check failed on "
+              f"{current_date}: {type(e).__name__}: {e}", file=sys.stderr)
+
+    return {'aged_count': aged_count, 'retired': retired_staff}
+
+
 def _check_retirements(conn, current_date):
     """Check active fighters for retirement (probability-based, on birthday).
 
@@ -1017,9 +1170,28 @@ def _check_retirements(conn, current_date):
         # try again.
         return []
 
-    # Fetch all active, non-retired fighters with their DOB + career
-    # health. LEFT JOIN fighter_career so a fighter without a career
-    # row (defensive — shouldn't happen with the seed) is treated as
+    # Fetch active, non-retired fighters whose birthday is today AND
+    # who are old enough to be retirement-eligible (age >= 32 — the
+    # threshold below which _compute_retirement_probability always
+    # returns 0.0). Pre-filtering in SQL drops the candidate pool from
+    # ~4 450 rows to typically 0-12 rows per tick (PERF_ARCH_AUDIT
+    # §4.6 — saves ~24 ms / tick by avoiding the full-table SELECT +
+    # Python-side DOB parse + birthday gate on 4 450 rows).
+    #
+    # Two WHERE clauses:
+    #   1. strftime('%m-%d', date_of_birth) = strftime('%m-%d', ?)
+    #      Birthday gate in SQL — only fighters whose DOB month/day
+    #      matches current_date's month/day. Drops 4 450 → ~12 rows.
+    #   2. date_of_birth <= date(?, '-32 years')
+    #      Age threshold — fighters under 32 have 0.0 retirement
+    #      probability, so skip them entirely. Drops ~12 → ~4 rows.
+    # Both use current_date as a bound parameter (?), so a malformed
+    # current_date yields NULL comparisons (no rows match) and the
+    # function returns [] — same as the original Python-side
+    # try/except short-circuit above.
+    #
+    # LEFT JOIN fighter_career so a fighter without a career row
+    # (defensive — shouldn't happen with the seed) is treated as
     # career_health=100 (healthy, won't retire on the health rule).
     # We also pull fight_style_archetype_id so we can pass it to the
     # regen_lineage INSERT below (Task ID 14 — the new replacement
@@ -1028,11 +1200,6 @@ def _check_retirements(conn, current_date):
     # so the inline retirement news can use a voice.describe_career_stage
     # descriptor instead of a raw age digit (CONVENTIONS §14 — no raw
     # numbers in player-facing text).
-    # FIX-Critical: also pull date_of_birth so we can check "is today
-    # the fighter's birthday" (the new on-birthday retirement gate).
-    # We fetch all active fighters every tick — the birthday check
-    # below filters to ~1/365 of them per tick (so per-tick work is
-    # bounded even on a 4000-fighter roster).
     rows = conn.execute(
         "SELECT f.fighter_id, f.first_name, f.last_name, f.date_of_birth, "
         "f.fight_style_archetype_id, "
@@ -1045,7 +1212,10 @@ def _check_retirements(conn, current_date):
         "COALESCE(fc.title_reigns, 0) AS title_reigns "
         "FROM fighters f "
         "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
-        "WHERE f.is_active = 1 AND f.is_retired = 0"
+        "WHERE f.is_active = 1 AND f.is_retired = 0 "
+        "AND strftime('%m-%d', f.date_of_birth) = strftime('%m-%d', ?) "
+        "AND f.date_of_birth <= date(?, '-32 years')",
+        (current_date, current_date),
     ).fetchall()
 
     # Get or create the "System Feed" news source (same pattern as
@@ -1073,12 +1243,15 @@ def _check_retirements(conn, current_date):
     for (fighter_id, first_name, last_name, dob, style_archetype_id,
          career_health, rec_wins, rec_losses, rec_draws,
          win_streak, loss_streak, title_reigns) in rows:
-        # Parse the DOB. Skip fighters with a malformed DOB (defensive
-        # — the seed always sets one, but a future mod tool could
-        # produce a fighter without one).
+        # HW9.1.5: replaced datetime.strptime with string slicing for
+        # the birthday check. strptime was 9.3us/call × 4452 fighters
+        # = 41ms per tick. String slicing is 1.1us/call = 5ms per tick.
+        # We only need month+day for the birthday gate + year for age.
+        if not dob or len(dob) < 10:
+            continue
         try:
-            dob_dt = datetime.strptime(dob, "%Y-%m-%d")
-        except (ValueError, TypeError):
+            dob_y, dob_m, dob_d = int(dob[:4]), int(dob[5:7]), int(dob[8:10])
+        except (ValueError, IndexError, TypeError):
             continue
 
         # ---- BIRTHDAY GATE (FIX-Critical) -----------------------------
@@ -1088,12 +1261,12 @@ def _check_retirements(conn, current_date):
         # spread across 365 days. A fighter born on March 15 is checked
         # only on March 15 each sim year — on every other tick, the
         # loop just `continue`s past them.
-        if (current_dt.month, current_dt.day) != (dob_dt.month, dob_dt.day):
+        if (current_dt.month, current_dt.day) != (dob_m, dob_d):
             continue
 
         # Compute the fighter's age AS OF TODAY. Since today IS their
         # birthday, the year-only diff is correct (no off-by-one).
-        age = current_dt.year - dob_dt.year
+        age = current_dt.year - dob_y
 
         # ---- PROBABILITY CALCULATION (FIX-Critical) -------------------
         # Pure function — see _compute_retirement_probability for the
@@ -1550,125 +1723,718 @@ def _check_contract_expiry(conn, current_date):
         else:
             # Staff/broadcast contract, OR fighter contract for an
             # already-retired fighter. No fighter update, no news item.
+            # M2.4: For staff contracts, set staff.promotion_id = NULL
+            # so they go into the Staff Market as a free agent.
+            if target_type == 'staff':
+                # Find the staff_id via staff_contracts
+                sc_row = conn.execute(
+                    "SELECT staff_id FROM staff_contracts WHERE contract_id=?",
+                    (contract_id,),
+                ).fetchone()
+                if sc_row:
+                    staff_id = sc_row[0]
+                    # Get staff name for the news item
+                    name_row = conn.execute(
+                        "SELECT first_name, last_name, role_type FROM staff WHERE staff_id=?",
+                        (staff_id,),
+                    ).fetchone()
+                    if name_row:
+                        fn, ln, role_type = name_row
+                        full_name = f"{fn} {ln}"
+                        # Set staff free (promotion_id + gym_id = NULL)
+                        conn.execute(
+                            "UPDATE staff SET promotion_id=NULL, gym_id=NULL "
+                            "WHERE staff_id=?",
+                            (staff_id,),
+                        )
+                        # Write a news item (voice-compliant)
+                        conn.execute(
+                            "INSERT INTO news_items (news_source_id, headline, body, "
+                            "sentiment, topic, published_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                src_id,
+                                f"{full_name} becomes a free agent",
+                                f"{full_name}'s contract has expired and they are now "
+                                f"available to sign with any promotion.",
+                                "neutral",
+                                "staff",
+                                current_date,
+                            ),
+                        )
             expired.append((contract_id, None))
 
     return expired
 
 
-def run_tick(conn, tick_type="day", steps=1):
-    for _ in range(steps):
-        # v2.0.0 (Task 14.7): qualify current_date (and the other
-        # clock columns, for consistency) as simulation_clock.current_date
-        # etc. to avoid the pre-existing SQLite quirk (§Z.6 in
-        # SCHEMA_DRIFT_AUDIT.md) where bare `current_date` resolves to
-        # SQLite's built-in date FUNCTION (today's wall-clock date)
-        # instead of the simulation_clock.current_date COLUMN. This
-        # caused the sim clock to jump from the seeded 2026-07-20 to
-        # today+1 on the first tick. The new acceptance test
-        # test_fighter_attributes.py case F verifies the tick now
-        # advances by exactly 1 day from the seeded date.
-        row = conn.execute("SELECT simulation_clock.current_date, simulation_clock.current_day, simulation_clock.current_week, simulation_clock.current_month, simulation_clock.current_year FROM simulation_clock WHERE clock_id=1").fetchone()
-        dt = datetime.strptime(row[0], "%Y-%m-%d") + timedelta(days=1)
-        day = row[1] + 1
-        week = ((day - 1) // 7) + 1
-        conn.execute(
-            "UPDATE simulation_clock SET current_date=?, current_day=?, current_week=?, current_month=?, current_year=?, current_tick_type=?, tick_counter=tick_counter+1, updated_at=CURRENT_TIMESTAMP WHERE clock_id=1",
-            (dt.strftime("%Y-%m-%d"), day, week, dt.month, dt.year, tick_type),
+def _run_one_tick_body(conn, tick_type="day"):
+    """HW2.1: the actual per-tick work, extracted from run_tick so the
+    run_tick wrapper can wrap it in a try/except that records a
+    simulation_tick_health row. Returns the new sim date string
+    ('YYYY-MM-DD') after the clock advance.
+
+    This function does NOT commit — the caller (run_tick) commits
+    after writing the tick_health row. Side-effect helpers
+    (_check_retirements, _check_injury_recovery, etc.) also do NOT
+    commit — same pattern as before.
+    """
+    # v2.0.0 (Task 14.7): qualify current_date (and the other
+    # clock columns, for consistency) as simulation_clock.current_date
+    # etc. to avoid the pre-existing SQLite quirk (§Z.6 in
+    # SCHEMA_DRIFT_AUDIT.md) where bare `current_date` resolves to
+    # SQLite's built-in date FUNCTION (today's wall-clock date)
+    # instead of the simulation_clock.current_date COLUMN. This
+    # caused the sim clock to jump from the seeded 2026-07-20 to
+    # today+1 on the first tick. The new acceptance test
+    # test_fighter_attributes.py case F verifies the tick now
+    # advances by exactly 1 day from the seeded date.
+    row = conn.execute("SELECT simulation_clock.current_date, simulation_clock.current_day, simulation_clock.current_week, simulation_clock.current_month, simulation_clock.current_year FROM simulation_clock WHERE clock_id=1").fetchone()
+    dt = datetime.strptime(row[0], "%Y-%m-%d") + timedelta(days=1)
+    day = row[1] + 1
+    week = ((day - 1) // 7) + 1
+    conn.execute(
+        "UPDATE simulation_clock SET current_date=?, current_day=?, current_week=?, current_month=?, current_year=?, current_tick_type=?, tick_counter=tick_counter+1, updated_at=CURRENT_TIMESTAMP WHERE clock_id=1",
+        (dt.strftime("%Y-%m-%d"), day, week, dt.month, dt.year, tick_type),
+    )
+    # Task ID 12: check for retirements on every tick. Runs AFTER
+    # the clock advance so the retirement check uses the NEW sim
+    # date (a fighter who turns 40 on this tick's new date becomes
+    # eligible today, not yesterday). The function does NOT commit
+    # — the conn.commit() below covers both the clock UPDATE and
+    # any retirement side effects (fighters UPDATE, titles UPDATE,
+    # news_items INSERTs). Task ID 14: each retirement also triggers
+    # generate_fighter() which adds a replacement fighter + writes
+    # the new-prospect news item + records the regen_lineage row.
+    # Prints a one-line log per tick if any fighters were retired,
+    # mirroring the pattern in resolve_next_fight's auto-schedule
+    # warning.
+    retired = _check_retirements(conn, dt.strftime("%Y-%m-%d"))
+    if retired:
+        print(f"  Retired {len(retired)} fighter(s) on "
+              f"{dt.strftime('%Y-%m-%d')}: {retired}")
+        # Task ID 14: log regens alongside retirements. Each retired
+        # fighter spawned a replacement — query regen_lineage to
+        # find the replacement_ids.
+        regens = conn.execute(
+            "SELECT retiring_fighter_id, replacement_fighter_id "
+            "FROM regen_lineage WHERE regen_date = ?",
+            (dt.strftime("%Y-%m-%d"),),
+        ).fetchall()
+        if regens:
+            print(f"  Generated {len(regens)} replacement fighter(s) on "
+                  f"{dt.strftime('%Y-%m-%d')}: {regens}")
+    # Phase M2 (docs/MASTER_PLAN_MATCHMAKING.md §2.3): staff
+    # annual lifecycle tick — runs ONLY on January 1 of each
+    # sim-year. Ages every staff member by 1 + (from M2.2 onward)
+    # runs the staff retirement probability curve. Placed BEFORE
+    # _check_contract_expiry so a staff member who retires today
+    # has their contract voided (status='terminated') here, and
+    # _check_contract_expiry then only sees status='active'
+    # contracts — no double-processing. The function is a no-op
+    # on every non-Jan-1 tick (early-return in the helper).
+    staff_lifecycle = _check_staff_annual_lifecycle(
+        conn, dt.strftime("%Y-%m-%d"),
+    )
+    if staff_lifecycle['aged_count'] > 0:
+        print(f"  Aged {staff_lifecycle['aged_count']} staff member(s) "
+              f"on {dt.strftime('%Y-%m-%d')} (annual tick)")
+    if staff_lifecycle.get('retired'):
+        print(f"  Retired {len(staff_lifecycle['retired'])} staff "
+              f"member(s) on {dt.strftime('%Y-%m-%d')}: "
+              f"{staff_lifecycle['retired']}")
+    # Task ID 13: check for contract expiry on every tick. Runs
+    # AFTER _check_retirements so a retired-and-contract-expiring
+    # fighter is handled correctly: _check_retirements sets
+    # is_retired=1 first, then _check_contract_expiry sees
+    # is_retired=1 and skips the current_promotion_id=NULL update
+    # (they're retired, not a free agent). The function does NOT
+    # commit — the conn.commit() below covers both the clock
+    # UPDATE and any contract-expiry side effects (contracts
+    # UPDATE, fighters UPDATE, news_items INSERTs). Prints a one-
+    # line log per tick if any contracts expired.
+    expired = _check_contract_expiry(conn, dt.strftime("%Y-%m-%d"))
+    if expired:
+        print(f"  Expired {len(expired)} contract(s) on "
+              f"{dt.strftime('%Y-%m-%d')}: {expired}")
+    # Task ID 15: check for injury recovery on every tick. Runs
+    # AFTER _check_contract_expiry so the order is: clock advance →
+    # _check_retirements → _check_contract_expiry →
+    # _check_injury_recovery → commit. For each active injury whose
+    # projected_return_date <= current_date: sets is_active=0,
+    # actual_return_date=current_date, restores career_health by
+    # severity*2 (the temporary penalty), and writes a clearance
+    # news item. The function does NOT commit — the conn.commit()
+    # below covers both the clock UPDATE and any injury-recovery
+    # side effects (injuries UPDATE, fighter_career UPDATE,
+    # news_items INSERTs). Prints a one-line log per tick if any
+    # injuries were recovered.
+    recovered = _check_injury_recovery(conn, dt.strftime("%Y-%m-%d"))
+    if recovered:
+        print(f"  Recovered {len(recovered)} injur(ies) on "
+              f"{dt.strftime('%Y-%m-%d')}: {recovered}")
+    # v2.5.0 (Task 16): progress and complete active training camps
+    # on every tick. Runs AFTER _check_injury_recovery so the order
+    # is: clock advance → _check_retirements → _check_contract_
+    # expiry → _check_injury_recovery → _check_training_camps →
+    # commit. For each active, uncompleted camp whose [start_date,
+    # end_date] window contains current_date: progress the camp
+    # (accrue fatigue, fluctuate morale, accumulate injury risk,
+    # maybe spawn a training injury) or complete it (apply
+    # attribute gains, write news item). The function does NOT
+    # commit — the conn.commit() below covers both the clock
+    # UPDATE and any camp side effects.
+    camps = _check_training_camps(conn, dt.strftime("%Y-%m-%d"))
+    if camps:
+        print(f"  Processed {len(camps)} training camp(s) on "
+              f"{dt.strftime('%Y-%m-%d')}: {camps}")
+    # v2.9.0 (Task 18): process scouting assignments. Checks all
+    # scouts for ready assignments (7+ days elapsed) and generates
+    # reports. Lazy-import to avoid circular dependency.
+    from scouting import _check_scouting_assignments
+    scouting_done = _check_scouting_assignments(conn, dt.strftime("%Y-%m-%d"))
+    if scouting_done:
+        print(f"  Generated {len(scouting_done)} scouting report(s) on "
+              f"{dt.strftime('%Y-%m-%d')}: {scouting_done}")
+    # v2.9.1 (Task 18.5): publish TICK_ADVANCED event. Stage 4+
+    # systems that need to react to time passing (e.g., social
+    # media posts, rivalry cooldowns, finances) will subscribe.
+    try:
+        from event_bus import get_bus, Events
+        bus = get_bus()
+        bus.publish(conn, {
+            'type': Events.TICK_ADVANCED,
+            'current_date': dt.strftime("%Y-%m-%d"),
+            'tick_type': tick_type,
+        })
+    except ImportError:
+        pass
+    # PHASE M3.2 (docs/MASTER_PLAN_MATCHMAKING.md §2.2): check
+    # expired bidding alerts. When a rival AI's SIGNING_INTENT
+    # window expires with no player counter-offer, the rival AI
+    # signs the fighter. Runs AFTER the TICK_ADVANCED publish so
+    # subscribers (rival AI's weekly tick) have already had their
+    # chance to generate new intents. Lazy-import + try/except so
+    # a missing module or failure doesn't crash the tick.
+    try:
+        from services.rival_ai.signing_agent import (
+            check_bidding_alerts_expiry,
         )
-        # Task ID 12: check for retirements on every tick. Runs AFTER
-        # the clock advance so the retirement check uses the NEW sim
-        # date (a fighter who turns 40 on this tick's new date becomes
-        # eligible today, not yesterday). The function does NOT commit
-        # — the conn.commit() below covers both the clock UPDATE and
-        # any retirement side effects (fighters UPDATE, titles UPDATE,
-        # news_items INSERTs). Task ID 14: each retirement also triggers
-        # generate_fighter() which adds a replacement fighter + writes
-        # the new-prospect news item + records the regen_lineage row.
-        # Prints a one-line log per tick if any fighters were retired,
-        # mirroring the pattern in resolve_next_fight's auto-schedule
-        # warning.
-        retired = _check_retirements(conn, dt.strftime("%Y-%m-%d"))
-        if retired:
-            print(f"  Retired {len(retired)} fighter(s) on "
-                  f"{dt.strftime('%Y-%m-%d')}: {retired}")
-            # Task ID 14: log regens alongside retirements. Each retired
-            # fighter spawned a replacement — query regen_lineage to
-            # find the replacement_ids.
-            regens = conn.execute(
-                "SELECT retiring_fighter_id, replacement_fighter_id "
-                "FROM regen_lineage WHERE regen_date = ?",
-                (dt.strftime("%Y-%m-%d"),),
-            ).fetchall()
-            if regens:
-                print(f"  Generated {len(regens)} replacement fighter(s) on "
-                      f"{dt.strftime('%Y-%m-%d')}: {regens}")
-        # Task ID 13: check for contract expiry on every tick. Runs
-        # AFTER _check_retirements so a retired-and-contract-expiring
-        # fighter is handled correctly: _check_retirements sets
-        # is_retired=1 first, then _check_contract_expiry sees
-        # is_retired=1 and skips the current_promotion_id=NULL update
-        # (they're retired, not a free agent). The function does NOT
-        # commit — the conn.commit() below covers both the clock
-        # UPDATE and any contract-expiry side effects (contracts
-        # UPDATE, fighters UPDATE, news_items INSERTs). Prints a one-
-        # line log per tick if any contracts expired.
-        expired = _check_contract_expiry(conn, dt.strftime("%Y-%m-%d"))
-        if expired:
-            print(f"  Expired {len(expired)} contract(s) on "
-                  f"{dt.strftime('%Y-%m-%d')}: {expired}")
-        # Task ID 15: check for injury recovery on every tick. Runs
-        # AFTER _check_contract_expiry so the order is: clock advance →
-        # _check_retirements → _check_contract_expiry →
-        # _check_injury_recovery → commit. For each active injury whose
-        # projected_return_date <= current_date: sets is_active=0,
-        # actual_return_date=current_date, restores career_health by
-        # severity*2 (the temporary penalty), and writes a clearance
-        # news item. The function does NOT commit — the conn.commit()
-        # below covers both the clock UPDATE and any injury-recovery
-        # side effects (injuries UPDATE, fighter_career UPDATE,
-        # news_items INSERTs). Prints a one-line log per tick if any
-        # injuries were recovered.
-        recovered = _check_injury_recovery(conn, dt.strftime("%Y-%m-%d"))
-        if recovered:
-            print(f"  Recovered {len(recovered)} injur(ies) on "
-                  f"{dt.strftime('%Y-%m-%d')}: {recovered}")
-        # v2.5.0 (Task 16): progress and complete active training camps
-        # on every tick. Runs AFTER _check_injury_recovery so the order
-        # is: clock advance → _check_retirements → _check_contract_
-        # expiry → _check_injury_recovery → _check_training_camps →
-        # commit. For each active, uncompleted camp whose [start_date,
-        # end_date] window contains current_date: progress the camp
-        # (accrue fatigue, fluctuate morale, accumulate injury risk,
-        # maybe spawn a training injury) or complete it (apply
-        # attribute gains, write news item). The function does NOT
-        # commit — the conn.commit() below covers both the clock
-        # UPDATE and any camp side effects.
-        camps = _check_training_camps(conn, dt.strftime("%Y-%m-%d"))
-        if camps:
-            print(f"  Processed {len(camps)} training camp(s) on "
-                  f"{dt.strftime('%Y-%m-%d')}: {camps}")
-        # v2.9.0 (Task 18): process scouting assignments. Checks all
-        # scouts for ready assignments (7+ days elapsed) and generates
-        # reports. Lazy-import to avoid circular dependency.
-        from scouting import _check_scouting_assignments
-        scouting_done = _check_scouting_assignments(conn, dt.strftime("%Y-%m-%d"))
-        if scouting_done:
-            print(f"  Generated {len(scouting_done)} scouting report(s) on "
-                  f"{dt.strftime('%Y-%m-%d')}: {scouting_done}")
-        # v2.9.1 (Task 18.5): publish TICK_ADVANCED event. Stage 4+
-        # systems that need to react to time passing (e.g., social
-        # media posts, rivalry cooldowns, finances) will subscribe.
+        signed = check_bidding_alerts_expiry(
+            conn, dt.strftime("%Y-%m-%d"),
+        )
+        if signed:
+            print(f"  Resolved {len(signed)} expired bidding alert(s) "
+                  f"on {dt.strftime('%Y-%m-%d')}: {signed}")
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"WARNING: check_bidding_alerts_expiry failed: "
+              f"{type(e).__name__}: {e}", flush=True)
+    # Return the new sim date so the run_tick wrapper can include
+    # it in the tick_health row.
+    return dt.strftime("%Y-%m-%d")
+
+
+def _record_tick_health(conn, tick_date, tick_start_wallclock,
+                        tick_start_perf, bus, crashed=False,
+                        crash_traceback=None):
+    """HW2.1: write one simulation_tick_health row summarizing the
+    tick that just ran.
+
+    Aggregate counts (events_scheduled, fights_resolved, etc.) are
+    computed by querying rows whose created_at >= tick_start_wallclock
+    (i.e. rows written DURING this tick). Limitation: SQLite's
+    CURRENT_TIMESTAMP has 1-second resolution, so two ticks in the
+    same wall-clock second would claim the same rows. Acceptable for
+    observability (rare in practice — a tick typically takes 50-500ms).
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        tick_date: ISO date string 'YYYY-MM-DD' — the new sim date
+            AFTER the clock advance.
+        tick_start_wallclock: ISO timestamp string (seconds resolution)
+            captured at tick start — used for created_at >= ? filters.
+        tick_start_perf: time.perf_counter() captured at tick start —
+            used for tick_duration_ms.
+        bus: the EventBus instance (or None if event_bus couldn't be
+            imported) — read via get_tick_stats() for subscriber counts.
+        crashed: True if the tick itself threw an exception (the
+            wrapper writes a BROKEN row before re-raising).
+        crash_traceback: the formatted traceback string if crashed=True.
+    """
+    # Defensive: if the simulation_tick_health table doesn't exist
+    # (e.g. an old DB that hasn't been migrated yet), silently skip.
+    # The migration adds the table, but a brand-new test DB that
+    # hasn't run --migrate would not have it.
+    try:
+        conn.execute("SELECT 1 FROM simulation_tick_health LIMIT 0")
+    except sqlite3.OperationalError:
+        return  # table doesn't exist — skip silently
+
+    # Bus stats (subscriber counts + errors JSON).
+    if bus is not None:
+        stats = bus.get_tick_stats()
+    else:
+        stats = {"invoked": 0, "succeeded": 0, "failed": 0, "errors": []}
+
+    # If the tick crashed, append the crash as an error.
+    if crashed and crash_traceback:
+        stats["errors"].append({
+            "subscriber": "<tick_body>",
+            "event_type": "<tick>",
+            "error_type": "TickCrash",
+            "error_message": "run_tick body raised an exception",
+            "traceback": crash_traceback,
+            "sim_date": tick_date,
+        })
+
+    # tick_success / health_status.
+    if crashed:
+        tick_success = -1
+        health_status = "BROKEN"
+    elif stats["failed"] > 0:
+        tick_success = 0
+        health_status = "DEGRADED"
+    else:
+        tick_success = 1
+        health_status = "HEALTHY"
+
+    # Duration (ms).
+    duration_ms = int((time.perf_counter() - tick_start_perf) * 1000)
+
+    # Side-effect counts via created_at >= tick_start_wallclock.
+    # Each query is wrapped in try/except so a missing table doesn't
+    # crash the health recording (defensive — the table SHOULD exist
+    # but we don't want a health-row failure to mask the original
+    # crash if one happened).
+    def _count(sql):
         try:
-            from event_bus import get_bus, Events
-            bus = get_bus()
-            bus.publish(conn, {
-                'type': Events.TICK_ADVANCED,
-                'current_date': dt.strftime("%Y-%m-%d"),
-                'tick_type': tick_type,
-            })
+            return conn.execute(sql, (tick_start_wallclock,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
+    events_scheduled = _count(
+        "SELECT COUNT(*) FROM events WHERE created_at >= ? "
+        "AND status IN ('scheduled', 'card_confirmed')"
+    )
+    events_completed = _count(
+        "SELECT COUNT(*) FROM events WHERE updated_at >= ? "
+        "AND status = 'completed'"
+    )
+    fights_resolved = _count(
+        "SELECT COUNT(*) FROM fights WHERE updated_at >= ? "
+        "AND winner_fighter_id IS NOT NULL"
+    )
+    fighters_retired = _count(
+        "SELECT COUNT(*) FROM fighters WHERE updated_at >= ? "
+        "AND is_retired = 1"
+    )
+    fighters_regen = _count(
+        "SELECT COUNT(*) FROM regen_lineage WHERE regen_date = ?"
+    ) if tick_date else 0
+    # Note: fighters_regen query uses regen_date (sim date), not
+    # created_at — the regen_lineage table doesn't have created_at.
+    try:
+        fighters_regen = conn.execute(
+            "SELECT COUNT(*) FROM regen_lineage WHERE regen_date = ?",
+            (tick_date,),
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        fighters_regen = 0
+    injuries_created = _count(
+        "SELECT COUNT(*) FROM injuries WHERE created_at >= ?"
+    ) if _has_table_for_health(conn, "injuries") else 0
+    # injuries_recovered: count injuries whose actual_return_date
+    # matches this tick's sim date (the _check_injury_recovery helper
+    # sets actual_return_date = current_date when it clears an injury).
+    # Using actual_return_date is more reliable than updated_at (which
+    # other writes might touch). Falls back to 0 if the injuries table
+    # is missing or tick_date is None.
+    if tick_date:
+        try:
+            injuries_recovered = conn.execute(
+                "SELECT COUNT(*) FROM injuries "
+                "WHERE actual_return_date = ? AND is_active = 0",
+                (tick_date,),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            injuries_recovered = 0
+    else:
+        injuries_recovered = 0
+    contracts_changed = _count(
+        "SELECT COUNT(*) FROM contracts WHERE updated_at >= ?"
+    )
+    title_changes = _count(
+        "SELECT COUNT(*) FROM titles WHERE updated_at >= ?"
+    )
+    ranking_changes = _count(
+        "SELECT COUNT(*) FROM rankings WHERE updated_at >= ?"
+    )
+    finance_transactions = _count(
+        "SELECT COUNT(*) FROM finance_transactions WHERE created_at >= ?"
+    )
+    news_generated = _count(
+        "SELECT COUNT(*) FROM news_items WHERE created_at >= ?"
+    )
+    social_posts_generated = _count(
+        "SELECT COUNT(*) FROM social_posts WHERE created_at >= ?"
+    )
+    memories_generated = _count(
+        "SELECT COUNT(*) FROM fighter_memory_links WHERE created_at >= ?"
+    )
+
+    errors_json = json.dumps(stats["errors"]) if stats["errors"] else None
+
+    try:
+        conn.execute(
+            "INSERT INTO simulation_tick_health "
+            "(tick_date, tick_duration_ms, tick_success, health_status, "
+            " subscribers_invoked, subscribers_succeeded, subscribers_failed, "
+            " errors_json, events_scheduled, events_completed, "
+            " fights_resolved, fighters_retired, fighters_regen, "
+            " injuries_created, injuries_recovered, contracts_changed, "
+            " title_changes, ranking_changes, finance_transactions, "
+            " news_generated, social_posts_generated, memories_generated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tick_date, duration_ms, tick_success, health_status,
+             stats["invoked"], stats["succeeded"], stats["failed"],
+             errors_json,
+             events_scheduled, events_completed,
+             fights_resolved, fighters_retired, fighters_regen,
+             injuries_created, injuries_recovered, contracts_changed,
+             title_changes, ranking_changes, finance_transactions,
+             news_generated, social_posts_generated, memories_generated),
+        )
+    except sqlite3.OperationalError as e:
+        # Don't let a tick_health write failure mask the original
+        # crash (if any). Print + continue.
+        print(f"WARNING: failed to write simulation_tick_health row: "
+              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+def _has_table_for_health(conn, table):
+    """HW2.1: tiny helper for _record_tick_health — checks if a table
+    exists before running a COUNT(*) against it (defensive against
+    partial schemas on test DBs)."""
+    try:
+        conn.execute(f"SELECT 1 FROM {table} LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+# ----------------------------------------------------------------
+# HW2.4 — World Health Status (W27).
+#
+# `compute_world_health(conn)` returns one of 'HEALTHY', 'DEGRADED',
+# 'BROKEN' based on 4 signals:
+#   1. Recent tick_health rows (any failures in the last 7 sim days?)
+#   2. Event resolution rate (scheduled events whose event_date has
+#      passed vs status='completed')
+#   3. Finance transactions (any written recently? — probes the
+#      HW1.1 finance-registration fix)
+#   4. DB integrity (PRAGMA integrity_check)
+#
+# Decision logic:
+#   BROKEN  — DB integrity check fails, OR no tick_health rows in the
+#             last 7 sim days (the tick loop isn't running), OR >50%
+#             of recent ticks were BROKEN.
+#   DEGRADED — any recent tick was DEGRADED or BROKEN, OR event
+#              resolution rate < 80%, OR no finance transactions in
+#              the last 30 sim days.
+#   HEALTHY — all of the above are clean.
+#
+# Called on the TICK_ADVANCED monthly tick (current_day % 30 == 0,
+# same gate as career_arc._is_monthly_tick) via the
+# _world_health_monthly_subscriber registered in app_web.py.
+# Exposed as the API method get_world_health().
+# ----------------------------------------------------------------
+
+def compute_world_health(conn):
+    """HW2.4: compute the overall world health status.
+
+    Returns a dict with:
+        status: 'HEALTHY' | 'DEGRADED' | 'BROKEN'
+        signals: dict of the 4 signals (each with a value + detail)
+        computed_at: ISO timestamp string
+
+    Args:
+        conn: sqlite3 connection (does NOT commit — read-only).
+    """
+    signals = {}
+
+    # ---- Signal 1: DB integrity ----
+    try:
+        integrity_rows = conn.execute("PRAGMA integrity_check").fetchall()
+        # PRAGMA integrity_check returns [('ok',)] on success, or a
+        # list of error strings on failure.
+        integrity_ok = (len(integrity_rows) == 1 and
+                        integrity_rows[0][0] == 'ok')
+        signals['db_integrity'] = {
+            'value': 'ok' if integrity_ok else 'failed',
+            'detail': (integrity_rows[0][0] if integrity_rows
+                       else 'no rows returned'),
+        }
+    except sqlite3.DatabaseError as e:
+        integrity_ok = False
+        signals['db_integrity'] = {
+            'value': 'error',
+            'detail': f'{type(e).__name__}: {e}',
+        }
+
+    # ---- Signal 2: recent tick_health rows ----
+    # Look at the last 7 sim days of tick_health rows.
+    try:
+        recent_ticks = conn.execute(
+            "SELECT tick_success, health_status, tick_date "
+            "FROM simulation_tick_health "
+            "ORDER BY tick_id DESC LIMIT 7"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Table doesn't exist — treat as BROKEN (no observability).
+        recent_ticks = []
+    recent_count = len(recent_ticks)
+    if recent_count == 0:
+        # No tick_health rows at all — either the world is brand new
+        # (clock hasn't advanced) or the tick loop isn't running.
+        # DEGRADED, not BROKEN — a fresh world legitimately has 0 rows.
+        signals['recent_tick_health'] = {
+            'value': 'no_data',
+            'detail': 'no simulation_tick_health rows yet',
+        }
+        tick_health_ok = False  # not OK, but not broken either
+        tick_health_broken = False
+    else:
+        broken_count = sum(1 for r in recent_ticks if r[0] == -1)
+        degraded_count = sum(1 for r in recent_ticks if r[0] == 0)
+        healthy_count = sum(1 for r in recent_ticks if r[0] == 1)
+        tick_health_broken = broken_count > (recent_count / 2)
+        tick_health_ok = (broken_count == 0 and degraded_count == 0)
+        signals['recent_tick_health'] = {
+            'value': 'broken' if tick_health_broken else
+                     ('degraded' if degraded_count > 0 else 'healthy'),
+            'detail': (f'last 7 ticks: {healthy_count} healthy, '
+                       f'{degraded_count} degraded, {broken_count} broken'),
+        }
+
+    # ---- Signal 3: event resolution rate ----
+    # Scheduled events whose event_date has passed should be marked
+    # 'completed'. If many are still 'scheduled' past their date, the
+    # event-resolution pipeline is broken.
+    try:
+        sim_row = conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        sim_date = sim_row[0] if sim_row else None
+    except sqlite3.OperationalError:
+        sim_date = None
+
+    if sim_date:
+        try:
+            overdue = conn.execute(
+                "SELECT COUNT(*) FROM events "
+                "WHERE event_date < ? AND status = 'scheduled'",
+                (sim_date,),
+            ).fetchone()[0]
+            completed = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE status = 'completed'"
+            ).fetchone()[0]
+            # Rate = completed / (completed + overdue). If both are 0,
+            # the world has no events yet — treat as healthy (no data
+            # to evaluate).
+            total = completed + overdue
+            if total == 0:
+                event_rate = 1.0
+                event_detail = 'no events to evaluate'
+            else:
+                event_rate = completed / total
+                event_detail = (f'{completed}/{total} completed '
+                                f'({event_rate*100:.1f}%), '
+                                f'{overdue} overdue')
+            event_rate_ok = event_rate >= 0.8
+            signals['event_resolution_rate'] = {
+                'value': f'{event_rate*100:.1f}%',
+                'detail': event_detail,
+            }
+        except sqlite3.OperationalError:
+            event_rate_ok = True
+            signals['event_resolution_rate'] = {
+                'value': 'no_table',
+                'detail': 'events table missing',
+            }
+    else:
+        event_rate_ok = True
+        signals['event_resolution_rate'] = {
+            'value': 'no_clock',
+            'detail': 'simulation_clock missing',
+        }
+
+    # ---- Signal 4: finance transactions (recent activity) ----
+    # If the HW1.1 finance-registration fix is working, finance_
+    # transactions should be written when events complete. A world
+    # with completed events but 0 finance transactions is BROKEN
+    # (finance subscriber isn't firing). A world with no completed
+    # events yet legitimately has 0 finance transactions.
+    try:
+        finance_count = conn.execute(
+            "SELECT COUNT(*) FROM finance_transactions"
+        ).fetchone()[0]
+        if completed > 0 and finance_count == 0:
+            finance_ok = False
+            finance_detail = (f'{completed} completed events but 0 finance '
+                              f'transactions — finance subscriber may not be '
+                              f'registered')
+        else:
+            finance_ok = True
+            finance_detail = f'{finance_count} transactions total'
+        signals['finance_activity'] = {
+            'value': 'ok' if finance_ok else 'missing',
+            'detail': finance_detail,
+        }
+    except (sqlite3.OperationalError, NameError):
+        # NameError: `completed` not defined if event_resolution_rate
+        # block failed early. Treat as OK (defensive).
+        finance_ok = True
+        signals['finance_activity'] = {
+            'value': 'no_data',
+            'detail': 'finance_transactions table or events table missing',
+        }
+
+    # ---- Decision ----
+    if not integrity_ok or tick_health_broken:
+        status = 'BROKEN'
+    elif (not tick_health_ok or not event_rate_ok or not finance_ok):
+        status = 'DEGRADED'
+    else:
+        status = 'HEALTHY'
+
+    return {
+        'status': status,
+        'signals': signals,
+        'sim_date': sim_date,
+        'computed_at': datetime.now().isoformat(timespec='seconds'),
+    }
+
+
+# HW2.4: cache for the most-recent world-health computation. The
+# monthly subscriber writes here; the API method get_world_health()
+# reads from here (so it doesn't recompute on every JS call).
+_world_health_cache = {"status": "HEALTHY", "signals": {}, "sim_date": None,
+                       "computed_at": None}
+
+
+def _world_health_monthly_subscriber(conn, event):
+    """HW2.4: TICK_ADVANCED subscriber that recomputes world health on
+    monthly ticks (current_day % 30 == 0, same gate as career_arc.
+    _is_monthly_tick) and caches the result in _world_health_cache.
+
+    Runs on EVERY TICK_ADVANCED but only does the (expensive)
+    computation on monthly boundaries. On non-monthly ticks, it's a
+    cheap no-op (one SQL query to check current_day).
+    """
+    try:
+        row = conn.execute(
+            "SELECT simulation_clock.current_day "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        if not row or row[0] is None or (row[0] % 30) != 0:
+            return  # not a monthly tick — skip
+    except sqlite3.OperationalError:
+        return  # simulation_clock table missing — skip
+
+    # Monthly tick — recompute + cache.
+    global _world_health_cache
+    try:
+        _world_health_cache = compute_world_health(conn)
+        # Don't print on HEALTHY (too noisy). Print on DEGRADED/BROKEN
+        # so the dev console shows the world's health at monthly
+        # boundaries.
+        if _world_health_cache['status'] != 'HEALTHY':
+            print(f"  [world_health] status={_world_health_cache['status']} "
+                  f"on {_world_health_cache.get('sim_date')}: "
+                  f"{_world_health_cache['signals']}", flush=True)
+    except Exception as e:
+        print(f"WARNING: compute_world_health failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+def get_world_health_cache():
+    """HW2.4: return the cached world-health result (or a default
+    HEALTHY status if the monthly subscriber hasn't fired yet)."""
+    return dict(_world_health_cache)
+
+
+def run_tick(conn, tick_type="day", steps=1):
+    """Advance the simulation by `steps` ticks (default 1 day).
+
+    HW2.1: each iteration is wrapped in a try/except that records a
+    simulation_tick_health row summarizing what happened during that
+    tick (subscriber success/failure counts, side-effect counts, error
+    JSON). If the tick itself crashes, a BROKEN row is written before
+    re-raising the exception so the crash is visible in the DB.
+
+    The daily interpretation pass (snapshot_cache) runs AFTER the
+    simulation transaction commits + AFTER the tick_health row is
+    written — it's a POST-COMMIT step that writes to cache tables in
+    its own transaction.
+    """
+    for _ in range(steps):
+        # HW2.1: capture wall-clock start time for the tick_health row's
+        # tick_duration_ms + side-effect count queries (which filter by
+        # created_at >= tick_start_ts). Reset the EventBus's per-tick
+        # stats so we accumulate ONLY this tick's subscriber calls.
+        try:
+            from event_bus import get_bus
+            _bus = get_bus()
+            _bus.reset_tick_stats()
         except ImportError:
-            pass
-        conn.commit()
+            _bus = None
+        _tick_start_wallclock = datetime.now().isoformat(timespec="seconds")
+        _tick_start_perf = time.perf_counter()
+        _tick_crashed = False
+        _tick_date = None
+        _crash_tb = None
+        try:
+            _tick_date = _run_one_tick_body(conn, tick_type)
+            conn.commit()
+        except Exception as e:
+            _tick_crashed = True
+            _crash_tb = _tb_mod.format_exc()
+            # Try to read the sim date for the tick_health row even
+            # if the body crashed (the clock UPDATE may have run).
+            try:
+                _row = conn.execute(
+                    "SELECT simulation_clock.current_date "
+                    "FROM simulation_clock WHERE clock_id=1"
+                ).fetchone()
+                _tick_date = _row[0] if _row else None
+            except Exception:
+                _tick_date = None
+            # Write the BROKEN row BEFORE re-raising so the crash is
+            # visible in the DB even if the caller doesn't catch.
+            try:
+                _record_tick_health(
+                    conn, _tick_date, _tick_start_wallclock,
+                    _tick_start_perf, _bus,
+                    crashed=True, crash_traceback=_crash_tb,
+                )
+                conn.commit()
+            except Exception:
+                pass
+            raise
+        # Tick completed cleanly (or with subscriber errors, which the
+        # bus already accumulated). Write the HEALTHY/DEGRADED row.
+        try:
+            _record_tick_health(
+                conn, _tick_date, _tick_start_wallclock,
+                _tick_start_perf, _bus,
+                crashed=False, crash_traceback=None,
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"WARNING: failed to record tick_health: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
         # Phase 2 (Task 2.1-snapshot-cache): run the daily
         # interpretation pass AFTER the simulation transaction commits.
         # Per CONVENTIONS §17.5, this is a POST-COMMIT step (NOT a

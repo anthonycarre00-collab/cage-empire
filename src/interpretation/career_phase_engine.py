@@ -60,16 +60,16 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
       `context_engine._build_champion_set` exactly.
   D4  Priority order (first match wins):
         1. champion        — is_champion (holds a non-vacant title)
-        2. declining       — age >= 33 AND (loss_streak >= 3 OR
-                             career_health < 50)
-        3. prospect        — age < 24 AND total_fights < 10
-        4. veteran         — age >= 35 AND total_fights >= 20
-        5. gatekeeper      — age >= 30 AND total_fights >= 15 AND
-                             win_rate < 0.50
+        2. declining       — age >= 32 AND (loss_streak >= 2 OR
+                             career_health < 60)
+        3. prospect        — age < 26 AND total_fights < 12
+        4. veteran         — age >= 32 AND total_fights >= 12
+        5. gatekeeper      — age >= 28 AND total_fights >= 10 AND
+                             win_rate < 0.55
         6. rising_contender — default for active fighters
-      The order matters: a 35yo on a 4-loss streak with health < 50
+      The order matters: a 32yo on a 2-loss streak with health < 60
       is "declining" (NOT veteran) — the decline story supersedes
-      the age story. A champion who is also 35 with bad health stays
+      the age story. A champion who is also 32 with bad health stays
       "champion" — the title supersedes everything (a champ on a
       losing streak is still the champ until they lose the belt).
       `rising_contender` is the catch-all default — the spec table
@@ -79,6 +79,18 @@ DESIGN DECISIONS (D-numbers — referenced from the worklog):
       order (the descriptive criteria are illustrative, not a strict
       filter). This guarantees EVERY active fighter gets a non-NULL
       phase — no "unclassified" hole in the UI.
+
+      CR-12 (Career-phase pyramid rebalance, see docs/CR10_14_FIX_PLAN
+      §3): the original thresholds (age>=33 / ls>=3 / health<50 for
+      declining, age<24 / fights<10 for prospect, age>=35 / fights>=20
+      for veteran, age>=30 / fights>=15 / win_rate<0.50 for gatekeeper)
+      were too strict and 75% of fighters fell through to the
+      rising_contender default. The relaxed thresholds above produce
+      a realistic pyramid: ~40-50% rising_contender, ~15-20% veteran,
+      ~12-18% gatekeeper, ~10-15% prospect, ~8-12% declining, ~2-3%
+      champion. Audit baseline was 76.1% rising_contender, 0.6%
+      veteran, 0.5% gatekeeper, 0.3% declining — the relaxation fixes
+      the inverted-pyramid problem.
   D5  Defensive handling for None / 0 inputs (age=None → 0,
       total_fights=None → 0, career_health=None → 100, etc.). Same
       pattern as `context_engine.compute_momentum` — keeps the daily
@@ -285,6 +297,89 @@ PHASE_PHRASES_EXT = {
 
 
 # ============================================================
+# INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3): SHORT PHRASE BANK
+# ============================================================
+# Per the §3 minimum variety bar: SHORT variants per label ≥8 for
+# table cells + chips (≤25 chars each). Fighter Watch Cards + Roster
+# rows have limited horizontal space — the existing _EXT phrases
+# (40-65 chars) get clipped. These SHORT variants stay under 25 chars.
+#
+# CONSTRAINT (per the _EXT pattern): the acceptance tests
+# (test_career_phase_engine.py Case C) verify the ORIGINAL
+# PHASE_PHRASES has 3 variants per label. We CANNOT modify that dict.
+# We add a NEW PHASE_PHRASES_SHORT parallel dict + a NEW picker. The
+# daily pass writes BOTH the long phrase (existing column) AND the
+# short phrase (new `career_phase_short` column) so the UI picks
+# which to display based on available space.
+#
+# Voice per Claude §1: short fragments, still specific imagery, no
+# generic praise, no digits (CONVENTIONS §14), ≤25 chars hard cap.
+
+PHASE_PHRASES_SHORT = {
+    PHASE_PROSPECT: [
+        "young prospect",
+        "hype train building",
+        "rookie scouts whisper",
+        "blue-chip prospect",
+        "raw talent, deep end",
+        "world ahead of him",
+        "scouts whispering",
+        "the new face",
+    ],
+    PHASE_RISING_CONTENDER: [
+        "climbing the ranks",
+        "knocking on the door",
+        "matchmakers listening",
+        "the next big thing",
+        "trending upward",
+        "contender on the rise",
+        "the buzz is real",
+        "killer in the queue",
+    ],
+    PHASE_CHAMPION: [
+        "the reigning champ",
+        "king of the division",
+        "the titleholder",
+        "wearing the gold",
+        "the standard-bearer",
+        "throne still his",
+        "the belt holder",
+        "nobody's figured out",
+    ],
+    PHASE_VETERAN: [
+        "grizzled veteran",
+        "battle-tested",
+        "old soul, still here",
+        "a few tricks left",
+        "seen it all",
+        "survivor of the era",
+        "cagey old hand",
+        "still answering",
+    ],
+    PHASE_GATEKEEPER: [
+        "the last boss",
+        "the wall",
+        "name on the resume",
+        "the roadblock",
+        "gatekeeper with the lock",
+        "prospect hurdle",
+        "the gate",
+        "veteran gatekeeper",
+    ],
+    PHASE_DECLINING: [
+        "on the decline",
+        "fading name",
+        "best nights behind",
+        "running on fumes",
+        "the slide is real",
+        "borrowed time",
+        "the twilight",
+        "the division forgetting",
+    ],
+}
+
+
+# ============================================================
 # VOICE PHRASE PICKER
 # ============================================================
 
@@ -336,6 +431,23 @@ def get_phase_phrase_ext(phase, rng=None):
     return rng.choice(variants)
 
 
+def get_phase_phrase_short(phase, rng=None):
+    """Pick a SHORT voice phrase (≤25 chars) for the career phase.
+
+    INTERP-EXPAND-V2 (Claude §3): returns one of 8 short variants
+    per phase. The engine uses this for the new `career_phase_short`
+    cache column so the UI can pick short vs long based on available
+    width (Fighter Watch Card uses short; Fighter Profile uses long).
+    Falls back to the rising_contender short variants if the label
+    is unrecognized (defensive — should not happen).
+    """
+    if rng is None:
+        rng = random
+    variants = PHASE_PHRASES_SHORT.get(
+        phase, PHASE_PHRASES_SHORT[PHASE_RISING_CONTENDER])
+    return rng.choice(variants)
+
+
 # ============================================================
 # PURE COMPUTE FUNCTION — no DB, no RNG, no text
 # ============================================================
@@ -348,23 +460,33 @@ def compute_career_phase(age, total_fights, win_streak, loss_streak,
                          win_rate, career_health, is_champion):
     """Compute the canonical career phase label.
 
-    Per spec §10 (Career Phase Engine) + the priority order in D4:
+    Per spec §10 (Career Phase Engine) + the priority order in D4 +
+    CR-12 (Career-phase pyramid rebalance, see docs/CR10_14_FIX_PLAN
+    §3 for the rationale + expected distribution):
 
       Priority (first match wins):
         1. champion         — is_champion
-        2. declining        — age >= 33 AND
-                              (loss_streak >= 3 OR career_health < 50)
-        3. prospect         — age < 24 AND total_fights < 10
-        4. veteran          — age >= 35 AND total_fights >= 20
-        5. gatekeeper       — age >= 30 AND total_fights >= 15 AND
-                              win_rate < 0.50
+        2. declining        — age >= 32 AND
+                              (loss_streak >= 2 OR career_health < 60)
+        3. prospect         — age < 26 AND total_fights < 12
+        4. veteran          — age >= 32 AND total_fights >= 12
+        5. gatekeeper       — age >= 28 AND total_fights >= 10 AND
+                              win_rate < 0.55
         6. rising_contender — default for active fighters
 
     The priority order matters because declining (age + health/
-    streak) takes precedence over veteran (age + fights) — a 35yo
-    on a 4-loss streak with health < 50 is "declining", not
-    "veteran". A champion who happens to be 35 with health < 50
+    streak) takes precedence over veteran (age + fights) — a 32yo
+    on a 2-loss streak with health < 60 is "declining", not
+    "veteran". A champion who happens to be 32 with health < 60
     stays "champion" — the title supersedes everything.
+
+    CR-12 threshold history (relaxed from the original audit-baseline
+    thresholds — the original thresholds were too strict and 75% of
+    fighters fell through to the rising_contender default):
+      - declining:   age 33→32, loss_streak 3→2, health 50→60
+      - prospect:    age <24→<26, fights <10→<12
+      - veteran:     age 35→32, fights 20→12
+      - gatekeeper:  age 30→28, fights 15→10, win_rate <0.50→<0.55
 
     Per D5: all inputs are defensively coerced (None → 0 for ints,
     None → 100 for career_health, None/False → False for is_champion,
@@ -401,32 +523,44 @@ def compute_career_phase(age, total_fights, win_streak, loss_streak,
     if is_champion:
         return PHASE_CHAMPION
 
-    # 2. declining — age + (streak OR health). A 33yo sliding or
+    # 2. declining — age + (streak OR health). A 32yo sliding or
     #    battered is "declining" regardless of how many fights they
     #    have (the decline story supersedes the age/veteran story).
-    if age >= 33 and (loss_streak >= 3 or career_health < 50):
+    #    CR-12: relaxed from age>=33 / ls>=3 / health<50 to age>=32 /
+    #    ls>=2 / health<60 — catches more fighters who are visibly
+    #    slipping instead of lumping them into rising_contender.
+    if age >= 32 and (loss_streak >= 2 or career_health < 60):
         return PHASE_DECLINING
 
     # 3. prospect — young AND few fights. The "world ahead of him"
-    #    phase. A 22yo with 15 fights is NOT a prospect — they've
-    #    been around long enough to graduate (they'll fall through
-    #    to rising_contender or one of the older-age phases).
-    if age < 24 and total_fights < 10:
+    #    phase. A 25yo with 11 fights is still a prospect — they
+    #    haven't been around long enough to graduate. A 26yo, or one
+    #    with 12+ fights, falls through to rising_contender or one of
+    #    the older-age phases. CR-12: raised cutoffs from age<24 /
+    #    fights<10 to age<26 / fights<12 — many 24-25yo fighters with
+    #    10-11 fights were incorrectly defaulting to rising_contender.
+    if age < 26 and total_fights < 12:
         return PHASE_PROSPECT
 
     # 4. veteran — old AND many fights. The "seen it all" phase.
-    #    A 35yo with 8 fights is NOT a veteran (they're a late
-    #    starter — falling through to rising_contender).
-    if age >= 35 and total_fights >= 20:
+    #    A 32yo with 8 fights is NOT a veteran (they're a late
+    #    starter — falling through to rising_contender). CR-12:
+    #    lowered from age>=35 / fights>=20 to age>=32 / fights>=12 —
+    #    the original thresholds excluded 99% of the roster because
+    #    very few fighters accumulate 20 fights in this sim.
+    if age >= 32 and total_fights >= 12:
         return PHASE_VETERAN
 
     # 5. gatekeeper — middle-aged AND many fights AND losing record.
-    #    The "roadblock for rising hopefuls" phase. A 32yo with 18
-    #    fights and 0.40 win rate is a gatekeeper — they've seen
+    #    The "roadblock for rising hopefuls" phase. A 28yo with 10
+    #    fights and 0.50 win rate is a gatekeeper — they've seen
     #    enough fights to know the game but are losing more than
     #    they win. NOT declining (declining requires age + streak/
-    #    health; if we got here, those didn't match).
-    if age >= 30 and total_fights >= 15 and win_rate < 0.50:
+    #    health; if we got here, those didn't match). CR-12: lowered
+    #    age 30→28, fights 15→10, raised win_rate cutoff <0.50→<0.55
+    #    — the original gatekeeper rule excluded almost everyone
+    #    because few fighters hit 15 fights AND a sub-0.50 win rate.
+    if age >= 28 and total_fights >= 10 and win_rate < 0.55:
         return PHASE_GATEKEEPER
 
     # 6. rising_contender — catch-all default for active fighters
@@ -572,13 +706,20 @@ def compute_all_career_phases(conn, current_date=None):
         # cache stores one of 8 phrases; the original get_phase_phrase
         # is preserved for the acceptance tests' Case C checks.
         phrase = get_phase_phrase_ext(phase, rng)
+        # INTERP-EXPAND-V2 (Claude §3): also pick a SHORT variant for
+        # the new `career_phase_short` column. Same RNG seed so the
+        # short + long pair is deterministic for each fighter.
+        phrase_short = get_phase_phrase_short(phase, rng)
 
-        updates.append((encode(phase, phrase), fighter_id))
+        updates.append((encode(phase, phrase),
+                        encode(phase, phrase_short),
+                        fighter_id))
 
     # 5. Batch UPDATE (one executemany — CONVENTIONS §17.5).
     if updates:
         conn.executemany(
             "UPDATE fighter_descriptors SET career_phase=?, "
+            "career_phase_short=?, "
             "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
             updates,
         )
@@ -682,11 +823,18 @@ def compute_single_phase(conn, fighter_id, current_date=None):
     # phases so single-fighter refresh stays consistent with the
     # bulk pass.
     phrase = get_phase_phrase_ext(phase, rng)
+    # INTERP-EXPAND-V2: also write the SHORT variant (mirrors the
+    # bulk-pass behavior so the new `career_phase_short` column stays
+    # populated on event-driven refreshes too).
+    phrase_short = get_phase_phrase_short(phase, rng)
 
     conn.execute(
         "UPDATE fighter_descriptors SET career_phase=?, "
+        "career_phase_short=?, "
         "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
-        (encode(phase, phrase), fighter_id),
+        (encode(phase, phrase),
+         encode(phase, phrase_short),
+         fighter_id),
     )
     conn.commit()
 

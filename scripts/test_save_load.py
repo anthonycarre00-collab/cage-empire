@@ -666,11 +666,25 @@ def case_g_auto_save_keeps_only_3_rotating():
           final_count == 3, f"count={final_count}")
 
     # Verify the metadata JSONs are also pruned (count of .json files
-    # should match the .db count).
-    json_count = len(list(SAVES_DIR.glob("autosave_*.json")))
+    # should match the .db count). HW5.2 writes BOTH a .json AND a
+    # .meta.json sidecar per save — count them separately to confirm
+    # both are pruned (and that .meta.json files don't inflate the
+    # legacy .json glob).
+    all_json_files = list(SAVES_DIR.glob("autosave_*.json"))
+    # .meta.json files end in ".meta.json" — they ALSO match the
+    # "autosave_*.json" glob because both end in ".json". Separate
+    # them out.
+    meta_json_files = [p for p in all_json_files
+                       if p.name.endswith(".meta.json")]
+    plain_json_files = [p for p in all_json_files
+                        if not p.name.endswith(".meta.json")]
     check("G", "auto-save rotation prunes .json metadata files too",
-          json_count == final_count,
-          f"json_count={json_count} db_count={final_count}")
+          len(plain_json_files) == final_count,
+          f"json_count={len(plain_json_files)} db_count={final_count}")
+    # HW5.2 — .meta.json sidecars are also pruned (one per save).
+    check("G", "auto-save rotation prunes .meta.json sidecars too (HW5.2)",
+          len(meta_json_files) == final_count,
+          f"meta_json_count={len(meta_json_files)} db_count={final_count}")
 
     # Verify the surviving auto-saves are the NEWEST (by sim_date).
     # The 3 survivors should be from the latest 3 monthly ticks:

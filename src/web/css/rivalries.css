@@ -1,0 +1,395 @@
+/* ============================================================
+   CAGE EMPIRE — Bad Blood (Rivalries) Screen Styles
+   ============================================================
+   Voice/design (per P1_PLAN_WIRE_SCREENS §1 + CONVENTIONS §14):
+     - Section header: "BAD BLOOD" (crimson accent — Impact moment).
+     - Summary strip: 4 stat tiles (Active / Dormant /
+       Ready to Explode / Title Rivalries) with crimson + gold
+       tints on the high-heat tiles.
+     - Filter bar mirrors the Staff Market / Free Agents layout
+       (label + select/input, sharp corners).
+     - Rivalry cards: two fighters side-by-side with VS divider
+       and H2H record; heat meter (0-100 visual bar) color-coded
+       by band; type chip color-coded by rivalry type; origin
+       description preview + expand-to-full-story toggle.
+     - Clicking a fighter name navigates to their Fighter Profile.
+     - Heat meter colors: cold=gray, simmering=gold-tint,
+       warm=warning, hot=crimson-tint, boiling=crimson.
+     - Voice phrases wrap every integer: "READY TO EXPLODE · 92".
+   ============================================================ */
+
+.ce-riv {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ce-riv .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   SUMMARY STRIP — 4 stat tiles
+   ============================================================ */
+.ce-riv__summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.ce-riv__stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-riv__stat--boiling {
+  border-left: 3px solid var(--crimson);
+  background: var(--crimson-tint);
+}
+.ce-riv__stat--gold {
+  border-left: 3px solid var(--gold);
+  background: var(--gold-tint);
+}
+.ce-riv__stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-riv__stat-val {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-riv__stat--boiling .ce-riv__stat-val { color: var(--crimson); }
+.ce-riv__stat--gold .ce-riv__stat-val { color: var(--gold); }
+
+/* ============================================================
+   FILTERS — reuses .ce-fa-filters layout from free_agents.css
+   ============================================================ */
+.ce-riv__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ce-riv__filters .ce-filter-group { min-width: 140px; }
+.ce-riv__filters .ce-filter-search { flex: 1; min-width: 200px; }
+.ce-riv__filters .ce-filter-clear { margin-left: auto; }
+
+/* ============================================================
+   RIVALRY LIST + CARD
+   ============================================================ */
+.ce-riv__list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ce-riv__card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s, box-shadow 0.15s;
+  position: relative;
+}
+.ce-riv__card:hover {
+  border-color: var(--crimson);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(214, 58, 63, 0.08);
+}
+.ce-riv__card--dormant {
+  opacity: 0.7;
+  border-style: dashed;
+}
+.ce-riv__card--dormant:hover {
+  border-color: var(--text-tertiary);
+}
+.ce-riv__card--expanded {
+  border-color: var(--crimson);
+  box-shadow: 0 4px 16px rgba(214, 58, 63, 0.12);
+  cursor: default;
+}
+
+/* Card top row: type chip + status + fights count */
+.ce-riv__card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-riv__fights {
+  margin-left: auto;
+  color: var(--text-tertiary);
+}
+.ce-riv__dormant-chip {
+  font-size: 9px;
+  padding: 2px 6px;
+}
+
+/* VS row — two fighters + center divider */
+.ce-riv__vs-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: center;
+}
+.ce-riv__fighter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ce-riv__fighter--b {
+  flex-direction: row-reverse;
+  text-align: right;
+}
+.ce-riv__fighter-portrait {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-sm);
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.ce-riv__fighter-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-riv__fighter--b .ce-riv__fighter-info { align-items: flex-end; }
+.ce-riv__fighter-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ce-riv__fighter-name:hover { color: var(--gold-bright); text-decoration: underline; }
+.ce-riv__fighter-nick {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ce-riv__fighter-stage {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+  line-height: 1.2;
+}
+
+/* VS divider */
+.ce-riv__vs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  min-width: 70px;
+}
+.ce-riv__vs-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
+}
+.ce-riv__h2h {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.04em;
+}
+
+/* Heat row — meter + label */
+.ce-riv__heat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ce-riv__heat-meter-wrap {
+  flex: 1;
+}
+.ce-riv__heat-meter {
+  height: 8px;
+  background: var(--border-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.ce-riv__heat-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.25s ease;
+}
+.ce-riv__heat-bar--cold      { background: var(--text-tertiary); }
+.ce-riv__heat-bar--simmering { background: var(--gold); opacity: 0.55; }
+.ce-riv__heat-bar--warm      { background: var(--warning); }
+.ce-riv__heat-bar--hot       { background: var(--crimson); opacity: 0.75; }
+.ce-riv__heat-bar--boiling   { background: var(--crimson); }
+
+.ce-riv__heat-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ce-riv__heat-phrase {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ce-riv__heat-phrase--cold      { color: var(--text-tertiary); }
+.ce-riv__heat-phrase--simmering { color: var(--gold); }
+.ce-riv__heat-phrase--warm      { color: var(--warning); }
+.ce-riv__heat-phrase--hot       { color: var(--crimson); }
+.ce-riv__heat-phrase--boiling   { color: var(--crimson); text-shadow: 0 0 6px rgba(214, 58, 63, 0.4); }
+.ce-riv__heat-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 28px;
+  text-align: right;
+}
+
+/* Origin description (preview + expanded) */
+.ce-riv__origin-preview {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  border-left: 2px solid var(--border-strong);
+  padding-left: 10px;
+}
+.ce-riv__origin {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--crimson);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+}
+
+/* Card footer */
+.ce-riv__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-riv__expand-hint {
+  color: var(--gold);
+  opacity: 0.7;
+}
+.ce-riv__card:hover .ce-riv__expand-hint { opacity: 1; }
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.ce-riv__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--crimson);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-riv__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-riv__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 480px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-riv { padding: 16px 12px 60px; }
+  .ce-riv__summary { grid-template-columns: repeat(2, 1fr); }
+  .ce-riv__vs-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .ce-riv__fighter--b {
+    flex-direction: row;
+    text-align: left;
+  }
+  .ce-riv__fighter--b .ce-riv__fighter-info { align-items: flex-start; }
+  .ce-riv__vs {
+    order: 2;
+    margin: 4px auto;
+  }
+  .ce-riv__filters { flex-direction: column; align-items: stretch; }
+  .ce-riv__filters .ce-filter-clear { margin-left: 0; }
+  .ce-riv__footer { flex-direction: column; align-items: flex-start; gap: 4px; }
+}

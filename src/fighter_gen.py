@@ -150,6 +150,13 @@ NEW_PERSONALITY_NAMES = [
 
 PERSONALITY_NAMES = EXISTING_PERSONALITY_NAMES + NEW_PERSONALITY_NAMES
 
+# CR-M1 (docs/MASTER_PLAN_MATCHMAKING.md §2.1): baseline for attribute
+# generation. Was 50 (pre-re-seed world avg), now 37 to match the v3.20.0
+# re-seed that lowered all existing fighter_attributes by 15. This ensures
+# regen fighters come in at the same level as the re-seeded existing roster
+# — not systematically overpowered.
+_FIGHTER_GEN_BASE = 37
+
 
 # ----------------------------------------------------------------
 # Helpers
@@ -211,19 +218,21 @@ def _generate_block(column_names, bias):
     generate_attribute_block and generate_personality_block so the
     bias + noise formula lives in exactly one place.
 
-    Formula per the task brief (STAGES.md §14.5):
-        value = clamp(50 + bias.get(col, 0) + random.randint(-8, 8), 0, 100)
+    Formula per the task brief (STAGES.md §14.5), updated for v3.20.0
+    re-seed (docs/DESIGN_REVIEW_E5.md §3):
+        value = clamp(BASE + bias.get(col, 0) + random.randint(-8, 8), 0, 100)
 
-    The +/-8 noise floor is small enough that the archetype's identity
-    (Brawler hits hard, Counter-Striker dodges well) is preserved
-    across 100-sample averages but large enough that no two fighters
-    within an archetype are identical.
+    CR-M1: BASE changed from 50 to 37 to match the v3.20.0 re-seed that
+    lowered all existing fighter_attributes by 15 (avg 52→37). Without
+    this fix, regen fighters come in ~13 points above the world average
+    → systematically overpowered. The 37 baseline gives regen fighters
+    the same growth headroom as the re-seeded existing roster.
     """
     out = {}
     for col in column_names:
         bias_value = bias.get(col, 0)
         noise = random.randint(-8, 8)
-        out[col] = _clamp(50 + bias_value + noise, 0, 100)
+        out[col] = _clamp(_FIGHTER_GEN_BASE + bias_value + noise, 0, 100)
     return out
 
 
@@ -576,3 +585,53 @@ def generate_potential():
     # of the labels). Returns the middle-of-the-road 50 as a safe
     # fallback if it somehow does.
     return 50
+
+
+# ----------------------------------------------------------------
+# CR-M1: Realization generation (docs/DESIGN_REVIEW_E5.md §3)
+# ----------------------------------------------------------------
+# realization is a 0.4-1.0 multiplier on effective_ceiling that
+# represents how close a fighter gets to their theoretical potential.
+# Set at fighter creation from personality — NOT every fighter hits
+# their peak. Distribution (from the backfill): ~18% busts, ~34%
+# underachievers, ~48% typical, rare realizers.
+
+def generate_realization(personality_block):
+    """Generate a realization value (0.4-1.0) from a personality block.
+
+    Per docs/DESIGN_REVIEW_E5.md §3:
+      - Base 0.7 (most fighters reach 70% of potential)
+      + 0.10 if discipline >= 70 (hard workers realize more)
+      + 0.10 if coachability >= 70 (coachable fighters realize more)
+      + 0.05 if professionalism >= 70 (dedicated pros realize more)
+      - 0.10 if ego >= 70 (big egos bust more)
+      - 0.10 if risk_taking >= 80 (reckless fighters bust more)
+      - 0.05 if attention_seeking >= 70 (distraction)
+      + random.uniform(-0.05, 0.05) (small variance)
+      Clamped to [0.4, 1.0].
+
+    Args:
+        personality_block: dict with personality trait names as keys
+            (discipline, coachability, professionalism, ego,
+            risk_taking, attention_seeking). Missing keys default to 50.
+
+    Returns:
+        float in [0.4, 1.0]. Pure function — no I/O, no side effects.
+        Callers INSERT the returned value into fighter_career.realization.
+    """
+    p = personality_block or {}
+    realization = 0.7
+    if p.get("discipline", 50) >= 70:
+        realization += 0.10
+    if p.get("coachability", 50) >= 70:
+        realization += 0.10
+    if p.get("professionalism", 50) >= 70:
+        realization += 0.05
+    if p.get("ego", 50) >= 70:
+        realization -= 0.10
+    if p.get("risk_taking", 50) >= 80:
+        realization -= 0.10
+    if p.get("attention_seeking", 50) >= 70:
+        realization -= 0.05
+    realization += random.uniform(-0.05, 0.05)
+    return max(0.4, min(1.0, realization))

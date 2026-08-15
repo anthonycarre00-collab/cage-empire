@@ -25,11 +25,12 @@ engine. The new `career_phase` column is for UI display + future
 interpretation-layer rules (narrative_families, legacy_engine).
 
 Test cases:
-  A. compute_career_phase — pure function. All 6 phases:
-     prospect (age<24 AND fights<10), rising_contender (default),
-     champion (is_champion), veteran (age>=35 AND fights>=20),
-     gatekeeper (age>=30 AND fights>=15 AND win_rate<0.50),
-     declining (age>=33 AND (loss_streak>=3 OR health<50)).
+  A. compute_career_phase — pure function. All 6 phases (CR-12
+     relaxed thresholds — see docs/CR10_14_FIX_PLAN §3):
+     prospect (age<26 AND fights<12), rising_contender (default),
+     champion (is_champion), veteran (age>=32 AND fights>=12),
+     gatekeeper (age>=28 AND fights>=10 AND win_rate<0.55),
+     declining (age>=32 AND (loss_streak>=2 OR health<60)).
   B. Priority order — champion supersedes everything; declining
      supersedes veteran; veteran supersedes gatekeeper; etc.
      A 36yo champ on a 4-loss streak with health<50 stays champion.
@@ -168,84 +169,93 @@ def case_a_pure_compute():
           == ce.PHASE_CHAMPION,
           f"got={ce.compute_career_phase(28, 20, 5, 0, 0.80, 95, True)}")
 
-    # A.2 — declining (age >= 33 AND (loss_streak >= 3 OR health < 50)).
+    # A.2 — declining (age >= 32 AND (loss_streak >= 2 OR health < 60)).
+    # CR-12 relaxed from age>=33 / ls>=3 / health<50.
     # Two variants: loss_streak trigger + health trigger.
-    check("A", "declining: 33yo + loss_streak=3 (streak trigger)",
-          ce.compute_career_phase(33, 25, 0, 3, 0.40, 90, False)
+    check("A", "declining: 32yo + loss_streak=2 (streak trigger)",
+          ce.compute_career_phase(32, 25, 0, 2, 0.40, 90, False)
           == ce.PHASE_DECLINING,
-          f"got={ce.compute_career_phase(33, 25, 0, 3, 0.40, 90, False)}")
-    check("A", "declining: 33yo + career_health=40 (health trigger)",
-          ce.compute_career_phase(33, 25, 1, 1, 0.40, 40, False)
+          f"got={ce.compute_career_phase(32, 25, 0, 2, 0.40, 90, False)}")
+    check("A", "declining: 32yo + career_health=50 (health trigger)",
+          ce.compute_career_phase(32, 25, 1, 1, 0.40, 50, False)
           == ce.PHASE_DECLINING,
-          f"got={ce.compute_career_phase(33, 25, 1, 1, 0.40, 40, False)}")
-    # Boundary: age=32 + loss_streak=3 → NOT declining (age too low).
-    check("A", "boundary: 32yo + loss_streak=3 → NOT declining",
-          ce.compute_career_phase(32, 25, 0, 3, 0.40, 90, False)
+          f"got={ce.compute_career_phase(32, 25, 1, 1, 0.40, 50, False)}")
+    # Boundary: age=31 + loss_streak=2 → NOT declining (age too low).
+    check("A", "boundary: 31yo + loss_streak=2 → NOT declining",
+          ce.compute_career_phase(31, 25, 0, 2, 0.40, 90, False)
           != ce.PHASE_DECLINING,
-          f"got={ce.compute_career_phase(32, 25, 0, 3, 0.40, 90, False)}")
-    # Boundary: 33yo + loss_streak=2 + health=90 → NOT declining.
-    check("A", "boundary: 33yo + loss_streak=2 + health=90 → NOT declining",
-          ce.compute_career_phase(33, 25, 0, 2, 0.40, 90, False)
+          f"got={ce.compute_career_phase(31, 25, 0, 2, 0.40, 90, False)}")
+    # Boundary: 32yo + loss_streak=1 + health=70 → NOT declining
+    # (both streak and health above their thresholds).
+    check("A", "boundary: 32yo + loss_streak=1 + health=70 → NOT declining",
+          ce.compute_career_phase(32, 25, 0, 1, 0.40, 70, False)
           != ce.PHASE_DECLINING,
-          f"got={ce.compute_career_phase(33, 25, 0, 2, 0.40, 90, False)}")
+          f"got={ce.compute_career_phase(32, 25, 0, 1, 0.40, 70, False)}")
 
-    # A.3 — prospect (age < 24 AND total_fights < 10).
+    # A.3 — prospect (age < 26 AND total_fights < 12).
+    # CR-12 raised cutoffs from age<24 / fights<10 to age<26 / fights<12.
     check("A", "prospect: 22yo + 6 fights",
           ce.compute_career_phase(22, 6, 1, 1, 0.50, 100, False)
           == ce.PHASE_PROSPECT,
           f"got={ce.compute_career_phase(22, 6, 1, 1, 0.50, 100, False)}")
-    # Boundary: age=23 + fights=9 → prospect (just under both bounds).
-    check("A", "boundary: 23yo + 9 fights → prospect (just under)",
-          ce.compute_career_phase(23, 9, 1, 0, 0.50, 100, False)
+    # Boundary: age=25 + fights=11 → prospect (just under both bounds).
+    check("A", "boundary: 25yo + 11 fights → prospect (just under)",
+          ce.compute_career_phase(25, 11, 1, 0, 0.50, 100, False)
           == ce.PHASE_PROSPECT,
-          f"got={ce.compute_career_phase(23, 9, 1, 0, 0.50, 100, False)}")
-    # Boundary: age=24 + 9 fights → NOT prospect (age too high).
-    check("A", "boundary: 24yo + 9 fights → NOT prospect (age bound)",
-          ce.compute_career_phase(24, 9, 1, 0, 0.50, 100, False)
+          f"got={ce.compute_career_phase(25, 11, 1, 0, 0.50, 100, False)}")
+    # Boundary: age=26 + 11 fights → NOT prospect (age too high).
+    check("A", "boundary: 26yo + 11 fights → NOT prospect (age bound)",
+          ce.compute_career_phase(26, 11, 1, 0, 0.50, 100, False)
           != ce.PHASE_PROSPECT,
-          f"got={ce.compute_career_phase(24, 9, 1, 0, 0.50, 100, False)}")
-    # Boundary: 22yo + 10 fights → NOT prospect (fights too high).
-    check("A", "boundary: 22yo + 10 fights → NOT prospect (fights bound)",
-          ce.compute_career_phase(22, 10, 1, 0, 0.50, 100, False)
+          f"got={ce.compute_career_phase(26, 11, 1, 0, 0.50, 100, False)}")
+    # Boundary: 25yo + 12 fights → NOT prospect (fights too high).
+    check("A", "boundary: 25yo + 12 fights → NOT prospect (fights bound)",
+          ce.compute_career_phase(25, 12, 1, 0, 0.50, 100, False)
           != ce.PHASE_PROSPECT,
-          f"got={ce.compute_career_phase(22, 10, 1, 0, 0.50, 100, False)}")
+          f"got={ce.compute_career_phase(25, 12, 1, 0, 0.50, 100, False)}")
 
-    # A.4 — veteran (age >= 35 AND total_fights >= 20).
+    # A.4 — veteran (age >= 32 AND total_fights >= 12).
+    # CR-12 lowered from age>=35 / fights>=20 to age>=32 / fights>=12.
     check("A", "veteran: 37yo + 25 fights + 0.70 win rate",
           ce.compute_career_phase(37, 25, 1, 0, 0.70, 90, False)
           == ce.PHASE_VETERAN,
           f"got={ce.compute_career_phase(37, 25, 1, 0, 0.70, 90, False)}")
-    # Boundary: 35yo + 20 fights → veteran (just at bounds).
-    check("A", "boundary: 35yo + 20 fights → veteran (at bounds)",
-          ce.compute_career_phase(35, 20, 1, 0, 0.70, 90, False)
+    # Boundary: 32yo + 12 fights → veteran (just at bounds).
+    check("A", "boundary: 32yo + 12 fights → veteran (at bounds)",
+          ce.compute_career_phase(32, 12, 1, 0, 0.70, 90, False)
           == ce.PHASE_VETERAN,
-          f"got={ce.compute_career_phase(35, 20, 1, 0, 0.70, 90, False)}")
-    # Boundary: 34yo + 20 fights → NOT veteran (age too low).
-    check("A", "boundary: 34yo + 20 fights → NOT veteran",
-          ce.compute_career_phase(34, 20, 1, 0, 0.70, 90, False)
+          f"got={ce.compute_career_phase(32, 12, 1, 0, 0.70, 90, False)}")
+    # Boundary: 31yo + 12 fights → NOT veteran (age too low).
+    check("A", "boundary: 31yo + 12 fights → NOT veteran",
+          ce.compute_career_phase(31, 12, 1, 0, 0.70, 90, False)
           != ce.PHASE_VETERAN,
-          f"got={ce.compute_career_phase(34, 20, 1, 0, 0.70, 90, False)}")
-    # Boundary: 35yo + 19 fights → NOT veteran (fights too few).
-    check("A", "boundary: 35yo + 19 fights → NOT veteran",
-          ce.compute_career_phase(35, 19, 1, 0, 0.70, 90, False)
+          f"got={ce.compute_career_phase(31, 12, 1, 0, 0.70, 90, False)}")
+    # Boundary: 32yo + 11 fights → NOT veteran (fights too few).
+    check("A", "boundary: 32yo + 11 fights → NOT veteran",
+          ce.compute_career_phase(32, 11, 1, 0, 0.70, 90, False)
           != ce.PHASE_VETERAN,
-          f"got={ce.compute_career_phase(35, 19, 1, 0, 0.70, 90, False)}")
+          f"got={ce.compute_career_phase(32, 11, 1, 0, 0.70, 90, False)}")
 
-    # A.5 — gatekeeper (age >= 30 AND fights >= 15 AND win_rate < 0.50).
-    check("A", "gatekeeper: 32yo + 18 fights + 0.40 win rate",
-          ce.compute_career_phase(32, 18, 1, 1, 0.40, 90, False)
+    # A.5 — gatekeeper (age >= 28 AND fights >= 10 AND win_rate < 0.55).
+    # CR-12 lowered age 30→28, fights 15→10, raised win_rate cutoff
+    # from <0.50 to <0.55. CR-12 also lowered veteran age 35→32 +
+    # fights 20→12 — so the original 32yo + 18 fights fixture now
+    # hits veteran first (priority 4 supersedes gatekeeper priority
+    # 5). Use 30yo + 14 fights instead (under the veteran age cutoff).
+    check("A", "gatekeeper: 30yo + 14 fights + 0.40 win rate",
+          ce.compute_career_phase(30, 14, 1, 1, 0.40, 90, False)
           == ce.PHASE_GATEKEEPER,
-          f"got={ce.compute_career_phase(32, 18, 1, 1, 0.40, 90, False)}")
-    # Boundary: 30yo + 15 fights + 0.49 win rate → gatekeeper.
-    check("A", "boundary: 30yo + 15 fights + 0.49 win rate → gatekeeper",
-          ce.compute_career_phase(30, 15, 0, 1, 0.49, 90, False)
+          f"got={ce.compute_career_phase(30, 14, 1, 1, 0.40, 90, False)}")
+    # Boundary: 28yo + 10 fights + 0.54 win rate → gatekeeper.
+    check("A", "boundary: 28yo + 10 fights + 0.54 win rate → gatekeeper",
+          ce.compute_career_phase(28, 10, 0, 1, 0.54, 90, False)
           == ce.PHASE_GATEKEEPER,
-          f"got={ce.compute_career_phase(30, 15, 0, 1, 0.49, 90, False)}")
-    # Boundary: 30yo + 15 fights + 0.50 win rate → NOT gatekeeper.
-    check("A", "boundary: 30yo + 15 fights + 0.50 win rate → NOT gatekeeper",
-          ce.compute_career_phase(30, 15, 0, 1, 0.50, 90, False)
+          f"got={ce.compute_career_phase(28, 10, 0, 1, 0.54, 90, False)}")
+    # Boundary: 28yo + 10 fights + 0.55 win rate → NOT gatekeeper.
+    check("A", "boundary: 28yo + 10 fights + 0.55 win rate → NOT gatekeeper",
+          ce.compute_career_phase(28, 10, 0, 1, 0.55, 90, False)
           != ce.PHASE_GATEKEEPER,
-          f"got={ce.compute_career_phase(30, 15, 0, 1, 0.50, 90, False)}")
+          f"got={ce.compute_career_phase(28, 10, 0, 1, 0.55, 90, False)}")
 
     # A.6 — rising_contender (default for active fighters).
     # A 27yo with 12 fights + 0.60 win rate + no other phase match.
@@ -320,17 +330,17 @@ def case_b_priority_order():
           f"got={ce.compute_career_phase(37, 25, 0, 0, 0.40, 30, False)}")
 
     # B.3 — declining checked BEFORE prospect.
-    # A 33yo can't be a prospect anyway (prospect needs age < 24),
+    # A 32yo can't be a prospect anyway (prospect needs age < 26),
     # but this verifies the order is champion → declining → prospect.
-    # (A 23yo on a 3-loss streak at age 33 is impossible — both
+    # (A 25yo on a 2-loss streak at age 32 is impossible — both
     # declining AND prospect require age constraints that exclude
     # each other. We test the order via the result, not the
     # contrived overlap.)
-    # The point: prospect requires age < 24, declining requires
-    # age >= 33 — mutually exclusive. No real overlap to test.
+    # The point: prospect requires age < 26, declining requires
+    # age >= 32 — mutually exclusive. No real overlap to test.
     # Documented here for completeness.
     check("B", "prospect + declining criteria are mutually exclusive (age bounds)",
-          True, "documented — no overlap to test (prospect age<24, declining age>=33)")
+          True, "documented — no overlap to test (prospect age<26, declining age>=32)")
 
     # B.4 — veteran supersedes gatekeeper.
     # A 37yo with 25 fights and 0.40 win rate — veteran (NOT
@@ -342,12 +352,15 @@ def case_b_priority_order():
           f"got={ce.compute_career_phase(37, 25, 0, 1, 0.40, 90, False)}")
 
     # B.5 — gatekeeper checked BEFORE rising_contender.
-    # A 32yo with 18 fights and 0.40 win rate — gatekeeper (NOT
-    # rising_contender).
+    # A 30yo with 14 fights and 0.40 win rate — gatekeeper (NOT
+    # rising_contender). CR-12: lowered to 30yo (under the veteran
+    # age>=32 cutoff so the veteran check doesn't preempt gatekeeper).
+    # The original 32yo + 18 fights fixture would now hit veteran
+    # first under the relaxed veteran thresholds.
     check("B", "gatekeeper beats rising_contender default",
-          ce.compute_career_phase(32, 18, 0, 1, 0.40, 90, False)
+          ce.compute_career_phase(30, 14, 0, 1, 0.40, 90, False)
           == ce.PHASE_GATEKEEPER,
-          f"got={ce.compute_career_phase(32, 18, 0, 1, 0.40, 90, False)}")
+          f"got={ce.compute_career_phase(30, 14, 0, 1, 0.40, 90, False)}")
 
 
 # ----------------------------------------------------------------

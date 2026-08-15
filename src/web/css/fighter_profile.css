@@ -1,0 +1,648 @@
+/* ============================================================
+   CAGE EMPIRE — Fighter Profile Screen Styles
+   ============================================================
+   Card-based layout. Gold border on header card if champion.
+   - Header: 256px portrait + name + identity strip + actions
+   - Tab bar: 6 tabs (Overview | Attributes | Personality | Career | Fights | News)
+   - Tab content: bio + stats grid + recent fights timeline
+   - StatBars: voice phrase + colored bar (gold/steel/crimson by tier)
+   - Recent Fights: TIMELINE (vertical, W/L badge + opponent link)
+   - Collapsable: Attributes (6/26), Personality (6/20), Fights (5/N)
+   ============================================================ */
+
+.ce-fp {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ============================================================
+   HEADER CARD (Accent — gold border if champion)
+   ============================================================ */
+.ce-fp-header {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  display: flex;
+  gap: 24px;
+  box-shadow: var(--shadow-card);
+}
+.ce-fp-header--champ {
+  border: 2px solid var(--gold);
+  border-left: 4px solid var(--gold);
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.06) 0%,
+    var(--bg-card) 30%,
+    var(--bg-card) 100%);
+}
+
+/* Portrait */
+.ce-fp-portrait {
+  width: 160px;
+  height: 200px;
+  border-radius: var(--r-md);
+  background: linear-gradient(135deg, var(--bg-card-elevated) 0%, var(--bg-base) 100%);
+  border: 2px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+.ce-fp-portrait--champ {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold), 0 0 24px rgba(224,169,87,0.25);
+}
+.ce-fp-portrait-initial {
+  font-family: var(--font-display);
+  font-size: 80px;
+  font-weight: 700;
+  color: var(--gold);
+  opacity: 0.5;
+  text-transform: uppercase;
+}
+.ce-fp-portrait-crown {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 18px;
+  color: var(--gold);
+  text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
+/* DB-REVIEW-IMAGE-ASSIGNMENT E.5: portrait states.
+   - --placeholder: static (no portrait_path or corrupted file).
+   - --loading: pulse animation while async-fetching the base64.
+   - --loaded: real <img> is rendered.
+   The .ce-fp-portrait-img is sized to cover the 160x200 container
+   (object-fit: cover crops the 512x512 source to the container's
+   aspect ratio without distortion). */
+.ce-fp-portrait--placeholder {
+  background: linear-gradient(135deg, var(--bg-card-elevated) 0%, var(--bg-base) 100%);
+}
+.ce-fp-portrait--loading .ce-fp-portrait-initial {
+  animation: ce-fp-portrait-pulse 1.5s ease-in-out infinite;
+}
+.ce-fp-portrait--loaded {
+  background: var(--bg-base);
+}
+.ce-fp-portrait-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+@keyframes ce-fp-portrait-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.9; }
+}
+
+/* Header info */
+.ce-fp-header-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-fp-header-topline {
+  display: flex;
+  align-items: center;
+}
+.ce-fp-back {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.ce-fp-back:hover { color: var(--gold); }
+.ce-fp-name {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+}
+.ce-fp-nick {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--gold);
+  margin-top: 2px;
+}
+.ce-fp-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.ce-fp-promo {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.ce-fp-style, .ce-fp-health {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* Identity strip — 6 voice phrases */
+.ce-fp-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 16px;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-fp-strip-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ce-fp-strip-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-fp-strip-phrase {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.ce-fp-overall {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.ce-fp-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* ============================================================
+   SCOUTING REPORT
+   ============================================================ */
+.ce-fp-scouting {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--crimson);
+  border-radius: var(--r-md);
+  padding: 16px;
+}
+.ce-fp-scouting-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-fp-scouting-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ce-fp-scouting-scout {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ce-fp-scouting-date {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ce-fp-scouting-ceiling {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ce-fp-scouting-text {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  border-left: 2px solid var(--border-strong);
+  padding-left: 12px;
+}
+
+/* ============================================================
+   TAB BAR
+   ============================================================ */
+.ce-fp-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 4px;
+  overflow-x: auto;
+}
+.ce-fp-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.ce-fp-tab:hover {
+  background: var(--gold-tint);
+  color: var(--text-primary);
+}
+.ce-fp-tab--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+.ce-fp-tab--active:hover {
+  background: var(--gold-bright);
+  color: var(--text-on-gold);
+}
+
+/* ============================================================
+   TAB CONTENT
+   ============================================================ */
+.ce-fp-tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ce-fp-tab-help {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: -8px;
+}
+
+.ce-fp-grid-12 {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+}
+.ce-fp-col-8 { grid-column: span 1; }
+.ce-fp-col-4 { grid-column: span 1; }
+
+/* Bio */
+.ce-fp-bio-text {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 16px 20px;
+}
+
+/* Career stats grid */
+.ce-fp-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.ce-fp-stat-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fp-stat-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fp-stat-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-fp-stat-tile .ce-stat-bar { margin-top: 2px; }
+
+/* ============================================================
+   RECENT FIGHTS TIMELINE (vertical, W/L badge + opponent link)
+   ============================================================ */
+.ce-fp-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-fp-fight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ce-fp-fight:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--border-strong);
+}
+.ce-fp-fight-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.ce-fp-badge--win {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  box-shadow: 0 0 8px rgba(224,169,87,0.3);
+}
+.ce-fp-badge--loss {
+  background: var(--crimson);
+  color: var(--text-on-crimson);
+}
+.ce-fp-badge--neutral {
+  background: var(--border-strong);
+  color: var(--text-secondary);
+}
+.ce-fp-fight-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-fp-fight-top {
+  font-size: 14px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ce-fp-fight-vs {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  margin-right: 4px;
+}
+.ce-fp-fight-opp {
+  font-weight: 600;
+  font-size: 14px;
+}
+.ce-fp-fight-opp-nick {
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 12px;
+}
+.ce-fp-fight-method {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+}
+.ce-fp-fight-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+}
+
+/* Toggle button */
+.ce-fp-toggle {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+
+/* ============================================================
+   STATBARS (Attributes + Personality tabs)
+   ============================================================ */
+.ce-fp-statbars {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.ce-fp-statbars--rest {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border-subtle);
+}
+.ce-fp-statbar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-fp-statbar-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fp-statbar-phrase {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.ce-fp-statbar-track {
+  height: 6px;
+  background: var(--border-subtle);
+  border-radius: 0;
+  overflow: hidden;
+}
+.ce-fp-statbar-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.ce-fp-statbar-fill--gold     { background: var(--gold); }
+.ce-fp-statbar-fill--steel    { background: var(--text-secondary); }
+.ce-fp-statbar-fill--crimson  { background: var(--crimson); }
+
+/* ============================================================
+   CR-2 — Attribute trajectory chip
+   ============================================================
+   Small badge appended to each StatBar's phrase text. Five states,
+   color-graded green → gray → red per docs/CR1_4_PLAN.md §2.3:
+     surging   ▲▲  bright green (#3fcc6e)   delta_90d ≥ +5
+     growing   ▲   light green  (#7dd99a)   delta_90d +1..+4
+     stable    →   gray         (#9aa3ad)   no change, ceiling ok
+     declining ▼   orange       (#e8a04a)   ceiling < current OR net loss
+     decaying  ▼▼  red          (#d64545)   ceiling < current AND age ≥ 33
+   Hover tooltip shows the qualitative reason (NO raw numbers).
+   ============================================================ */
+.ce-fp-trajectory {
+  display: inline-block;
+  min-width: 24px;
+  height: 18px;
+  padding: 0 4px;
+  margin-left: 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: bold;
+  text-align: center;
+  line-height: 18px;
+  vertical-align: middle;
+  cursor: help;
+  font-family: var(--font-mono, monospace);
+}
+.ce-fp-trajectory--surging   { background: #1f5130; color: #3fcc6e; border: 1px solid #3fcc6e; }
+.ce-fp-trajectory--growing   { background: #1f3a1f; color: #7dd99a; border: 1px solid #7dd99a; }
+.ce-fp-trajectory--stable    { background: #2a2f36; color: #9aa3ad; border: 1px solid #5a626c; }
+.ce-fp-trajectory--declining { background: #3a2a14; color: #e8a04a; border: 1px solid #e8a04a; }
+.ce-fp-trajectory--decaying  { background: #3a1414; color: #d64545; border: 1px solid #d64545; }
+
+/* ============================================================
+   TITLE REIGNS
+   ============================================================ */
+.ce-fp-reigns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.ce-fp-reign {
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fp-reign-wc {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ce-fp-reign-promo {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ce-fp-reign-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+}
+.ce-fp-reign-defenses {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1000px) {
+  .ce-fp-header { flex-direction: column; }
+  .ce-fp-portrait { width: 100%; height: 200px; }
+  .ce-fp-grid-12 { grid-template-columns: 1fr; }
+  .ce-fp-strip { grid-template-columns: repeat(2, 1fr); }
+  .ce-fp-statbars { grid-template-columns: 1fr; }
+  .ce-fp-yh-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 700px) {
+  .ce-fp-strip { grid-template-columns: 1fr; }
+  .ce-fp-stat-grid { grid-template-columns: 1fr; }
+  .ce-fp-yh-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   "YOUR HISTORY WITH [FIGHTER]" — Phase R §4
+   4-tile grid showing the player's past decisions + consequences
+   for this fighter. Gold accent bar — matches the section header
+   pattern used across all Fighter Profile sections. Only rendered
+   when the fighter is on the player's roster (server-side check).
+   ============================================================ */
+.ce-fp-your-history {
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.04) 0%,
+    var(--bg-card) 30%,
+    var(--bg-card) 100%);
+  border: 1px solid var(--gold);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 16px 20px;
+  margin-bottom: 8px;
+}
+.ce-fp-yh-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+.ce-fp-yh-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fp-yh-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fp-yh-val {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-fp-yh-val.ce-mono {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+}
+.ce-fp-yh-link {
+  margin-top: 4px;
+}
+.ce-fp-yh-link a {
+  font-size: 11px;
+  font-weight: 600;
+}

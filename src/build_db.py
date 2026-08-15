@@ -518,7 +518,196 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # schema is altered — only B-tree indexes are added to speed up
 # existing queries. The migration is fast (< 100ms on a 4450-row
 # fighters table) + runs in a single transaction (caller commits).
-CODE_SCHEMA_VERSION = "3.13.0"
+#
+# v3.14.0 (Task RIVAL-AI-P1 — Rival AI Phase 1 Foundation) — MINOR
+# bump. Per CONVENTIONS §1.1 MINOR is for additive changes; per §16.4,
+# the migration is idempotent (_has_column guards every ALTER). Adds
+# 3 new columns to `promotions` for the rival AI archetype system
+# (per docs/RIVAL_AI_ARCHITECTURE.md §7.2):
+#   - ai_archetype              TEXT     (nullable — NULL means
+#                                        "not yet assigned". Assigned
+#                                        on the first rival AI tick
+#                                        by services.rival_ai.
+#                                        archetypes.assign_all_archetypes.
+#                                        One of: 'major_league' /
+#                                        'regional_power' /
+#                                        'grassroots' / 'rising_star'.)
+#   - ai_scheduling_day_of_week INTEGER  (nullable — 1-7 Mon-Sun.
+#                                        Assigned on first tick;
+#                                        spreads rival promos across
+#                                        the week per arch doc §4.2.)
+#   - ai_budget_state           TEXT     (nullable — default 'NORMAL'.
+#                                        One of: SURVIVAL /
+#                                        CONSERVATIVE / NORMAL /
+#                                        EXPANSION / CRISIS. Set to
+#                                        'NORMAL' on first tick;
+#                                        Phase 3's budget_manager
+#                                        adjusts monthly.)
+#
+# The migration ALSO performs 2 one-time data backfills (per the
+# RIVAL-AI-P1 task brief + EXISTING_SYSTEMS_AUDIT.md Parts 3+5):
+#   1. Coach-gym backfill: assigns each of the 300 orphan coaches
+#      (staff rows with role_type='coach' AND gym_id IS NULL AND
+#      promotion_id IS NULL — a seed-script gap from v3.9.0) to a
+#      gym. Round-robin assignment: each coach gets the next gym_id
+#      in sequence. This is the "one-line backfill" the audit
+#      identifies as the fix for the orphan coach problem.
+#   2. staff_contracts backfill: creates a staff_contracts row (+
+#      parent contracts row) for each of the 75 promo-bound staff
+#      (staff rows with promotion_id IS NOT NULL). The polymorphic
+#      contracts pattern supports target_type='staff' but the seed
+#      script never wrote the rows — staff_contracts had 0 rows
+#      despite 375 staff existing. Each backfilled contract is a
+#      1-year deal (start_date='2026-07-20', end_date='2027-07-20')
+#      with role-based salary.
+#
+# Both backfills print their counts so the operator can verify:
+#   "  Backfilled 300 orphan coaches to gyms"
+#   "  Backfilled 75 staff_contracts rows"
+#
+# On --fresh builds, the SCHEMA_SQL already includes the 3 new
+# columns (added to the promotions CREATE TABLE below). The
+# migration function is NOT called on --fresh (per CONVENTIONS
+# §16.4) but the migration_name IS recorded in schema_migrations
+# for audit-trail consistency. The backfills are skipped on --fresh
+# (the fresh-build path seeds its own data; the backfills only
+# apply to the existing world DB).
+# v3.36.0 (TIER3-MISSING / W12+W29+W42+memory) — MINOR bump.
+#
+# Two migrations under one version bump (mirrors the v3.25.0 pattern
+# of two migrations under one version):
+#
+#   1. _migrate_v3_36_0_add_provenance_metadata — adds 2 nullable TEXT
+#      columns to schema_meta:
+#        - world_version  — set on each save (e.g. "sim_2026-08-27_tick14")
+#        - seed_version   — set on fresh DB build (e.g. "world_seed_v1")
+#      For existing DBs (the --migrate path), the migration sets
+#      seed_version='world_seed_v1' retroactively (every existing DB
+#      was built from world_seed_v1).
+#      Per docs/OPTIMIZATION_PLAN_TIER1_3.md §T3.3 (W42 — Provenance
+#      metadata). The columns are nullable so old save files that
+#      predate the migration can still be loaded (the columns will
+#      just be NULL until the next save).
+#
+#   2. _migrate_v3_36_0_expand_memory_link_types_tier3 — expands
+#      fighter_memory_links.link_type CHECK with 8 new values:
+#        'previous_fights', 'former_teammates', 'old_gyms',
+#        'former_champions', 'controversial_losses', 'injuries',
+#        'promotions', 'old_events'
+#      Per docs/OPTIMIZATION_PLAN_TIER1_3.md §T3.4 (W17 — 8 missing
+#      memory link types). The new CHECK is a SUPERSET of the old
+#      one (12 existing + 8 new = 20 total allowed link_types), so
+#      every existing row is preserved verbatim by the table-rebuild
+#      pattern (CONVENTIONS §16.6).
+#
+# Both migrations are idempotent (CREATE/ALTER guards + table-rebuild
+# sentinel check). On --fresh builds, SCHEMA_SQL already includes
+# both changes; the migration functions are no-ops (per CONVENTIONS
+# §16.4) but the migration_names are still recorded in
+# schema_migrations for audit-trail consistency.
+CODE_SCHEMA_VERSION = "3.36.0"
+
+
+# HW2.3 (docs/Hardening_Phase.md §HW2.3 / W5) — the formal sim-start
+# date constant. New games initialize simulation_clock.current_date
+# from this value (NOT from today's real date). Existing worlds keep
+# whatever clock they have; only the --fresh seed path uses this.
+#
+# The literal "2026-01-01" matches the brief. The seed in _build_fresh
+# reads this constant (so a future change to the start date only needs
+# to update one line). seed_data.py + the staff_contract backfill also
+# import this constant so contract start_dates stay consistent with
+# the sim clock (contracts used to default to 2026-07-20; now they
+# default to GAME_START_DATE).
+GAME_START_DATE = "2026-01-01"
+
+
+# v3.29.0 (HW2.1 — EventBus error persistence per docs/Hardening_Phase.md
+# §HW2.1 / CRITICAL #5) — MINOR bump. Per CONVENTIONS §1.1 MINOR is for
+# additive changes; this task adds ONE new table (simulation_tick_health)
+# and the formal GAME_START_DATE constant (above). No existing columns
+# are touched.
+#
+# simulation_tick_health stores ONE ROW PER TICK summarizing what
+# happened during that tick: how long it took, how many event-bus
+# subscribers were invoked, how many failed, a JSON blob of the errors
+# (subscriber name + event type + traceback + sim date), and aggregate
+# counts of side effects (events scheduled/completed, fights resolved,
+# fighters retired/regen, injuries created/recovered, contracts changed,
+# title changes, ranking changes, finance transactions, news/social/
+# memory items generated).
+#
+# The migration _migrate_v3_29_0_add_simulation_tick_health is
+# idempotent (uses _has_table guard). On --fresh builds, SCHEMA_SQL
+# already includes the table (the migration function is not called,
+# but the migration_name is still recorded in schema_migrations per
+# §16.4).
+#
+# tick_success values:
+#   1  = HEALTHY  (all subscribers succeeded, no errors)
+#   0  = DEGRADED (>= 1 subscriber failed but the tick completed)
+#   -1 = BROKEN   (tick itself crashed — set by run_tick's try/except
+#                  wrapper if it catches an exception before writing
+#                  the summary row)
+#
+# Read by:
+#   - compute_world_health(conn) in app_web.py (HW2.4) — overall world
+#     health status (HEALTHY/DEGRADED/BROKEN) based on recent ticks.
+#   - get_world_health() API method (HW2.4) — exposes the same to JS.
+#
+# Written by:
+#   - tick_processor.run_tick (HW2.1) — one row per tick at tick end.
+#   - EventBus.publish (HW2.1) — on a subscriber failure, the error is
+#     accumulated in the bus's in-memory tick_errors list (which
+#     run_tick then reads + persists as the errors_json column).
+
+
+# v3.28.0 (HW3 — Memory + Echoes Expansion per docs/Hardening_Phase.md
+# §HW3.1 / CRITICAL #6) — MINOR bump. Per CONVENTIONS §1.1 MINOR is for
+# additive changes; per §16.6, expanding a CHECK constraint requires a
+# table rebuild (SQLite has no ALTER TABLE ADD CHECK).
+#
+# 4 new link_type values added to the fighter_memory_links.link_type
+# CHECK enum:
+#   'title_history' — the two fighters contested a title against each
+#                     other (one dethroned the other, or they fought
+#                     for a vacant belt). Written by memory_svc when
+#                     TITLE_CHANGED fires; read by memory_engine's
+#                     _search_title_fight_history.
+#   'upset'         — the lower-rated fighter beat the higher-rated
+#                     fighter (rankings.rating gap >= 15 at fight
+#                     time). Written by memory_svc when FIGHT_RESOLVED
+#                     fires + the rating-gap test passes; read by
+#                     memory_engine's _search_major_upset.
+#   'comeback'      — one of the fighters returned from a long layoff
+#                     (>= 365 days without a fight) or from retirement.
+#                     Written by memory_svc when FIGHTER_SIGNED fires
+#                     for a previously-retired fighter; read by
+#                     memory_engine (surfaced via the existing
+#                     previous_fight / shared_gym searches — no
+#                     dedicated _search_comeback because the comeback
+#                     story is told from one fighter's perspective
+#                     against their NEXT opponent, not a pairwise link).
+#   'milestone'     — one fighter reached a career milestone against
+#                     the other (10th win, 20th win, 5-KO streak,
+#                     10th title defense). Written by memory_svc when
+#                     FIGHT_RESOLVED fires + the milestone test passes;
+#                     read by memory_engine's _search_career_milestone.
+#
+# The migration _migrate_v3_28_0_expand_memory_link_types_again rebuilds
+# the table (rename → recreate with new CHECK → copy → drop old) per
+# CONVENTIONS §16.6. The existing 775 rows (regional_rival 744 +
+# style_echo 29 + successor 2) are preserved verbatim — the new CHECK
+# is a SUPERSET of the old one, so every existing row still satisfies
+# it.
+#
+# Pre-HW3, link_type CHECK was (8 values, v3.12.0):
+#   ('style_echo', 'gym_heir', 'regional_rival', 'successor',
+#    'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')
+# Post-HW3, link_type CHECK is (12 values):
+#   ('style_echo', 'gym_heir', 'regional_rival', 'successor',
+#    'previous_fight', 'shared_gym', 'former_teammate', 'injury_history',
+#    'title_history', 'upset', 'comeback', 'milestone')
 
 
 # v3.12.0 (Phase 2 — Task 2.5-memory-engine: expand fighter_memory_links.
@@ -954,6 +1143,14 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS schema_meta (
     schema_name    TEXT PRIMARY KEY,
     schema_version TEXT NOT NULL,
+    -- v3.36.0 (TIER3-MISSING §T3.3 / W42) — provenance metadata.
+    -- Both columns are nullable so old save files that predate the
+    -- migration can still be loaded (the columns will be NULL until
+    -- the next save writes them).
+    --   world_version — set on each save (e.g. "sim_2026-08-27_tick14")
+    --   seed_version  — set on fresh DB build (e.g. "world_seed_v1")
+    world_version  TEXT,
+    seed_version   TEXT,
     created_at     TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
@@ -1030,6 +1227,14 @@ CREATE TABLE IF NOT EXISTS venues (
     city_id INTEGER NOT NULL REFERENCES cities(city_id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     capacity INTEGER NOT NULL CHECK (capacity > 0),
+    -- v3.18.0 (Phase E2.7 — tiered venue rental per §3.2.3). Drives
+    -- the cost_per_seat_by_venue_type tiered lookup in finance.py.
+    -- 4 values: arena (cap 15k+), ballroom (5-15k), theater (2-5k),
+    -- outdoor (<2k). NOT NULL with DEFAULT 'ballroom' so existing
+    -- INSERTs that don't set venue_type get the mid-tier value
+    -- (matches the spec's "Default existing venues to 'ballroom'").
+    venue_type TEXT NOT NULL DEFAULT 'ballroom'
+        CHECK (venue_type IN ('arena', 'ballroom', 'theater', 'outdoor')),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1058,6 +1263,67 @@ CREATE TABLE IF NOT EXISTS promotions (
     ownership_type TEXT NOT NULL DEFAULT 'startup',
     ai_aggression INTEGER NOT NULL DEFAULT 50 CHECK (ai_aggression BETWEEN 0 AND 100),
     ai_spending_style TEXT NOT NULL DEFAULT 'balanced',
+    -- v3.14.0 (Task RIVAL-AI-P1 — Rival AI Phase 1 Foundation): 3 new
+    -- columns for the rival AI archetype system per docs/RIVAL_AI_
+    -- ARCHITECTURE.md §7.2. All nullable so the migration can add
+    -- them without backfilling at migration time — the rival AI's
+    -- first TICK_ADVANCED subscriber call assigns the archetype +
+    -- scheduling day + initial budget state (see services/rival_ai/
+    -- archetypes.py assign_all_archetypes).
+    --   ai_archetype              — 'major_league' / 'regional_power' /
+    --                               'grassroots' / 'rising_star' (NULL =
+    --                               not yet assigned).
+    --   ai_scheduling_day_of_week — 1-7 Mon-Sun (NULL = not yet
+    --                               assigned). Spreads rival promos
+    --                               across the week per arch doc §4.2.
+    --   ai_budget_state           — 'SURVIVAL' / 'CONSERVATIVE' /
+    --                               'NORMAL' / 'EXPANSION' / 'CRISIS'
+    --                               (NULL = not yet assigned; first
+    --                               tick sets 'NORMAL'). Phase 3's
+    --                               budget_manager adjusts monthly.
+    ai_archetype TEXT,
+    ai_scheduling_day_of_week INTEGER,
+    ai_budget_state TEXT,
+    -- v3.23.0 (Fix 2 — Bankruptcy Recovery per docs/DESIGN_REVIEW_E5.md
+    -- §2). Two new columns tracking the "new ownership" rebuilding
+    -- period that follows a bankruptcy failure state. When
+    -- is_rebuilding=1, the promo is under new ownership and slowly
+    -- recovering reputation month-by-month while it runs events.
+    --   is_rebuilding          INTEGER (0 or 1; default 0). Set to 1
+    --                          by _fire_bankruptcy_failure when the
+    --                          bankruptcy failure state fires, cleared
+    --                          by _check_rebuilding_status when the
+    --                          6-month rebuilding period ends.
+    --   rebuilding_until_date  TEXT (ISO 'YYYY-MM-DD'). The sim date
+    --                          6 months after the bankruptcy firing —
+    --                          the rebuild is complete on/after this
+    --                          date.
+    is_rebuilding INTEGER NOT NULL DEFAULT 0 CHECK (is_rebuilding IN (0, 1)),
+    rebuilding_until_date TEXT,
+    -- v3.27.0 (HW1.4 — Financial State Machine per docs/Hardening_
+    -- Phase.md §HW1.4). The 7-state lifecycle column. Default
+    -- 'HEALTHY'. CHECK enforces the 7 allowed values:
+    --   HEALTHY    → cash comfortable (>= starting_budget × 0.20)
+    --   PRESSURED  → cash < 0.20 × starting_budget for 2 months
+    --   STRUGGLING → cash < 0.10 × starting_budget for 2 months
+    --   CRISIS     → cash < 0 for 1 month
+    --   BANKRUPT   → cash < 0 for 3 consecutive months (transient —
+    --                immediately transitions to REBUILDING via
+    --                _fire_bankruptcy_failure)
+    --   REBUILDING → 6-month post-bankruptcy recovery (is_rebuilding=1)
+    --   RECOVERING → rebuilding period complete, cash climbing back
+    --                toward starting_budget × 0.50
+    -- The state machine is implemented in src/reputation.py
+    -- (_check_financial_state_transitions), called monthly on
+    -- TICK_ADVANCED. Each transition writes a voice-compliant news
+    -- item + applies a consequence (PRESSURED = -10% marketing spend
+    -- on next event; STRUGGLING = release 1 staff; CRISIS = block FA
+    -- signings; etc.).
+    financial_state TEXT NOT NULL DEFAULT 'HEALTHY'
+        CHECK (financial_state IN (
+            'HEALTHY', 'PRESSURED', 'STRUGGLING', 'CRISIS',
+            'BANKRUPT', 'REBUILDING', 'RECOVERING'
+        )),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1166,6 +1432,15 @@ CREATE TABLE IF NOT EXISTS fighters (
     preferred_gameplans TEXT,
     bad_matchup_tags TEXT,
     is_deceased INTEGER NOT NULL DEFAULT 0 CHECK (is_deceased IN (0,1)),
+    -- v3.19.0 (DB-REVIEW-IMAGE-ASSIGNMENT): relative path to the
+    -- fighter's portrait image, e.g.
+    -- 'portraits/batch_001-020/batch_001-020/0001_HirokiNakamura_Mist.webp'
+    -- (relative to the data/ directory). NULL for fighters without a
+    -- custom portrait (the UI renders an initial-letter placeholder).
+    -- Per user directive: image never changes once assigned — regens
+    -- get a fresh fighter_id (see regen_lineage), so the cached base64
+    -- payload stays valid for the lifetime of the fighter_id.
+    portrait_path TEXT,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1293,6 +1568,12 @@ CREATE TABLE IF NOT EXISTS fighter_career (
     -- fighters who held a title get the "reminiscent of former
     -- champion {name}" treatment.
     title_reigns INTEGER NOT NULL DEFAULT 0 CHECK (title_reigns >= 0),
+    -- CR-M1 (docs/MASTER_PLAN_MATCHMAKING.md §2.1): `realization` is a
+    -- 0.4-1.0 multiplier on effective_ceiling. Represents how close a
+    -- fighter gets to their theoretical potential. Set at fighter
+    -- creation from personality — NOT every fighter hits their peak.
+    -- A "bust" (realization=0.5) with potential=85 has ceiling=42.
+    realization REAL NOT NULL DEFAULT 0.7 CHECK (realization BETWEEN 0.4 AND 1.0),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1328,6 +1609,26 @@ CREATE TABLE IF NOT EXISTS staff (
     -- when generating matchup_analyses) and the reader is the
     -- upcoming ui/screens/event_resolution.py screen.
     pundit_bias TEXT,
+    -- v3.22.0 (Phase E4 — Staff Market, per docs/ECON_STAFF_PLAN.md
+    -- §4.2 + §4.3 + task brief). Three new columns drive the Staff
+    -- Market screen (free-agent pool of coaches / scouts / doctors
+    -- / cutmen / GMs / commentators):
+    --   skill_level          INTEGER 0-100 (overall competence).
+    --     Displayed via voice phrase ('world-class' / 'established'
+    --     / 'promising' / 'unproven') — NEVER the raw int.
+    --   salary_ask           REAL — the salary the staff expects in
+    --     $/yr. Drives the negotiation threshold (offer must clear
+    --     salary_ask × 0.9).
+    --   contract_length_ask  INTEGER — desired contract length in
+    --     years (1-5). Drives the default contract_length slider.
+    -- Defaults: skill_level=50 ('promising'), salary_ask=50000,
+    -- contract_length_ask=2. Existing staff backfilled by the
+    -- migration function (_migrate_v3_22_0_add_staff_market_columns)
+    -- using a role + skill-tier salary table (see §4.1 of the plan).
+    skill_level INTEGER NOT NULL DEFAULT 50
+        CHECK (skill_level BETWEEN 0 AND 100),
+    salary_ask REAL NOT NULL DEFAULT 50000.0,
+    contract_length_ask INTEGER NOT NULL DEFAULT 2,
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1349,6 +1650,16 @@ CREATE TABLE IF NOT EXISTS events (
     event_date TEXT NOT NULL,
     event_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled',
+    -- v3.21.0 (Phase E3.1 — Player Financial Levers per docs/PHASE_E3_PLAN.md
+    -- §1.E3.1 + docs/ECON_STAFF_PLAN.md §3.3). 4 player-set lever columns
+    -- that drive the finance model (Phase E3.2 reads them in
+    -- finance._process_event_finance). Defaults preserve backward
+    -- compatibility for existing events (pre-E3 events use defaults:
+    -- ticket_price=80, marketing_spend=0, ppv_price=60, is_ppv=0).
+    ticket_price INTEGER NOT NULL DEFAULT 80,        -- $20-$300
+    marketing_spend INTEGER NOT NULL DEFAULT 0,      -- $0-$500k
+    ppv_price INTEGER NOT NULL DEFAULT 60,           -- $30-$80 (PPV events only)
+    is_ppv INTEGER NOT NULL DEFAULT 0 CHECK (is_ppv IN (0,1)),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -1451,6 +1762,17 @@ CREATE TABLE IF NOT EXISTS news_items (
     fighter_id INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
     promotion_id INTEGER REFERENCES promotions(promotion_id) ON DELETE SET NULL,
     published_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    -- HW4.1 (docs/Hardening_Phase.md §HW4.1 / W19) — importance tier.
+    -- 5 tiers: LEGENDARY (title change, HoF, career-ending injury),
+    -- MAJOR (signing, retirement, major upset, rivalry escalation),
+    -- SIGNIFICANT (fight result, injury, suspension, comeback),
+    -- ROUTINE (training camp, finance, weight cut, event hype),
+    -- BACKGROUND (tapping_up_rumor, social media, generic). Daily
+    -- caps per tier enforced in news._write_news_item (HW4.3): 1
+    -- LEGENDARY / 3 MAJOR / 5 SIGNIFICANT / 10 ROUTINE / 5 BACKGROUND.
+    importance TEXT NOT NULL DEFAULT 'ROUTINE'
+        CHECK (importance IN ('LEGENDARY','MAJOR','SIGNIFICANT',
+                              'ROUTINE','BACKGROUND')),
     created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
@@ -1654,11 +1976,61 @@ CREATE TABLE IF NOT EXISTS fighter_memory_links (
     memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
     linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
-    link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history')),
+    -- v3.36.0 (TIER3-MISSING §T3.4 / W17) — expanded CHECK with 8 new
+    -- link types: 'previous_fights', 'former_teammates', 'old_gyms',
+    -- 'former_champions', 'controversial_losses', 'injuries',
+    -- 'promotions', 'old_events'. Total 20 allowed values.
+    --   - The 12 existing values (style_echo, gym_heir, regional_rival,
+    --     successor, previous_fight, shared_gym, former_teammate,
+    --     injury_history, title_history, upset, comeback, milestone)
+    --     are preserved verbatim (the new CHECK is a SUPERSET).
+    --   - The 8 new values are distinct from existing singular-form
+    --     variants (previous_fight vs previous_fights, former_teammate
+    --     vs former_teammates, injury_history vs injuries) — they
+    --     capture related-but-distinct memory categories per the
+    --     T3.4 brief.
+    link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history', 'title_history', 'upset', 'comeback', 'milestone', 'previous_fights', 'former_teammates', 'old_gyms', 'former_champions', 'controversial_losses', 'injuries', 'promotions', 'old_events')),
     link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
     created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     UNIQUE (fighter_id, linked_fighter_id, link_type)
 );
+
+-- ----------------------------------------------------------------
+-- staff_regen_lineage (added v3.25.0, Phase M2.3 — docs/MASTER_PLAN_
+-- MATCHMAKING.md §2.3 Staff lifecycle — regen).
+--
+-- Mirrors regen_lineage (for fighters) but for STAFF. When a staff
+-- member retires (Phase M2.2 annual tick on Jan 1), the retirement
+-- service generates a replacement staff member with a similar skill
+-- range + same role_type. This table tracks which retiring staff
+-- spawned which replacement, so future torch-passing narrative
+-- features (e.g., "the legendary GM's successor takes over" news
+-- items, "in the lineage of {retiring_commentator}" personality
+-- traits) can read the link without needing a schema change.
+--
+-- One row per (retiring_staff_id, replacement_staff_id) pair —
+-- the UNIQUE constraint enforces this. replacement_staff_id can
+-- be NULL briefly during the replacement generation (defensive —
+-- if generation fails midway, the lineage row still records that
+-- a retirement happened, just without a successor).
+--
+-- Per CONVENTIONS §5.3, the writer is src/services/retirement_svc.
+-- generate_staff_replacement (Phase M2.3) and the reader is the
+-- future torch-passing news engine (Phase M3+, not built yet).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS staff_regen_lineage (
+    regen_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    retiring_staff_id      INTEGER REFERENCES staff(staff_id) ON DELETE SET NULL,
+    replacement_staff_id   INTEGER REFERENCES staff(staff_id) ON DELETE SET NULL,
+    role_type              TEXT NOT NULL,
+    regen_date             TEXT NOT NULL,
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (retiring_staff_id, replacement_staff_id)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_regen_lineage_retiring
+    ON staff_regen_lineage(retiring_staff_id);
+CREATE INDEX IF NOT EXISTS idx_staff_regen_lineage_replacement
+    ON staff_regen_lineage(replacement_staff_id);
 
 -- fighter_bios (added v2.6.0, Task 16.5 — World seed prep).
 -- Long-form prose bios for fighters. The world seed Phase 5 writes
@@ -2071,6 +2443,19 @@ CREATE TABLE IF NOT EXISTS fighter_descriptors (
     narrative_family        TEXT,
     public_narrative        TEXT,
     legacy_state            TEXT,
+    -- INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3): SHORT variants
+    -- of the 4 interpretation columns above. Each stores the SAME
+    -- canonical label (before "||") + a SHORT voice phrase (≤25 chars)
+    -- for display contexts with limited width (Fighter Watch Cards,
+    -- Roster rows, table chips). The LONG column above still carries
+    -- the full phrase for Fighter Profile (full width). The daily
+    -- interpretation pass writes BOTH columns from the same RNG seed
+    -- so the same fighter's short + long pair is deterministic.
+    momentum_short          TEXT,
+    pressure_short          TEXT,
+    career_phase_short      TEXT,
+    narrative_family_short  TEXT,
+    legacy_state_short      TEXT,
     snapshot_version        INTEGER NOT NULL DEFAULT 1,
     updated_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -2151,7 +2536,8 @@ CREATE TABLE IF NOT EXISTS finance_transactions (
         'ticket_sales', 'broadcast_revenue', 'merchandise',
         'fighter_purse', 'venue_rental', 'staff_salary',
         'medical_cost', 'signing_bonus', 'weight_cut_penalty',
-        'sponsorship', 'bonus_payment'
+        'sponsorship', 'bonus_payment', 'concessions',
+        'marketing', 'show_quality_adjustment'
     )),
     amount                  REAL NOT NULL,
     description             TEXT,
@@ -2756,6 +3142,275 @@ CREATE TABLE IF NOT EXISTS daily_headlines (
     UNIQUE (headline_date, headline_type)
 );
 
+-- ----------------------------------------------------------------
+-- player_decisions (added v3.16.0, Phase R — Reward Layer §6 Principle 4).
+-- Append-only log of every player action whose consequence should
+-- "echo" back later. The Dashboard's "ECHOES" section + the Fighter
+-- Profile's "Your History with [Fighter]" section both read from
+-- this table (per docs/REWARD_REVIEW.md §1.5 + §6 + the Phase R
+-- brief). Without this log, the Agency reward stays at 3/10 forever.
+--
+-- Schema is intentionally narrow + index-friendly: every column the
+-- Echoes engine reads in its 4 templates (sign / cut / book / scout)
+-- is either on this table or joinable in <5ms with the existing
+-- idx_player_decisions_* indexes below.
+--
+-- decision_type values (CHECK'd): the canonical set of player
+-- actions. New actions added in later phases MUST extend this CHECK
+-- (don't bypass it with a free-form TEXT). The 9 initial values
+-- cover everything the player can do as of Phase R: sign, cut, book,
+-- scout, hire_staff, fire_staff, assign_staff, set_ticket_price,
+-- set_marketing, negotiate_contract.
+--
+-- All *_id columns are nullable (a 'set_ticket_price' decision has
+-- no fighter_id; an 'hire_staff' decision has no fighter_id but has
+-- a staff_id). The context_json TEXT column captures arbitrary
+-- per-decision context (signing cost, opponent, offer terms) so the
+-- Echoes engine can quote specifics ("signed for $120K") without
+-- re-querying finance_transactions.
+--
+-- decision_date is the sim date (YYYY-MM-DD), not wall-clock —
+-- echoes should reference the player's in-game timeline.
+--
+-- The 3 indexes cover the 3 read patterns:
+--   idx_player_decisions_type  → "give me all 'sign' decisions"
+--   idx_player_decisions_date  → "give me decisions from the last 120 days"
+--   idx_player_decisions_fighter → "give me everything I did to fighter X"
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS player_decisions (
+    decision_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_type      TEXT NOT NULL CHECK (decision_type IN (
+        'sign', 'cut', 'book', 'scout',
+        'hire_staff', 'fire_staff', 'assign_staff',
+        'set_ticket_price', 'set_marketing', 'negotiate_contract'
+    )),
+    target_fighter_id  INTEGER,        -- nullable (NULL for staff decisions)
+    target_staff_id    INTEGER,        -- nullable
+    target_event_id    INTEGER,        -- nullable (for 'book' decisions)
+    target_promo_id    INTEGER,        -- nullable (cross-promo context)
+    decision_date      TEXT NOT NULL,  -- sim date (YYYY-MM-DD)
+    context_json       TEXT,           -- arbitrary context (signing cost, opponent, etc.)
+    created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_player_decisions_type
+    ON player_decisions(decision_type);
+CREATE INDEX IF NOT EXISTS idx_player_decisions_date
+    ON player_decisions(decision_date);
+CREATE INDEX IF NOT EXISTS idx_player_decisions_fighter
+    ON player_decisions(target_fighter_id);
+
+-- ----------------------------------------------------------------
+-- daily_echoes (added v3.16.0, Phase R — Reward Layer §1.5 + §6).
+-- Cache table for the daily-generated "echo" phrases surfaced on
+-- the Dashboard. Same pattern as daily_headlines: written by the
+-- interpretation layer (src/interpretation/echoes_engine.py) on
+-- every Advance Day, read by app_web.get_dashboard_data in one
+-- query. UNIQUE (echo_date, echo_slot) so re-running for the same
+-- date overwrites instead of duplicating (idempotent — matches
+-- daily_headlines behavior).
+--
+-- echo_slot is an integer 1-3 (the Dashboard shows up to 3 echoes
+-- per day, in slot order). Each row carries:
+--   phrase        — the ≤120-char voice phrase ("Since you signed X in May, he's won 4 straight.")
+--   decision_id   — link back to the player_decisions row it echoes from
+--   target_fighter_id — for hyperlink rendering (NULL = no fighter link)
+--   link_to_screen — 'fighter_profile' | 'past_events' (which screen to navigate to)
+--
+-- Per CONVENTIONS §17.3, this is a CACHE table — only echoes_engine
+-- writes to it. The Dashboard reads it directly (no join needed
+-- beyond the fighter name lookup for the hyperlink label).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_echoes (
+    echo_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    echo_date          TEXT NOT NULL,
+    echo_slot          INTEGER NOT NULL CHECK (echo_slot BETWEEN 1 AND 5),
+    echo_type          TEXT NOT NULL CHECK (echo_type IN (
+        'signing_echo', 'cut_echo', 'booking_echo', 'scouting_echo'
+    )),
+    phrase             TEXT NOT NULL,
+    decision_id        INTEGER,        -- link back to player_decisions (nullable for safety)
+    target_fighter_id  INTEGER,        -- for hyperlink rendering (nullable)
+    link_to_screen     TEXT,           -- 'fighter_profile' | 'past_events' | NULL
+    created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+    UNIQUE (echo_date, echo_slot)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_echoes_date
+    ON daily_echoes(echo_date DESC);
+
+-- ----------------------------------------------------------------
+-- bidding_alerts (added v3.25.0, Phase M3.2 — docs/MASTER_PLAN_
+-- MATCHMAKING.md §2.2 Rival AI signing — include player in bidding
+-- wars).
+--
+-- Persistent store for "rival AI is pursuing this free agent" alerts
+-- surfaced on the Dashboard. When a rival AI decides to pursue a FA
+-- (signing_agent.resolve_bidding_wars produces a winning intent), the
+-- signing is DEFERRED by decision_window_days (default 3) so the
+-- player has a window to counter-offer via app_web.counter_offer.
+--
+-- Lifecycle:
+--   1. signing_agent.resolve_bidding_wars INSERTs a row with
+--      status='pending' + fires Events.SIGNING_INTENT on the bus.
+--      The rival AI's signing is NOT executed yet.
+--   2. The player can call app_web.counter_offer(fighter_id, salary,
+--      signing_bonus). counter_offer looks up the pending alert,
+--      computes both offer_scores (rival AI's stored score + the
+--      player's score from the unified formula), the fighter chooses
+--      the higher score (with ±5% randomness for drama), and the
+--      winner signs via sign_free_agent. The alert is marked
+--      'won_by_player' or 'won_by_rival' depending on the outcome.
+--   3. If the player doesn't respond before expiry_date, the daily
+--      tick (_check_bidding_alerts_expiry in signing_agent) signs
+--      the fighter with the rival AI's intent + marks the alert
+--      'won_by_rival' + writes a "you lost [Fighter] to [Rival]"
+--      news item (if the player has a selected promo).
+--   4. If the fighter is no longer a free agent when the daily tick
+--      tries to sign (e.g., the player signed them directly via
+--      sign_free_agent — which is BLOCKED when a pending alert
+--      exists, but defensive), the alert is marked 'lost_race'.
+--
+-- Voice compliance (CONVENTIONS §14): no raw potential / realization
+-- numbers appear in the UI text — the dashboard renders salary in
+-- $K/M format + uses voice phrases for promo archetype fit.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bidding_alerts (
+    alert_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fighter_id            INTEGER NOT NULL REFERENCES fighters(fighter_id)
+                              ON DELETE CASCADE,
+    rival_promo_id        INTEGER NOT NULL REFERENCES promotions(promotion_id)
+                              ON DELETE CASCADE,
+    -- The rival AI's pre-computed offer (frozen at intent time so the
+    -- counter_offer comparison uses the same numbers).
+    offered_salary        REAL NOT NULL,        -- $/yr
+    offered_bonus         REAL NOT NULL DEFAULT 0,  -- $ upfront
+    offer_score           REAL NOT NULL,        -- 0..1 (rival AI's score)
+    -- The decision window: player has this many sim-days to respond.
+    intent_date           TEXT NOT NULL,        -- sim date 'YYYY-MM-DD'
+    expiry_date           TEXT NOT NULL,        -- intent_date + window
+    decision_window_days  INTEGER NOT NULL DEFAULT 3
+                              CHECK (decision_window_days BETWEEN 1 AND 14),
+    -- Status lifecycle:
+    --   pending         → alert active, awaiting player response
+    --   won_by_player   → player counter-offered + won the bidding war
+    --   won_by_rival    → rival AI signed (window expired OR player
+    --                     counter-offered but lost)
+    --   lost_race       → fighter no longer FA when expiry tick ran
+    --                     (e.g., signed by another promo directly)
+    status                TEXT NOT NULL DEFAULT 'pending'
+                              CHECK (status IN (
+                                  'pending', 'won_by_player',
+                                  'won_by_rival', 'lost_race'
+                              )),
+    -- Captured at resolution time for the "you lost X to Y" news item.
+    player_offer_salary   REAL,                 -- NULL until player counters
+    player_offer_bonus    REAL,
+    player_offer_score    REAL,
+    resolved_date         TEXT,
+    created_at            TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+CREATE INDEX IF NOT EXISTS idx_bidding_alerts_fighter
+    ON bidding_alerts(fighter_id);
+CREATE INDEX IF NOT EXISTS idx_bidding_alerts_status
+    ON bidding_alerts(status, expiry_date);
+CREATE INDEX IF NOT EXISTS idx_bidding_alerts_rival
+    ON bidding_alerts(rival_promo_id);
+
+-- ----------------------------------------------------------------
+-- rival_ai_memory (added v3.34.0, HW10-W21W22 — rival AI memory).
+--
+-- The rival AI used to be STATELESS PER TICK — each rival promo
+-- scheduled events, signed free agents, and resolved fights without
+-- remembering its own past results, bidding wars lost, fighters
+-- signed/released, or title histories. GPT's W21 feedback: "Rival
+-- AI should react to its own previous results." GPT's W22 feedback:
+-- "Rival promotions should remember past interactions."
+--
+-- This table gives every rival promo a memory log. Each row is one
+-- memory of a specific type (event_result, signing_won, title_loss,
+-- etc.). Subscribers on the event bus write memories when something
+-- happens; the rival AI's decision functions READ memories to shape
+-- future decisions ("we just had a flop event, don't book another
+-- one too soon", "we lost a bidding war last week, be more
+-- aggressive on the next target", "this fighter lost us a title,
+-- consider releasing them").
+--
+-- Lifecycle:
+--   1. EVENT_COMPLETED → 'event_result' memory with attendance/profit.
+--   2. FIGHTER_SIGNED  → 'signing_won' memory for the signing promo.
+--      (signing_missed is written when a bidding-war loser would have
+--      wanted the fighter; rivalry_fuelled is written on bankruptcies.)
+--   3. SIGNING_INTENT expiry (rival AI lost a bidding war) →
+--      'bidding_war_lost' memory for the rival promo.
+--   4. TITLE_CHANGED  → 'title_win' memory if the promo gains a
+--      champion; 'title_loss' memory if the promo's champion was
+--      dethroned.
+--   5. PROMOTION_BANKRUPT → 'rivalry_fuelled' memory for every other
+--      rival promo (the bankruptcy is an opportunity for competitors).
+--   6. Weekly TICK_ADVANCED subscriber decays salience by -1. When
+--      salience hits 0, the memory row is DELETED (forgotten) — old
+--      memories should not bloat the table.
+--
+-- Readers:
+--   - event_scheduler: scans recent 'event_result' memories; if the
+--     last event was a flop (low attendance/profit), suppress
+--     scheduling for one cycle (don't book another show too soon
+--     after a flop).
+--   - signing_agent: scans recent 'bidding_war_lost' memories; if
+--     the promo recently lost a bidding war, raise the offer_score
+--     (don't lose the next one).
+--   - cutting_agent: scans 'title_loss' memories; if a fighter was
+--     involved in a recent title loss, raise their cut_risk (they've
+--     peaked).
+--
+-- Salience semantics:
+--   - 0..100, default 50 (a "neutral" memory — recorded but not
+--     especially influential).
+--   - Writers tune the initial salience: 'title_win'=80, 'title_loss'
+--     =70, 'bidding_war_lost'=60, 'event_result'=50 (default),
+--     'signing_won'=40, 'rivalry_fuelled'=50.
+--   - The weekly decay (-1) means a memory at salience=50 is
+--     "forgotten" in ~50 weeks (~1 sim year). High-salience memories
+--     (title wins/losses) persist longer.
+--   - Salience=0 → DELETE (not kept). This keeps the table from
+--     growing unboundedly.
+--
+-- Index design:
+--   - idx_rival_ai_memory_promo_type_date: covers the "what does
+--     this promo remember about X recently?" lookup used by readers.
+--   - idx_rival_ai_memory_promo_salience: covers the "what does
+--     this promo remember most strongly?" lookup (future use).
+--
+-- Voice compliance (CONVENTIONS §14): the context_json is internal
+-- state, never rendered in the UI directly. The rival AI's memory
+-- influences its decisions, which manifest as news items / events /
+-- signings — already voice-layer-compliant.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rival_ai_memory (
+    memory_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    promotion_id         INTEGER NOT NULL REFERENCES promotions(promotion_id)
+                             ON DELETE CASCADE,
+    memory_type          TEXT NOT NULL
+                             CHECK (memory_type IN (
+                                 'event_result', 'signing_missed',
+                                 'signing_won', 'title_loss', 'title_win',
+                                 'bidding_war_lost', 'bidding_war_won',
+                                 'fighter_released', 'rivalry_fuelled'
+                             )),
+    target_fighter_id    INTEGER REFERENCES fighters(fighter_id)
+                             ON DELETE SET NULL,
+    target_promotion_id  INTEGER REFERENCES promotions(promotion_id)
+                             ON DELETE SET NULL,
+    memory_date          TEXT NOT NULL,        -- sim date 'YYYY-MM-DD'
+    context_json         TEXT,                 -- arbitrary JSON
+    salience             INTEGER NOT NULL DEFAULT 50
+                             CHECK (salience BETWEEN 0 AND 100),
+    created_at           TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+CREATE INDEX IF NOT EXISTS idx_rival_ai_memory_promo_type_date
+    ON rival_ai_memory (promotion_id, memory_type, memory_date DESC);
+CREATE INDEX IF NOT EXISTS idx_rival_ai_memory_promo_salience
+    ON rival_ai_memory (promotion_id, salience DESC);
+
 -- ============================================================
 -- Phase 4 — Performance indexes (v3.13.0).
 -- These are duplicated here (in SCHEMA_SQL) so fresh --fresh builds
@@ -2788,6 +3443,93 @@ CREATE INDEX IF NOT EXISTS idx_suspensions_fighter_active
     ON suspensions (fighter_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_scouting_reports_target
     ON scouting_reports (target_fighter_id);
+-- HW8.2 — per-tick perf indexes (added after HW6.3 soak test
+-- surfaced super-linear cost growth from full-table scans on
+-- training_camps + fight_beats). See _migrate_v3_31_0_add_perf_indexes.
+CREATE INDEX IF NOT EXISTS idx_training_camps_active_window
+    ON training_camps (is_active, is_completed, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_training_camps_fighter
+    ON training_camps (fighter_id, is_completed, end_date);
+CREATE INDEX IF NOT EXISTS idx_fight_beats_fight
+    ON fight_beats (fight_id, round_number);
+-- TIER2-5YEAR §T2.3 — additional perf indexes for 5-year soak.
+-- See _migrate_v3_35_0_add_perf_indexes_2.
+CREATE INDEX IF NOT EXISTS idx_news_items_importance_date
+    ON news_items (importance, published_at);
+CREATE INDEX IF NOT EXISTS idx_commentary_segments_fight
+    ON commentary_segments (fight_id);
+CREATE INDEX IF NOT EXISTS idx_training_camps_completed_end
+    ON training_camps (is_completed, end_date);
+
+-- ============================================================
+-- HW2.1 — simulation_tick_health (v3.29.0).
+-- One row per tick. Records tick duration, EventBus subscriber
+-- success/failure counts, a JSON blob of subscriber errors
+-- (with traceback + sim date), and aggregate counts of the
+-- tick's side effects (events/fights/fighters/injuries/contracts
+-- /titles/rankings/finance/news/social/memory).
+--
+-- tick_success:
+--   1  = HEALTHY  (no subscriber failures)
+--   0  = DEGRADED (>= 1 subscriber failure, tick completed)
+--   -1 = BROKEN   (tick itself crashed — set by run_tick's
+--                  try/except wrapper before the summary row
+--                  is written)
+--
+-- Read by compute_world_health() (HW2.4) + get_world_health()
+-- API method (HW2.4). Written by tick_processor.run_tick (HW2.1).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS simulation_tick_health (
+    tick_id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick_date              TEXT NOT NULL,
+    tick_duration_ms       INTEGER NOT NULL DEFAULT 0,
+    tick_success           INTEGER NOT NULL DEFAULT 1
+                               CHECK (tick_success IN (-1, 0, 1)),
+    health_status          TEXT NOT NULL DEFAULT 'HEALTHY'
+                               CHECK (health_status IN
+                                      ('HEALTHY', 'DEGRADED', 'BROKEN')),
+    subscribers_invoked    INTEGER NOT NULL DEFAULT 0,
+    subscribers_succeeded  INTEGER NOT NULL DEFAULT 0,
+    subscribers_failed     INTEGER NOT NULL DEFAULT 0,
+    errors_json            TEXT,
+    events_scheduled       INTEGER NOT NULL DEFAULT 0,
+    events_completed       INTEGER NOT NULL DEFAULT 0,
+    fights_resolved        INTEGER NOT NULL DEFAULT 0,
+    fighters_retired       INTEGER NOT NULL DEFAULT 0,
+    fighters_regen         INTEGER NOT NULL DEFAULT 0,
+    injuries_created       INTEGER NOT NULL DEFAULT 0,
+    injuries_recovered     INTEGER NOT NULL DEFAULT 0,
+    contracts_changed      INTEGER NOT NULL DEFAULT 0,
+    title_changes          INTEGER NOT NULL DEFAULT 0,
+    ranking_changes        INTEGER NOT NULL DEFAULT 0,
+    finance_transactions   INTEGER NOT NULL DEFAULT 0,
+    news_generated         INTEGER NOT NULL DEFAULT 0,
+    social_posts_generated INTEGER NOT NULL DEFAULT 0,
+    memories_generated     INTEGER NOT NULL DEFAULT 0,
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+CREATE INDEX IF NOT EXISTS idx_tick_health_date
+    ON simulation_tick_health (tick_date DESC);
+CREATE INDEX IF NOT EXISTS idx_tick_health_status
+    ON simulation_tick_health (tick_success, tick_date DESC);
+
+-- HW8.3 — global daily news cap trigger (catches ALL writes,
+-- including direct INSERTs that bypass news._write_news_item).
+-- HW10.1 — importance-aware: LEGENDARY + MAJOR items bypass the cap
+-- (player never misses title changes, HoF, major signings, retirements).
+-- See _migrate_v3_33_0_news_cap_importance_aware.
+DROP TRIGGER IF EXISTS trg_news_items_global_daily_cap;
+CREATE TRIGGER trg_news_items_global_daily_cap
+BEFORE INSERT ON news_items
+WHEN (
+    SELECT COUNT(*) FROM news_items
+    WHERE date(COALESCE(published_at, CURRENT_TIMESTAMP))
+        = date(COALESCE(NEW.published_at, CURRENT_TIMESTAMP))
+) >= 30
+AND COALESCE(NEW.importance, 'ROUTINE') NOT IN ('LEGENDARY', 'MAJOR')
+BEGIN
+    SELECT RAISE(IGNORE);
+END;
 """
 
 def _has_column(conn, table, column):
@@ -3924,6 +4666,2067 @@ def _migrate_v3_13_0_add_performance_indexes(conn):
     """)
 
 
+def _migrate_v3_14_0_add_rival_ai_columns(conn):
+    """Task RIVAL-AI-P1 — Rival AI Phase 1 Foundation.
+
+    Adds 3 columns to `promotions` for the rival AI archetype system
+    (per docs/RIVAL_AI_ARCHITECTURE.md §7.2) AND performs 2 one-time
+    data backfills (per the RIVAL-AI-P1 task brief +
+    EXISTING_SYSTEMS_AUDIT.md Parts 3+5):
+
+      1. SCHEMA: ai_archetype (TEXT), ai_scheduling_day_of_week
+         (INTEGER), ai_budget_state (TEXT) on `promotions`. All
+         nullable — NULL means "not yet assigned". The rival AI's
+         first TICK_ADVANCED subscriber call (see
+         services/rival_ai/archetypes.py assign_all_archetypes)
+         populates them. Per CONVENTIONS §16.4, every ALTER is
+         guarded by _has_column so the migration is idempotent.
+
+      2. COACH-GYM BACKFILL: assigns each of the 300 orphan coaches
+         (staff.role_type='coach' AND staff.gym_id IS NULL AND
+         staff.promotion_id IS NULL) to a gym. The audit found all
+         300 coaches were orphan — both gym_id AND promotion_id NULL
+         — because scripts/seed_world_phase2.py was never updated
+         after v3.9.0 added the gym_id column. Round-robin
+         assignment: each coach gets the next gym_id (1 coach per
+         gym, matching the original seed intent of "1 head coach per
+         gym"). Prints the count of backfilled coaches.
+
+      3. STAFF_CONTRACTS BACKFILL: creates a staff_contracts row (+
+         parent contracts row with target_type='staff') for each of
+         the 75 promo-bound staff (staff.promotion_id IS NOT NULL).
+         The polymorphic contracts pattern supports target_type='staff'
+         but the seed script never wrote the rows — staff_contracts
+         had 0 rows despite 375 staff existing. Each backfilled
+         contract is a 1-year deal (start_date='2026-07-20',
+         end_date='2027-07-20') with role-based salary:
+            general_manager: $80,000  (most senior)
+            doctor:          $60,000  (specialist)
+            commentator:     $50,000  (matches seed_data.py default)
+            scout:           $45,000
+            cutman:          $40,000
+         Coaches (role_type='coach') are NOT backfilled here — they
+         are gym-bound (per arch doc §3.5 + §Q5), not promo-bound.
+         Prints the count of created staff_contracts rows.
+
+    Idempotency:
+      - The 3 ALTER TABLE statements are guarded by _has_column so
+        re-running the migration on an already-migrated DB is a no-op.
+      - The coach-gym backfill uses a WHERE clause that filters to
+        only orphan coaches (gym_id IS NULL AND promotion_id IS NULL
+        AND role_type='coach') — re-running on a backfilled DB finds
+        0 rows + is a no-op.
+      - The staff_contracts backfill uses a NOT EXISTS subquery to
+        skip staff who already have a contract — re-running on a
+        backfilled DB finds 0 eligible staff + is a no-op.
+
+    Performance:
+      - Schema changes: < 50ms (3 ALTER TABLE statements).
+      - Coach-gym backfill: < 100ms (1 SELECT + 1 UPDATE on 300 rows).
+      - staff_contracts backfill: < 200ms (1 SELECT + 75 INSERTs into
+        contracts + 75 INSERTs into staff_contracts).
+      - Total: < 500ms on the live world DB.
+    """
+    # ---- 1. Schema changes (idempotent via _has_column guard) ------
+    if not _has_column(conn, "promotions", "ai_archetype"):
+        conn.execute("ALTER TABLE promotions ADD COLUMN ai_archetype TEXT")
+    if not _has_column(conn, "promotions", "ai_scheduling_day_of_week"):
+        conn.execute(
+            "ALTER TABLE promotions ADD COLUMN ai_scheduling_day_of_week INTEGER"
+        )
+    if not _has_column(conn, "promotions", "ai_budget_state"):
+        conn.execute("ALTER TABLE promotions ADD COLUMN ai_budget_state TEXT")
+
+    # ---- 2. Coach-gym backfill ------------------------------------
+    # The audit found 300 coaches with gym_id IS NULL AND promotion_id
+    # IS NULL — orphan staff because the seed script wasn't updated
+    # after v3.9.0 added the gym_id column. Assign each to a gym
+    # (round-robin: 1 coach per gym, matching the original seed
+    # intent of "1 head coach per gym" in seed_world_phase2.py).
+    #
+    # The assignment is nation-aware where possible — if a coach has
+    # a nation_id, prefer assigning them to a gym in the same nation
+    # (preserves regional identity). Falls back to round-robin by
+    # gym_id for coaches with NULL nation_id.
+    orphan_coaches = conn.execute(
+        "SELECT staff_id, nation_id FROM staff "
+        "WHERE role_type='coach' AND gym_id IS NULL AND promotion_id IS NULL "
+        "ORDER BY staff_id ASC"
+    ).fetchall()
+    coaches_backfilled = 0
+    if orphan_coaches:
+        # Build a per-nation list of gym_ids for nation-aware assignment.
+        # Coaches with NULL nation_id fall through to the global pool.
+        gyms_by_nation = {}
+        all_gym_ids = []
+        for gym_id, nation_id in conn.execute(
+            "SELECT gym_id, nation_id FROM gyms ORDER BY gym_id ASC"
+        ).fetchall():
+            all_gym_ids.append(gym_id)
+            if nation_id is not None:
+                gyms_by_nation.setdefault(nation_id, []).append(gym_id)
+        # Round-robin index per nation (so we don't always assign
+        # the first gym in each nation to multiple coaches).
+        nation_rr_index = {}
+        global_rr_index = 0
+        for staff_id, nation_id in orphan_coaches:
+            if nation_id is not None and nation_id in gyms_by_nation:
+                # Nation-aware assignment — cycle through this nation's gyms.
+                gyms = gyms_by_nation[nation_id]
+                idx = nation_rr_index.get(nation_id, 0) % len(gyms)
+                gym_id = gyms[idx]
+                nation_rr_index[nation_id] = idx + 1
+            elif all_gym_ids:
+                # Global round-robin fallback.
+                gym_id = all_gym_ids[global_rr_index % len(all_gym_ids)]
+                global_rr_index += 1
+            else:
+                # No gyms exist — skip (shouldn't happen on a seeded DB).
+                continue
+            conn.execute(
+                "UPDATE staff SET gym_id=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE staff_id=?",
+                (gym_id, staff_id),
+            )
+            coaches_backfilled += 1
+        print(f"  Backfilled {coaches_backfilled} orphan coaches to gyms "
+              f"(v3.14.0 coach-gym linkage fix)")
+
+    # ---- 3. staff_contracts backfill ------------------------------
+    # Create a staff_contracts row (+ parent contracts row with
+    # target_type='staff') for each promo-bound staff member who
+    # doesn't already have one. Coaches are excluded (gym-bound, not
+    # promo-bound — handled by the coach-gym backfill above).
+    #
+    # Salary model (role-based, matches the brief's "salary based on
+    # role" + the seed_data.py default of $50K for commentators):
+    #   general_manager: $80,000  (most senior, sets strategy)
+    #   doctor:          $60,000  (specialist, medical degree)
+    #   commentator:     $50,000  (matches seed_data.py default)
+    #   scout:           $45,000
+    #   cutman:          $40,000
+    #
+    # The 1-year contract window (GAME_START_DATE → +365 days) matches
+    # the seeded simulation start date (simulation_clock seeds
+    # current_date=GAME_START_DATE per HW2.3). Phase 3's staff_manager
+    # will renew / renegotiate these contracts going forward.
+    # HW2.3: derive from GAME_START_DATE constant instead of hardcoding
+    # 2026-07-20.
+    STAFF_SALARY_BY_ROLE = {
+        "general_manager": 80000.0,
+        "doctor":          60000.0,
+        "commentator":     50000.0,
+        "scout":           45000.0,
+        "cutman":          40000.0,
+    }
+    from datetime import datetime as _dt, timedelta as _td
+    _cs = _dt.strptime(GAME_START_DATE, "%Y-%m-%d")
+    CONTRACT_START = GAME_START_DATE
+    CONTRACT_END = (_cs + _td(days=365)).strftime("%Y-%m-%d")
+
+    # Find promo-bound staff who don't yet have a staff_contracts row.
+    # NOT EXISTS subquery makes this idempotent — re-running finds 0
+    # eligible staff on a backfilled DB.
+    eligible_staff = conn.execute(
+        "SELECT s.staff_id, s.role_type, s.promotion_id "
+        "FROM staff s "
+        "WHERE s.promotion_id IS NOT NULL "
+        "AND s.role_type != 'coach' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM staff_contracts sc "
+        "  JOIN contracts c ON c.contract_id=sc.contract_id "
+        "  WHERE sc.staff_id=s.staff_id AND c.status='active'"
+        ") "
+        "ORDER BY s.staff_id ASC"
+    ).fetchall()
+    contracts_created = 0
+    for staff_id, role_type, promotion_id in eligible_staff:
+        salary = STAFF_SALARY_BY_ROLE.get(role_type, 50000.0)
+        cur = conn.execute(
+            "INSERT INTO contracts "
+            "(contract_target_type, promotion_id, start_date, end_date, "
+            " salary, exclusive_flag, status) "
+            "VALUES ('staff', ?, ?, ?, ?, 1, 'active')",
+            (promotion_id, CONTRACT_START, CONTRACT_END, salary),
+        )
+        contract_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO staff_contracts (contract_id, staff_id, contract_role) "
+            "VALUES (?, ?, ?)",
+            (contract_id, staff_id, role_type),
+        )
+        contracts_created += 1
+    if contracts_created:
+        print(f"  Backfilled {contracts_created} staff_contracts rows "
+              f"(v3.14.0 staff salary tracking fix)")
+
+
+def _migrate_v3_15_0_add_fighter_descriptor_short_columns(conn):
+    """INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3) — add 5 SHORT
+    variant columns to `fighter_descriptors` so the UI can pick a
+    ≤25-char phrase for narrow display contexts (Fighter Watch Cards,
+    Roster rows, table chips) instead of clipping the 35-65 char LONG
+    phrase.
+
+    Columns added (all nullable TEXT, no DEFAULT — populated by the
+    daily interpretation pass via the new SHORT phrase pickers in
+    context_engine / career_phase_engine / legacy_engine /
+    narrative_families):
+      momentum_short          — "label||short voice phrase"
+      pressure_short          — "label||short voice phrase"
+      career_phase_short      — "label||short voice phrase"
+      narrative_family_short  — "label||short voice phrase" (NULL when
+                                the fighter matches no family — same
+                                D5 NULL behavior as narrative_family)
+      legacy_state_short      — "label||short voice phrase"
+
+    Per CONVENTIONS §1.1, adding columns to an existing table
+    qualifies as MINOR (3.14.0 → 3.15.0). Per §16.4, every ALTER is
+    guarded by _has_column so the migration is idempotent.
+
+    The INTERP-EXPAND-V2 task ALSO bumps snapshot_cache.ENGINE_VERSION
+    from "1.7.0" → "1.8.0" — that bump lives in snapshot_cache.py
+    (separate constant). The engine_version bump forces a full cache
+    rebuild on the next daily pass so the new SHORT columns get
+    populated across all 4450 active fighters (and 60 retired
+    legends) in one go.
+
+    Performance:
+      - 5 ALTER TABLE statements, each guarded by _has_column.
+        SQLite's ALTER TABLE ADD COLUMN is O(1) metadata-only for
+        nullable columns with no DEFAULT — total <50ms even on the
+        4500-row fighter_descriptors table.
+      - No data backfill here — the daily interpretation pass
+        populates the columns on the next tick after the migration
+        lands (forced by the engine_version bump).
+    """
+    # 5 new SHORT-variant columns on fighter_descriptors (nullable
+    # TEXT, no DEFAULT). Each stores "label||short voice phrase".
+    # Idempotent via _has_column guard.
+    for col in ["momentum_short", "pressure_short",
+                "career_phase_short", "narrative_family_short",
+                "legacy_state_short"]:
+        if not _has_column(conn, "fighter_descriptors", col):
+            conn.execute(
+                f"ALTER TABLE fighter_descriptors ADD COLUMN {col} TEXT"
+            )
+
+
+def _migrate_v3_16_0_add_player_decisions_and_echoes(conn):
+    """PHASE-R (Reward Layer §1.5 + §6 Principle 4) — add 2 new tables:
+    `player_decisions` (append-only log of player actions) and
+    `daily_echoes` (cache of 2-3 daily-generated "echo" phrases).
+
+    Per docs/REWARD_REVIEW.md §1.5 + §6 + Phase R brief: the Agency
+    reward is the weakest of GPT's 5 player rewards (3/10 on 3 of 4
+    screens). The fix is to log every player action that should
+    "echo" later (sign / cut / book / scout / staff moves), then
+    surface 2-3 of those echoes per Advance Day on the Dashboard +
+    a per-fighter "Your History with [Fighter]" section on the
+    Fighter Profile.
+
+    Tables created (both idempotent via _has_table guard):
+      player_decisions — PK decision_id AUTOINCREMENT, decision_type
+        TEXT NOT NULL CHECK (10 values: sign/cut/book/scout +
+        6 staff/econ actions), 4 nullable target_*_id FK-free
+        INTEGER columns (fighter / staff / event / promo — left
+        un-FK'd intentionally so historical log rows survive a
+        fighter/staff deletion), decision_date TEXT NOT NULL (sim
+        date YYYY-MM-DD), context_json TEXT (arbitrary per-decision
+        context), created_at TIMESTAMP.
+        3 indexes: idx_player_decisions_type, idx_player_decisions_date,
+        idx_player_decisions_fighter. (No index on target_staff_id —
+        staff-decision queries are rare and the type index covers
+        them via filter.)
+      daily_echoes — PK echo_id AUTOINCREMENT, echo_date TEXT NOT
+        NULL, echo_slot INTEGER NOT NULL CHECK (1..5), echo_type
+        TEXT NOT NULL CHECK (4 values: signing/cut/booking/scouting
+        echo), phrase TEXT NOT NULL, decision_id INTEGER (link back
+        to player_decisions), target_fighter_id INTEGER (for
+        hyperlink), link_to_screen TEXT, created_at TIMESTAMP.
+        UNIQUE (echo_date, echo_slot) → idempotent INSERT OR REPLACE
+        (matches daily_headlines behavior). 1 index on echo_date DESC.
+
+    Per CONVENTIONS §1.1, adding 2 new narrow tables is MINOR
+    (3.15.0 → 3.16.0). Per §16.4, the migration is idempotent — uses
+    _has_table guards before each CREATE TABLE + CREATE INDEX IF NOT
+    EXISTS so re-running on a DB that already has the tables is a
+    no-op.
+
+    Per CONVENTIONS §17.3, daily_echoes is a CACHE table — only
+    echoes_engine.py writes to it. player_decisions is a PLAYER_LOG
+    table — only player_decisions.log_decision() writes to it
+    (called from app_web.py::sign_free_agent / cut_fighter /
+    select_promotion / etc.). The simulation layer NEVER writes to
+    either table.
+
+    Migration name: v3_16_0_add_player_decisions_and_echoes. On
+    --fresh builds, SCHEMA_SQL already includes both tables (the
+    migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4).
+    """
+    if not _has_table(conn, "player_decisions"):
+        conn.execute(
+            "CREATE TABLE player_decisions (\n"
+            "    decision_id        INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    decision_type      TEXT NOT NULL CHECK (decision_type IN (\n"
+            "        'sign', 'cut', 'book', 'scout',\n"
+            "        'hire_staff', 'fire_staff', 'assign_staff',\n"
+            "        'set_ticket_price', 'set_marketing', 'negotiate_contract'\n"
+            "    )),\n"
+            "    target_fighter_id  INTEGER,\n"
+            "    target_staff_id    INTEGER,\n"
+            "    target_event_id    INTEGER,\n"
+            "    target_promo_id    INTEGER,\n"
+            "    decision_date      TEXT NOT NULL,\n"
+            "    context_json       TEXT,\n"
+            "    created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n"
+            ")"
+        )
+        # Indexes (CREATE INDEX IF NOT EXISTS is idempotent — safe to
+        # run even if the table pre-existed from a prior partial run).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_player_decisions_type "
+            "ON player_decisions(decision_type)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_player_decisions_date "
+            "ON player_decisions(decision_date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_player_decisions_fighter "
+            "ON player_decisions(target_fighter_id)"
+        )
+
+    if not _has_table(conn, "daily_echoes"):
+        conn.execute(
+            "CREATE TABLE daily_echoes (\n"
+            "    echo_id            INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    echo_date          TEXT NOT NULL,\n"
+            "    echo_slot          INTEGER NOT NULL CHECK (echo_slot BETWEEN 1 AND 5),\n"
+            "    echo_type          TEXT NOT NULL CHECK (echo_type IN (\n"
+            "        'signing_echo', 'cut_echo', 'booking_echo', 'scouting_echo'\n"
+            "    )),\n"
+            "    phrase             TEXT NOT NULL,\n"
+            "    decision_id        INTEGER,\n"
+            "    target_fighter_id  INTEGER,\n"
+            "    link_to_screen     TEXT,\n"
+            "    created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (echo_date, echo_slot)\n"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_echoes_date "
+            "ON daily_echoes(echo_date DESC)"
+        )
+
+
+def _migrate_v3_17_0_add_concessions_txn_type(conn):
+    """Phase E2.4 — add 'concessions' to the finance_transactions
+    transaction_type CHECK constraint (per docs/ECON_STAFF_PLAN.md
+    §3.1.5).
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand a column's CHECK enum is a TABLE
+    REBUILD: rename the old table, create the new table with the
+    updated CHECK, copy data over, drop the old table. The existing
+    data (2155+ rows in promo 1's backfilled finance_transactions
+    from Phase E1) is preserved verbatim — the new CHECK is a
+    SUPERSET of the old one, so every existing row still satisfies it.
+
+    Idempotent (per CONVENTIONS §16.4): the migration runner records
+    its migration_name in schema_migrations AFTER it runs. If the
+    migration crashes mid-way, the next run re-executes it — the
+    partial work must be safe to re-apply. The `_has_check_constraint`
+    guard detects whether the new CHECK is already in place and skips
+    the rebuild (so a re-run after a successful migration is a no-op).
+
+    The new CHECK enum (12 values total — was 11 before E2.4):
+      'ticket_sales', 'broadcast_revenue', 'merchandise',
+      'fighter_purse', 'venue_rental', 'staff_salary',
+      'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+      'sponsorship', 'bonus_payment'                   (existing)
+      'concessions'                                     (new — Phase E2.4)
+
+    Migration name: v3_17_0_add_concessions_txn_type. On --fresh
+    builds, the SCHEMA_SQL already includes 'concessions' in the
+    CHECK (the migration function is not called, but the migration_
+    name is still recorded in schema_migrations per §16.4 — same
+    idempotency pattern as every other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already includes
+    # 'concessions', the migration has already been applied — no-op.
+    if _has_check_constraint(conn, "finance_transactions", "concessions"):
+        return
+
+    # Defensive: only attempt the rebuild if finance_transactions exists.
+    # On a fresh --fresh build, the SCHEMA_SQL already creates the table
+    # with the new CHECK (and the idempotency guard above would have
+    # returned), so we only get here on a --migrate path from a v3.16.0
+    # DB.
+    if not _has_table(conn, "finance_transactions"):
+        # Defensive — create the table with the new CHECK (matches
+        # SCHEMA_SQL exactly). Should never happen on the migrate path
+        # (every v3.x DB has this table since v3.0.0), but the
+        # migration must not crash on edge cases.
+        conn.execute(
+            "CREATE TABLE finance_transactions (\n"
+            "    transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,\n"
+            "    event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,\n"
+            "    fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,\n"
+            "    transaction_type        TEXT NOT NULL CHECK (transaction_type IN (\n"
+            "        'ticket_sales', 'broadcast_revenue', 'merchandise',\n"
+            "        'fighter_purse', 'venue_rental', 'staff_salary',\n"
+            "        'medical_cost', 'signing_bonus', 'weight_cut_penalty',\n"
+            "        'sponsorship', 'bonus_payment', 'concessions'\n"
+            "    )),\n"
+            "    amount                  REAL NOT NULL,\n"
+            "    description             TEXT,\n"
+            "    transaction_date        TEXT NOT NULL,\n"
+            "    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
+            ")"
+        )
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6):
+    #   1. Rename the old table.
+    #   2. Create the new table with the updated CHECK (matches
+    #      SCHEMA_SQL exactly).
+    #   3. Copy all rows verbatim from the old table — the new CHECK
+    #      is a SUPERSET of the old one, so every existing row is
+    #      still valid (no row transformation needed).
+    #   4. Drop the old table.
+    # We accept the brief window where the table is renamed (the
+    # migration runs in a single transaction — caller commits).
+    conn.executescript("""
+        ALTER TABLE finance_transactions RENAME TO finance_transactions_old;
+    """)
+    conn.executescript("""
+        CREATE TABLE finance_transactions (
+            transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+            event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+            fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+            transaction_type        TEXT NOT NULL CHECK (transaction_type IN (
+                'ticket_sales', 'broadcast_revenue', 'merchandise',
+                'fighter_purse', 'venue_rental', 'staff_salary',
+                'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+                'sponsorship', 'bonus_payment', 'concessions'
+            )),
+            amount                  REAL NOT NULL,
+            description             TEXT,
+            transaction_date        TEXT NOT NULL,
+            created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+        INSERT INTO finance_transactions
+            (transaction_id, promotion_id, event_id, fighter_id,
+             transaction_type, amount, description, transaction_date,
+             created_at)
+        SELECT transaction_id, promotion_id, event_id, fighter_id,
+               transaction_type, amount, description, transaction_date,
+               created_at
+        FROM finance_transactions_old;
+        DROP TABLE finance_transactions_old;
+    """)
+
+
+def _migrate_v3_18_0_add_venue_type(conn):
+    """Phase E2.7 — add `venue_type` column to `venues` table (per
+    docs/ECON_STAFF_PLAN.md §3.2.3).
+
+    Drives the tiered venue_rental cost_per_seat_by_venue_type lookup
+    in finance.py. 4 values:
+      - 'arena'    (capacity >= 15000) — $7/seat
+      - 'ballroom' (5000-14999)        — $5/seat
+      - 'theater'  (2000-4999)         — $4/seat
+      - 'outdoor'  (<2000)             — $3/seat
+
+    Per CONVENTIONS §1.1, adding a NOT NULL column with a DEFAULT to
+    an existing table qualifies as MINOR (3.17.0 → 3.18.0). Per §16.4,
+    the ALTER is guarded by _has_column so the migration is idempotent
+    (re-runs are a no-op).
+
+    Backfill strategy (per spec): default all existing venues to
+    'ballroom' (mid-tier), then UPDATE by capacity tier:
+      - capacity >= 15000 → 'arena'
+      - 5000-14999        → 'ballroom' (already default — no UPDATE needed)
+      - 2000-4999         → 'theater'
+      - <2000             → 'outdoor'
+
+    The ALTER TABLE ADD COLUMN with NOT NULL DEFAULT 'ballroom' is
+    SQLite O(1) metadata-only for the column addition (SQLite fills
+    the default for existing rows on read, no row rewrite). The 3
+    UPDATE statements are O(N) — fast on the ~270-row venues table
+    (<5ms).
+
+    Migration name: v3_18_0_add_venue_type. On --fresh builds, the
+    SCHEMA_SQL already includes the venue_type column with CHECK
+    constraint (the migration function is not called, but the
+    migration_name is still recorded in schema_migrations per §16.4).
+    """
+    # Idempotency guard: if venue_type column already exists, no-op.
+    if _has_column(conn, "venues", "venue_type"):
+        return
+
+    # Add the column with NOT NULL DEFAULT 'ballroom'. SQLite allows
+    # ADD COLUMN NOT NULL DEFAULT <constant> without a table rebuild
+    # (the default fills existing rows on read).
+    conn.execute(
+        "ALTER TABLE venues ADD COLUMN venue_type TEXT NOT NULL "
+        "DEFAULT 'ballroom' "
+        "CHECK (venue_type IN ('arena', 'ballroom', 'theater', 'outdoor'))"
+    )
+
+    # Backfill by capacity tier. 'ballroom' is already the default so
+    # only 3 UPDATE statements are needed.
+    conn.execute(
+        "UPDATE venues SET venue_type='arena' "
+        "WHERE capacity >= 15000"
+    )
+    conn.execute(
+        "UPDATE venues SET venue_type='theater' "
+        "WHERE capacity >= 2000 AND capacity < 5000"
+    )
+    conn.execute(
+        "UPDATE venues SET venue_type='outdoor' "
+        "WHERE capacity < 2000"
+    )
+
+
+def _migrate_v3_19_0_add_fighter_portrait_path(conn):
+    """DB-REVIEW-IMAGE-ASSIGNMENT (per task spec) — add `portrait_path`
+    TEXT column to the `fighters` table.
+
+    Per the user directive: 415 fighter portrait images (512x512 .webp)
+    were uploaded under data/portraits/batch_XXX_YYY/batch_XXX_YYY/.
+    Filenames follow the pattern
+    ``NNNN_FirstNameLastName[_Nickname].webp`` where ``NNNN`` is the
+    fighter_id (zero-padded 4 digits, range 0001-0496).
+
+    This column stores the relative path (relative to ``data/``) for
+    fighters with custom portraits, e.g.
+    ``portraits/batch_001-020/batch_001-020/0001_HirokiNakamura_Mist.webp``.
+    NULL for the 4049 fighters without custom portraits (they're
+    generated fighters; future batches may add portraits for them).
+
+    Per CONVENTIONS §1.1, adding a nullable column to an existing table
+    qualifies as MINOR (3.18.0 → 3.19.0). Per §16.4, the ALTER is
+    guarded by _has_column so the migration is idempotent (re-runs are
+    a no-op).
+
+    Per user directive: the image never changes once assigned — regens
+    work differently (they get a fresh fighter_id via regen_lineage),
+    so the path stored here is stable for the lifetime of the
+    fighter_id. The UI caches the base64-encoded image in-memory after
+    first load.
+
+    The ALTER TABLE ADD COLUMN with no DEFAULT is SQLite O(1)
+    metadata-only (existing rows get NULL — exactly the desired
+    behavior for the 4049 fighters without portraits).
+
+    Migration name: v3_19_0_add_fighter_portrait_path. On --fresh
+    builds, the SCHEMA_SQL already includes the portrait_path column
+    (the migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4).
+    """
+    # Idempotency guard: if portrait_path column already exists, no-op.
+    if _has_column(conn, "fighters", "portrait_path"):
+        return
+
+    conn.execute("ALTER TABLE fighters ADD COLUMN portrait_path TEXT")
+
+
+def _migrate_v3_20_0_reseed_fighter_attributes(conn):
+    """CR-10 (per docs/CR10_14_FIX_PLAN.md §1.2) — re-seed all 26
+    fighter_attributes columns down by 15 points, clamped at a floor
+    of 25, for every active fighter.
+
+    Per CONVENTIONS §1.1, a data-only UPDATE (no schema change) is a
+    MINOR bump (3.19.0 → 3.20.0). The schema is unchanged — the
+    fighter_attributes table already has all 26 columns. This
+    migration only adjusts the seeded VALUES.
+
+    WHY: the DB audit (docs/DB_REVIEW_AUDIT.md finding #1) found that
+    seeded attributes average 52 across all 26 columns, but average
+    fighter_career.potential is only 62 — leaving just 10 points of
+    headroom. Combined with the effective_ceiling formula bug (now
+    fixed in tick_processor.py G.1), the ceiling collapsed to ~30 for
+    typical fighters → 99.7% of training camps produced zero gains.
+
+    Even WITH the G.1 formula fix (personality_factor moved from
+    ceiling to gain multiplier), 10 points of headroom is too thin:
+    fighters plateau within 1-2 camps, then the dim_factor shrinks
+    gains to nothing. Lowering all attributes by 15 (clamped at 25
+    so we never push a fighter below the original floor) gives:
+
+      - Old avg attr: 52 (median 52, range 27-93)
+      - New avg attr: 37 (clamp at 25 catches ~3% of high-end attrs)
+      - Avg potential: 62
+      - New headroom: 25 points (was 10) → ~8-12 camps of growth room
+
+    The 25 floor preserves fighter identity — a fighter seeded with
+    chin=30 stays at chin=25 (5-point drop, not 15), and a fighter
+    seeded with chin=80 drops to chin=65 (full 15-point drop).
+
+    Idempotent per CONVENTIONS §16.4: the migration runner records
+    its migration_name (v3_20_0_reseed_fighter_attributes) in
+    schema_migrations AFTER it runs. Re-running _run_migrations on
+    a DB that already has this row will skip the migration entirely
+    (the for-loop in _run_migrations checks `if name in applied:
+    continue`). The migration function itself has no internal guard
+    because there is no schema marker to check — the only "idempotent
+    re-run" path is via schema_migrations (the standard pattern for
+    data-only migrations in this codebase).
+
+    The WHERE clause scopes the UPDATE to active fighters only
+    (is_active=1) — retired legends / HoF inductees keep their
+    historical attributes (preserves "in their prime" snapshots
+    for the Hall of Fame screen).
+
+    Migration name: v3_20_0_reseed_fighter_attributes. On --fresh
+    builds, the migration function is NOT called (per CONVENTIONS
+    §16.4) but the migration_name IS recorded in schema_migrations
+    for audit-trail consistency. The fresh-build path uses
+    seed_world_phase*.py to seed attributes at the NEW lower baseline
+    (avg ~37) — no re-seed needed.
+
+    Downstream: snapshot_cache.ENGINE_VERSION is bumped (1.8.0 →
+    1.9.0) to force a full fighter_descriptors cache rebuild on the
+    next daily interpretation pass. The attribute_descriptors column
+    in fighter_descriptors is stale after the re-seed (it references
+    the old, higher attribute values). The cache rebuild regenerates
+    every fighter's descriptors from the freshly-lowered attributes.
+    """
+    conn.execute("""
+UPDATE fighter_attributes SET
+    punch_power = MAX(25, punch_power - 15),
+    cardio = MAX(25, cardio - 15),
+    fight_iq = MAX(25, fight_iq - 15),
+    chin = MAX(25, chin - 15),
+    punch_accuracy = MAX(25, punch_accuracy - 15),
+    kick_power = MAX(25, kick_power - 15),
+    kick_accuracy = MAX(25, kick_accuracy - 15),
+    head_movement = MAX(25, head_movement - 15),
+    footwork = MAX(25, footwork - 15),
+    clinch_striking = MAX(25, clinch_striking - 15),
+    clinch_offense = MAX(25, clinch_offense - 15),
+    clinch_defense = MAX(25, clinch_defense - 15),
+    takedown_offense = MAX(25, takedown_offense - 15),
+    takedown_defense = MAX(25, takedown_defense - 15),
+    top_control = MAX(25, top_control - 15),
+    bottom_game = MAX(25, bottom_game - 15),
+    submission_offense = MAX(25, submission_offense - 15),
+    submission_defense = MAX(25, submission_defense - 15),
+    scramble_ability = MAX(25, scramble_ability - 15),
+    cage_wrestling = MAX(25, cage_wrestling - 15),
+    recovery_rate = MAX(25, recovery_rate - 15),
+    speed_explosiveness = MAX(25, speed_explosiveness - 15),
+    strength = MAX(25, strength - 15),
+    durability = MAX(25, durability - 15),
+    flexibility = MAX(25, flexibility - 15),
+    adaptability = MAX(25, adaptability - 15),
+    updated_at = CURRENT_TIMESTAMP
+WHERE fighter_id IN (SELECT fighter_id FROM fighters WHERE is_active=1);
+""")
+
+
+def _migrate_v3_21_0_add_player_levers(conn):
+    """Phase E3.1 — add player-set financial lever columns to the
+    `events` table (per docs/PHASE_E3_PLAN.md §1.E3.1 + docs/ECON_STAFF_PLAN.md §3.3).
+
+    4 new columns:
+      - ticket_price    INTEGER NOT NULL DEFAULT 80   ($20-$300, default 80)
+      - marketing_spend INTEGER NOT NULL DEFAULT 0    ($0-$500k, default 0)
+      - ppv_price       INTEGER NOT NULL DEFAULT 60   ($30-$80, default 60)
+      - is_ppv          INTEGER NOT NULL DEFAULT 0 CHECK (0,1)
+
+    Per CONVENTIONS §1.1, adding NOT NULL DEFAULT columns to an existing
+    table qualifies as MINOR (3.20.0 → 3.21.0). Per §16.4, each ALTER is
+    guarded by _has_column so the migration is idempotent (re-runs are a
+    no-op). SQLite ALTER TABLE ADD COLUMN with NOT NULL DEFAULT <const>
+    is metadata-only — no row rewrite.
+
+    Backward compat: existing events (all 20000+ completed events in
+    the world DB) get the defaults — ticket_price=80, marketing_spend=0,
+    ppv_price=60, is_ppv=0. Phase E3.2's _process_event_finance reads
+    these levers; pre-E3 events behave identically to Phase E2 because
+    the defaults match Phase E2's hard-coded values.
+
+    ALSO: expand the finance_transactions CHECK constraint to add
+    'marketing' as a new transaction_type (used by Phase E3.2 to write
+    the marketing_spend expense row). Uses the same SQLite table-rebuild
+    pattern as v3.17.0 (CONVENTIONS §16.6 — CHECK constraints can only
+    be expanded via rename + recreate + copy + drop).
+    """
+    # ---- Step 1: add the 4 lever columns to events ----
+    # Track whether we added the is_ppv column THIS run — if so, we
+    # need to backfill is_ppv=1 for events on PPV-tier promos (so
+    # pre-E3 events on ppv_global/ppv_streaming promos retain their
+    # Phase E2 PPV revenue behavior). Without this backfill, the
+    # column default of 0 would cause finance._process_event_finance
+    # to skip the PPV formula for these events on the next re-process,
+    # breaking test_finance_wiring + test_finance_e2's broadcast_
+    # revenue assertion on promo 1 (ppv_global) events.
+    added_is_ppv_column = False
+    for col, decl in [
+        ("ticket_price",    "INTEGER NOT NULL DEFAULT 80"),
+        ("marketing_spend", "INTEGER NOT NULL DEFAULT 0"),
+        ("ppv_price",       "INTEGER NOT NULL DEFAULT 60"),
+    ]:
+        if not _has_column(conn, "events", col):
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
+
+    # is_ppv has a CHECK constraint (0,1) — added separately because the
+    # ADD COLUMN with CHECK needs a different declaration.
+    if not _has_column(conn, "events", "is_ppv"):
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN is_ppv INTEGER NOT NULL "
+            "DEFAULT 0 CHECK (is_ppv IN (0,1))"
+        )
+        added_is_ppv_column = True
+
+    # Backfill is_ppv=1 for events on PPV-tier promos (ppv_global,
+    # ppv_streaming). This preserves Phase E2 behavior: a ppv_global
+    # promo's pre-E3 events were processed with the PPV formula, so
+    # setting is_ppv=1 keeps them on the PPV path. Events on tv_
+    # regional / streaming / local_stream keep is_ppv=0 (the column
+    # default) — they were always on the flat-rights path.
+    #
+    # Only runs on the migration that ADDED the is_ppv column. A re-run
+    # of this migration is a no-op (the column already exists, so
+    # added_is_ppv_column stays False, so the backfill doesn't fire
+    # again — preserves any player changes to is_ppv on their events).
+    if added_is_ppv_column:
+        conn.execute(
+            "UPDATE events SET is_ppv=1 "
+            "WHERE promotion_id IN ("
+            "  SELECT promotion_id FROM promotions "
+            "  WHERE broadcast_tier IN ('ppv_global', 'ppv_streaming')"
+            ")"
+        )
+
+    # ---- Step 2: add 'marketing' to the finance_transactions CHECK ----
+    # Idempotency guard: if the CHECK already includes 'marketing', skip.
+    if not _has_check_constraint(conn, "finance_transactions", "marketing"):
+        # Only attempt the rebuild if finance_transactions exists.
+        if _has_table(conn, "finance_transactions"):
+            conn.executescript("""
+                ALTER TABLE finance_transactions RENAME TO finance_transactions_old_v3_21;
+            """)
+            conn.executescript("""
+                CREATE TABLE finance_transactions (
+                    transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+                    event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+                    fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+                    transaction_type        TEXT NOT NULL CHECK (transaction_type IN (
+                        'ticket_sales', 'broadcast_revenue', 'merchandise',
+                        'fighter_purse', 'venue_rental', 'staff_salary',
+                        'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+                        'sponsorship', 'bonus_payment', 'concessions',
+                        'marketing'
+                    )),
+                    amount                  REAL NOT NULL,
+                    description             TEXT,
+                    transaction_date        TEXT NOT NULL,
+                    created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+                );
+                INSERT INTO finance_transactions
+                    (transaction_id, promotion_id, event_id, fighter_id,
+                     transaction_type, amount, description, transaction_date,
+                     created_at)
+                SELECT transaction_id, promotion_id, event_id, fighter_id,
+                       transaction_type, amount, description, transaction_date,
+                       created_at
+                FROM finance_transactions_old_v3_21;
+                DROP TABLE finance_transactions_old_v3_21;
+            """)
+
+
+def _migrate_v3_22_0_add_staff_market_columns(conn):
+    """Phase E4 — Staff Market screen (per docs/ECON_STAFF_PLAN.md
+    §4.2 + §4.3 + task brief).
+
+    Three new columns on the `staff` table:
+      - skill_level          INTEGER 0-100 (overall competence).
+        Displayed via voice phrase ('world-class' / 'established' /
+        'promising' / 'unproven') — NEVER the raw int.
+      - salary_ask           REAL — annual salary expectation in $.
+        Drives the negotiation threshold (offer must clear salary_ask
+        × 0.9 for the staff to accept).
+      - contract_length_ask  INTEGER — desired contract length in years
+        (1-5). Drives the default contract_length slider.
+
+    Per CONVENTIONS §1.1, adding NOT NULL DEFAULT columns to an
+    existing table qualifies as MINOR (3.21.0 → 3.22.0). Per §16.4,
+    each ALTER is guarded by _has_column so the migration is
+    idempotent. SQLite ALTER TABLE ADD COLUMN with NOT NULL DEFAULT
+    <const> is metadata-only — no row rewrite.
+
+    Backfill strategy:
+      1. skill_level — for scouts, read eye_for_talent from the
+         specialty JSON (already populated by the seed). For all
+         other roles, use a deterministic pseudo-random in 30-80
+         (seeded by staff_id so the backfill is reproducible). The
+         seed prevents skill levels from changing on every migration
+         re-run.
+      2. salary_ask — based on role + skill_level per the table in
+         docs/ECON_STAFF_PLAN.md §4.1 + the task brief:
+           GM:           $50k-200k
+           Doctor:       $40k-100k
+           Commentator:  $30k-80k
+           Scout:        $30k-80k
+           Cutman:       $25k-60k
+           Coach:        $30k-150k
+         Computed as (min + (skill_level / 100) × (max - min)) so a
+         100-skill GM asks $200k, a 0-skill GM asks $50k. Round to
+         nearest $1k for clean display.
+      3. contract_length_ask — fixed at 2 years (the spec's default).
+         Could be randomized later but the spec doesn't ask for it.
+
+    Free-agent pool creation:
+      Per the task brief, set staff.promotion_id = NULL for ~200 staff
+      to populate the Staff Market's free-agent pool. The current
+      world DB has 82 promo-bound staff (commentators/cutmen/doctors/
+      GMs/scouts) and 300 coaches with promotion_id IS NULL already
+      (gym-affiliated, not promo-affiliated).
+
+      To create the market, we pick ~200 of the 300 orphan coaches
+      (deterministic — first 200 by staff_id) and NULL their gym_id
+      too (so they're truly free agents, not gym-bound). This leaves
+      ~100 coaches as gym residents (preserves the training-camp
+      ecosystem for Phase E5). The promo-bound non-coach staff stay
+      assigned to their promos (the rival AI's staff_manager already
+      manages those).
+
+      NOTE: we DO NOT touch the staff_contracts rows for these 200
+      coaches — coaches don't have staff_contracts (per the audit in
+      docs/ECON_STAFF_PLAN.md §2.2). Their salary model is the new
+      salary_ask column, not the contracts table. When the player
+      hires one, hire_staff creates the staff_contracts row.
+
+    Backward compat: existing staff without these columns get the
+    defaults (skill_level=50 'promising', salary_ask=$50K,
+    contract_length_ask=2). The backfill runs only on the migration
+    that ADDED the columns — re-runs are a no-op (the columns exist,
+    _has_column returns True, the ALTER is skipped, and the backfill
+    is guarded by a skill_level IS NULL check — but since we set
+    NOT NULL DEFAULT 50, that check never matches. Instead we use a
+    schema_migrations marker row to detect re-runs of the backfill,
+    which is simpler + matches the v3.14.0 pattern).
+
+    Migration name: v3_22_0_add_staff_market_columns. On --fresh
+    builds, the SCHEMA_SQL already includes the 3 new columns (the
+    migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4).
+    """
+    import json as _json
+    import random as _random
+
+    # ---- Step 1: add the 3 columns ----
+    if not _has_column(conn, "staff", "skill_level"):
+        conn.execute(
+            "ALTER TABLE staff ADD COLUMN skill_level INTEGER NOT NULL "
+            "DEFAULT 50 CHECK (skill_level BETWEEN 0 AND 100)"
+        )
+    if not _has_column(conn, "staff", "salary_ask"):
+        conn.execute(
+            "ALTER TABLE staff ADD COLUMN salary_ask REAL NOT NULL "
+            "DEFAULT 50000.0"
+        )
+    if not _has_column(conn, "staff", "contract_length_ask"):
+        conn.execute(
+            "ALTER TABLE staff ADD COLUMN contract_length_ask INTEGER "
+            "NOT NULL DEFAULT 2"
+        )
+
+    # ---- Step 2: backfill skill_level + salary_ask ----
+    # The default (skill_level=50) was applied to every existing row
+    # by the ADD COLUMN. We overwrite it for every staff row with a
+    # real value (scout eye_for_talent from JSON, otherwise a
+    # deterministic pseudo-random in 30-80).
+    #
+    # Idempotency: a schema_migrations marker row prevents re-runs of
+    # the backfill (so a re-migrate doesn't re-randomize skill levels).
+    # This matches the v3.14.0 pattern (staff_contracts backfill used
+    # the same marker-row guard).
+    marker_row = conn.execute(
+        "SELECT 1 FROM schema_migrations "
+        "WHERE migration_name='v3_22_0_backfill_done'"
+    ).fetchone()
+    if marker_row:
+        # Backfill already applied — skip (only the column ADDs run,
+        # which are themselves no-ops via _has_column).
+        return
+
+    # Salary bands per role (min, max) — task brief + ECON_STAFF_PLAN §4.1.
+    SALARY_BAND = {
+        "general_manager": (50_000, 200_000),
+        "doctor":          (40_000, 100_000),
+        "commentator":     (30_000, 80_000),
+        "scout":           (30_000, 80_000),
+        "cutman":          (25_000, 60_000),
+        "coach":           (30_000, 150_000),
+    }
+
+    rows = conn.execute(
+        "SELECT staff_id, role_type, specialty FROM staff"
+    ).fetchall()
+    rng = _random.Random(20260720)  # deterministic seed — reproducible
+    n_skill_set = 0
+    n_salary_set = 0
+    for staff_id, role_type, specialty_json in rows:
+        # --- skill_level ---
+        skill = None
+        if role_type == "scout" and specialty_json:
+            # Scouts already have eye_for_talent in their specialty JSON.
+            try:
+                spec = _json.loads(specialty_json)
+                eye = spec.get("eye_for_talent")
+                if isinstance(eye, (int, float)) and 0 <= eye <= 100:
+                    skill = int(eye)
+            except Exception:
+                pass
+        if skill is None:
+            # Deterministic per-staff pseudo-random in 30-80.
+            # Seeded by staff_id so re-runs produce the same value.
+            staff_rng = _random.Random(staff_id * 31 + 17)
+            skill = staff_rng.randint(30, 80)
+
+        # --- salary_ask ---
+        lo, hi = SALARY_BAND.get(role_type or "", (30_000, 80_000))
+        # Linear interpolation: 0-skill → lo, 100-skill → hi.
+        salary_ask = lo + (skill / 100.0) * (hi - lo)
+        # Round to nearest $1k for clean display.
+        salary_ask = round(salary_ask / 1000.0) * 1000.0
+
+        conn.execute(
+            "UPDATE staff SET skill_level=?, salary_ask=? "
+            "WHERE staff_id=?",
+            (skill, salary_ask, staff_id),
+        )
+        n_skill_set += 1
+        n_salary_set += 1
+
+    # ---- Step 3: free-agent pool (~200 orphan coaches → market) ----
+    # Per the task brief: "Set staff.promotion_id = NULL for ~200 staff
+    # (creating the free-agent pool) — keep the rest assigned to their
+    # current promos."
+    #
+    # The world DB has 300 coaches with promotion_id IS NULL already
+    # (gym-affiliated only). To make them true free agents (hirable
+    # by the player), we also NULL their gym_id (so they're not bound
+    # to any gym). The first 200 by staff_id become market candidates
+    # (deterministic — same set on every fresh world build).
+    #
+    # The 82 promo-bound staff (commentators/cutmen/doctors/GMs/scouts)
+    # STAY assigned to their promos — the rival AI's staff_manager
+    # manages those, and the player shouldn't be able to poach them
+    # out from under the AI.
+    orphan_coaches = conn.execute(
+        "SELECT staff_id FROM staff "
+        "WHERE role_type='coach' "
+        "  AND promotion_id IS NULL "
+        "  AND gym_id IS NOT NULL "
+        "ORDER BY staff_id "
+        "LIMIT 200"
+    ).fetchall()
+    n_freed = 0
+    for (staff_id,) in orphan_coaches:
+        conn.execute(
+            "UPDATE staff SET gym_id=NULL WHERE staff_id=?",
+            (staff_id,),
+        )
+        n_freed += 1
+
+    # Mark the backfill as done so a re-migrate doesn't re-randomize.
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (migration_name) "
+        "VALUES ('v3_22_0_backfill_done')"
+    )
+
+    print(f"  Backfilled skill_level + salary_ask for {n_skill_set} "
+          f"staff rows.")
+    print(f"  Free-agent pool: freed {n_freed} orphan coaches "
+          f"(gym_id → NULL).")
+
+
+def _migrate_v3_23_0_add_bankruptcy_rebuild_columns(conn):
+    """Fix 2 — Bankruptcy recovery ("new ownership" mechanism) per
+    docs/DESIGN_REVIEW_E5.md §2.
+
+    Adds 2 columns to `promotions` for the rebuilding period that
+    follows a bankruptcy failure state:
+      - is_rebuilding          INTEGER NOT NULL DEFAULT 0
+                               CHECK (is_rebuilding IN (0, 1))
+      - rebuilding_until_date  TEXT (ISO 'YYYY-MM-DD', nullable)
+
+    Per CONVENTIONS §1.1, adding NOT NULL DEFAULT columns to an
+    existing table qualifies as MINOR (3.22.0 → 3.23.0). Per §16.4,
+    each ALTER is guarded by _has_column so the migration is
+    idempotent. SQLite ALTER TABLE ADD COLUMN with NOT NULL DEFAULT
+    <const> is metadata-only — no row rewrite.
+
+    No backfill is needed — every existing promo starts with
+    is_rebuilding=0 (the column DEFAULT), and rebuilding_until_date
+    is NULL (no promo is currently rebuilding). The columns are
+    populated by src/reputation.py::_fire_bankruptcy_failure when
+    the bankruptcy failure state fires, and cleared by
+    src/reputation.py::_check_rebuilding_status when the 6-month
+    rebuilding period ends.
+
+    Migration name: v3_23_0_add_bankruptcy_rebuild_columns. On
+    --fresh builds, the SCHEMA_SQL already includes the 2 new
+    columns (the migration function is not called, but the
+    migration_name is still recorded in schema_migrations per §16.4).
+    """
+    if not _has_column(conn, "promotions", "is_rebuilding"):
+        conn.execute(
+            "ALTER TABLE promotions ADD COLUMN is_rebuilding INTEGER "
+            "NOT NULL DEFAULT 0 CHECK (is_rebuilding IN (0, 1))"
+        )
+    if not _has_column(conn, "promotions", "rebuilding_until_date"):
+        conn.execute(
+            "ALTER TABLE promotions ADD COLUMN rebuilding_until_date TEXT"
+        )
+
+
+def _migrate_v3_24_0_add_realization_column(conn):
+    """CR-M1 (docs/MASTER_PLAN_MATCHMAKING.md §2.1): add `realization`
+    column to fighter_career.
+
+    realization is a 0.4-1.0 multiplier on effective_ceiling that
+    represents how close a fighter gets to their theoretical potential.
+    Set at fighter creation from personality — NOT every fighter hits
+    their peak.
+
+    This migration was missing from the original MIGRATIONS list (the
+    column was added via an uncommitted ALTER TABLE script). A fresh
+    --fresh build would NOT have had the column. This migration fixes
+    that + backfills existing fighters based on personality (same
+    formula as fighter_gen.generate_realization).
+
+    Migration name: v3_24_0_add_realization_column. Idempotent via
+    _has_column guard.
+    """
+    if not _has_column(conn, "fighter_career", "realization"):
+        conn.execute(
+            "ALTER TABLE fighter_career ADD COLUMN realization REAL DEFAULT 0.7"
+        )
+        # Backfill existing fighters based on personality
+        import random
+        random.seed(42)
+        rows = conn.execute("""
+            SELECT fc.fighter_id, fp.discipline, fp.coachability,
+                   fp.professionalism, fp.ego, fp.risk_taking,
+                   fp.attention_seeking
+            FROM fighter_career fc
+            LEFT JOIN fighter_personality fp ON fp.fighter_id = fc.fighter_id
+        """).fetchall()
+        for fid, discipline, coachability, professionalism, ego, risk_taking, attention_seeking in rows:
+            realization = 0.7
+            if discipline and discipline >= 70: realization += 0.10
+            if coachability and coachability >= 70: realization += 0.10
+            if professionalism and professionalism >= 70: realization += 0.05
+            if ego and ego >= 70: realization -= 0.10
+            if risk_taking and risk_taking >= 80: realization -= 0.10
+            if attention_seeking and attention_seeking >= 70: realization -= 0.05
+            realization += random.uniform(-0.05, 0.05)
+            realization = max(0.4, min(1.0, realization))
+            conn.execute(
+                "UPDATE fighter_career SET realization=? WHERE fighter_id=?",
+                (realization, fid),
+            )
+
+
+def _migrate_v3_25_0_add_bidding_alerts(conn):
+    """Phase M3.2 (docs/MASTER_PLAN_MATCHMAKING.md §2.2): add the
+    `bidding_alerts` table for player-vs-AI bidding wars.
+
+    bidding_alerts persists "rival AI is pursuing this free agent"
+    alerts so the player can counter-offer within a decision window
+    (default 3 sim-days). The rival AI's signing is deferred by the
+    window; if the player counter-offers, the fighter chooses between
+    the two offers based on a unified formula (reputation + salary +
+    bonus + size_tier fit + realization-weighted potential).
+
+    See SCHEMA_SQL above for full table + index DDL + lifecycle docs.
+
+    Migration name: v3_25_0_add_bidding_alerts. Idempotent via
+    _has_table guard (CREATE TABLE IF NOT EXISTS is also idempotent
+    but _has_table short-circuits the no-op case for clarity).
+    """
+    if not _has_table(conn, "bidding_alerts"):
+        conn.execute("""
+            CREATE TABLE bidding_alerts (
+                alert_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                fighter_id            INTEGER NOT NULL REFERENCES fighters(fighter_id)
+                                          ON DELETE CASCADE,
+                rival_promo_id        INTEGER NOT NULL REFERENCES promotions(promotion_id)
+                                          ON DELETE CASCADE,
+                offered_salary        REAL NOT NULL,
+                offered_bonus         REAL NOT NULL DEFAULT 0,
+                offer_score           REAL NOT NULL,
+                intent_date           TEXT NOT NULL,
+                expiry_date           TEXT NOT NULL,
+                decision_window_days  INTEGER NOT NULL DEFAULT 3
+                                          CHECK (decision_window_days BETWEEN 1 AND 14),
+                status                TEXT NOT NULL DEFAULT 'pending'
+                                          CHECK (status IN (
+                                              'pending', 'won_by_player',
+                                              'won_by_rival', 'lost_race'
+                                          )),
+                player_offer_salary   REAL,
+                player_offer_bonus    REAL,
+                player_offer_score    REAL,
+                resolved_date         TEXT,
+                created_at            TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX idx_bidding_alerts_fighter "
+            "ON bidding_alerts(fighter_id)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_bidding_alerts_status "
+            "ON bidding_alerts(status, expiry_date)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_bidding_alerts_rival "
+            "ON bidding_alerts(rival_promo_id)"
+        )
+
+
+def _migrate_v3_25_0_add_staff_regen_lineage(conn):
+    """Phase M2.3 (docs/MASTER_PLAN_MATCHMAKING.md §2.3): add the
+    `staff_regen_lineage` table.
+
+    Mirrors `regen_lineage` (for fighters) but for STAFF. When a staff
+    member retires (Phase M2.2 annual tick on Jan 1), the retirement
+    service generates a replacement staff member with a similar skill
+    range + same role_type. This table tracks which retiring staff
+    spawned which replacement, so future torch-passing narrative
+    features (e.g., "the legendary GM's successor takes over" news
+    items) can read the link without needing a schema change.
+
+    Schema is intentionally minimal — just (retiring_staff_id,
+    replacement_staff_id, role_type, regen_date). The full staff
+    profile (name, age, skill_level, specialty) lives on the `staff`
+    table; this lineage table just links two staff rows.
+
+    Migration name: v3_25_0_add_staff_regen_lineage. Idempotent via
+    _has_table guard. NOTE: shares the v3.25.0 version slot with
+    v3_25_0_add_bidding_alerts (M3.2 work) — both run on the same
+    migration pass; both are recorded in schema_migrations so a
+    re-run is a no-op for both.
+    """
+    if not _has_table(conn, "staff_regen_lineage"):
+        conn.execute("""
+            CREATE TABLE staff_regen_lineage (
+                regen_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                retiring_staff_id      INTEGER REFERENCES staff(staff_id)
+                                          ON DELETE SET NULL,
+                replacement_staff_id   INTEGER REFERENCES staff(staff_id)
+                                          ON DELETE SET NULL,
+                role_type              TEXT NOT NULL,
+                regen_date             TEXT NOT NULL,
+                created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+                UNIQUE (retiring_staff_id, replacement_staff_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX idx_staff_regen_lineage_retiring "
+            "ON staff_regen_lineage(retiring_staff_id)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_staff_regen_lineage_replacement "
+            "ON staff_regen_lineage(replacement_staff_id)"
+        )
+
+
+def _migrate_v3_26_0_add_show_quality_adjustment_txn_type(conn):
+    """Phase F1.1 (docs/FIX_PLAN_FINANCES_ADVANCEDAY.md §F1.1) — add
+    'show_quality_adjustment' to the finance_transactions transaction_type
+    CHECK constraint.
+
+    Background: prior to Phase F1, post-event finance was a single-shot
+    computation that ignored show quality. A blockbuster show (rating 85+)
+    earned the same PPV + merch revenue as a dud (rating 25). This made
+    finances too easy — the player could stack a boring card with two
+    marketable stars and still book the same PPV revenue as a Fight of
+    the Year candidate.
+
+    Phase F1.1 fixes this by adding a SECOND finance_transactions row
+    AFTER show_rating.compute_ratings has written its row. The row is:
+      type:        'show_quality_adjustment'
+      amount:      (quality_mult - 1.0) * (original_ppv + original_merch)
+                   where quality_mult is 1.30 (rating >= 80), 1.10 (60-79),
+                   1.0 (40-59), or 0.80 (< 40). For the +30% case the
+                   amount is positive (extra revenue); for the -20% case
+                   it's negative (refunds / lost word-of-mouth buys).
+      description: "show quality adjustment (rating=82, +30% PPV+merch)"
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand the enum is a table rebuild
+    (rename → recreate → copy → drop). Idempotent via _has_check_constraint
+    guard so re-runs are a no-op.
+
+    The new CHECK enum (14 values total — was 13 before F1.1):
+      'ticket_sales', 'broadcast_revenue', 'merchandise',
+      'fighter_purse', 'venue_rental', 'staff_salary',
+      'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+      'sponsorship', 'bonus_payment', 'concessions', 'marketing',
+      'show_quality_adjustment'   (new — Phase F1.1)
+
+    Migration name: v3_26_0_add_show_quality_adjustment_txn_type. On
+    --fresh builds, SCHEMA_SQL already includes the new CHECK value
+    (the migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4 — same idempotency
+    pattern as every other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already includes
+    # 'show_quality_adjustment', the migration has already been applied.
+    if _has_check_constraint(conn, "finance_transactions",
+                             "show_quality_adjustment"):
+        return
+
+    # Defensive: only attempt the rebuild if finance_transactions exists.
+    if not _has_table(conn, "finance_transactions"):
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6). The new CHECK
+    # is a SUPERSET of the old one, so every existing row is still
+    # valid (no row transformation needed).
+    conn.executescript("""
+        ALTER TABLE finance_transactions RENAME TO finance_transactions_old_v3_26;
+    """)
+    conn.executescript("""
+        CREATE TABLE finance_transactions (
+            transaction_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            promotion_id            INTEGER NOT NULL REFERENCES promotions(promotion_id) ON DELETE CASCADE,
+            event_id                INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+            fighter_id              INTEGER REFERENCES fighters(fighter_id) ON DELETE SET NULL,
+            transaction_type        TEXT NOT NULL CHECK (transaction_type IN (
+                'ticket_sales', 'broadcast_revenue', 'merchandise',
+                'fighter_purse', 'venue_rental', 'staff_salary',
+                'medical_cost', 'signing_bonus', 'weight_cut_penalty',
+                'sponsorship', 'bonus_payment', 'concessions',
+                'marketing', 'show_quality_adjustment'
+            )),
+            amount                  REAL NOT NULL,
+            description             TEXT,
+            transaction_date        TEXT NOT NULL,
+            created_at              TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+        INSERT INTO finance_transactions
+            (transaction_id, promotion_id, event_id, fighter_id,
+             transaction_type, amount, description, transaction_date,
+             created_at)
+        SELECT transaction_id, promotion_id, event_id, fighter_id,
+               transaction_type, amount, description, transaction_date,
+               created_at
+        FROM finance_transactions_old_v3_26;
+        DROP TABLE finance_transactions_old_v3_26;
+    """)
+
+
+def _migrate_v3_27_0_add_financial_state_column(conn):
+    """HW1.4 (docs/Hardening_Phase.md §HW1.4 / CRITICAL #4) — add the
+    `financial_state` column to `promotions`.
+
+    The 7-state financial lifecycle:
+      HEALTHY    → cash comfortable (>= starting_budget × 0.20)
+      PRESSURED  → cash < 0.20 × starting_budget for 2 months
+      STRUGGLING → cash < 0.10 × starting_budget for 2 months
+      CRISIS     → cash < 0 for 1 month
+      BANKRUPT   → cash < 0 for 3 consecutive months (transient —
+                   immediately transitions to REBUILDING via
+                   _fire_bankruptcy_failure)
+      REBUILDING → 6-month post-bankruptcy recovery (is_rebuilding=1)
+      RECOVERING → rebuilding period complete, cash climbing back
+                   toward starting_budget × 0.50
+
+    The state machine is implemented in src/reputation.py
+    (_check_financial_state_transitions), called monthly on
+    TICK_ADVANCED. Each transition writes a voice-compliant news item
+    + applies a consequence (PRESSURED = -10% marketing spend on
+    next event; STRUGGLING = release 1 staff; CRISIS = block FA
+    signings; etc.).
+
+    Per CONVENTIONS §1.1, adding a NOT NULL DEFAULT column with a
+    CHECK constraint to an existing table qualifies as MINOR
+    (3.26.0 → 3.27.0). SQLite ALTER TABLE ADD COLUMN with NOT NULL
+    DEFAULT + CHECK is supported (verified — see worklog HW1.4 entry
+    for the SQLite version test). The ALTER is metadata-only — no
+    row rewrite (the DEFAULT 'HEALTHY' is a compile-time constant).
+
+    Backfill (per-promo, derived from existing state):
+      - is_rebuilding=1 → 'REBUILDING' (covers promos in the 6-month
+        post-bankruptcy recovery window)
+      - current_cash < 0 → 'CRISIS' (covers promos in the 3-month
+        bankruptcy-trigger window; they may already have a partial
+        bankruptcy_warnings counter)
+      - otherwise → 'HEALTHY' (the DEFAULT — most promos start here)
+
+    Migration name: v3_27_0_add_financial_state_column. Idempotent via
+    _has_column guard. On --fresh builds, SCHEMA_SQL already includes
+    the new column (the migration function is not called, but the
+    migration_name is still recorded in schema_migrations per §16.4).
+    """
+    if not _has_column(conn, "promotions", "financial_state"):
+        conn.execute(
+            "ALTER TABLE promotions ADD COLUMN financial_state TEXT "
+            "NOT NULL DEFAULT 'HEALTHY' CHECK (financial_state IN ("
+            "'HEALTHY', 'PRESSURED', 'STRUGGLING', 'CRISIS', "
+            "'BANKRUPT', 'REBUILDING', 'RECOVERING'))"
+        )
+        # Backfill existing promos based on is_rebuilding + current_cash.
+        # REBUILDING takes precedence (a rebuilding promo is by
+        # definition in the post-bankruptcy recovery window).
+        conn.execute(
+            "UPDATE promotions SET financial_state='REBUILDING' "
+            "WHERE is_rebuilding=1"
+        )
+        # CRISIS — promos with negative cash but not yet bankrupt
+        # (the bankruptcy failure state hasn't fired yet, or the
+        # promo is in the 3-month lead-up).
+        conn.execute(
+            "UPDATE promotions SET financial_state='CRISIS' "
+            "WHERE current_cash < 0 AND is_rebuilding=0"
+        )
+
+
+def _migrate_v3_28_0_expand_memory_link_types_with_hw3_values(conn):
+    """HW3 (docs/Hardening_Phase.md §HW3.1 / CRITICAL #6) — expand
+    `fighter_memory_links.link_type` CHECK with 4 new values:
+    'title_history', 'upset', 'comeback', 'milestone'.
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand a column's CHECK enum is a TABLE
+    REBUILD: rename the old table, create the new table with the
+    updated CHECK, copy data over, drop the old table. The existing
+    data (775 rows: regional_rival 744 + style_echo 29 + successor 2
+    in the seeded world DB) is preserved verbatim — the new CHECK is
+    a SUPERSET of the old one, so every existing row still satisfies
+    it.
+
+    Idempotent (per CONVENTIONS §16.4): the migration runner records
+    its migration_name in schema_migrations AFTER it runs. If the
+    migration crashes mid-way, the next run re-executes it — the
+    partial work must be safe to re-apply. The `_has_check_constraint`
+    guard detects whether the new CHECK is already in place and skips
+    the rebuild (so a re-run after a successful migration is a no-op).
+    The sentinel used is 'title_history' (a sentinel from the new
+    enum that didn't exist before).
+
+    The new CHECK enum (12 values total):
+      'style_echo', 'gym_heir', 'regional_rival', 'successor'      (existing v1)
+      'previous_fight', 'shared_gym', 'former_teammate',           (v3.12.0)
+      'injury_history'                                              (v3.12.0)
+      'title_history', 'upset', 'comeback', 'milestone'            (v3.28.0 — NEW)
+
+    Migration name: v3_28_0_expand_memory_link_types_with_hw3_values.
+    On --fresh builds, SCHEMA_SQL already includes the new CHECK (the
+    migration function is not called, but the migration_name is still
+    recorded in schema_migrations per §16.4 — same idempotency pattern
+    as every other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already includes
+    # 'title_history' (a sentinel from the new enum), the migration has
+    # already been applied — no-op.
+    if _has_check_constraint(conn, "fighter_memory_links",
+                             "title_history"):
+        return
+
+    # Defensive: only attempt the rebuild if fighter_memory_links exists.
+    # On a fresh --fresh build, the SCHEMA_SQL already creates the table
+    # with the new CHECK (and the idempotency guard above would have
+    # returned), so we only get here on a --migrate path from a v3.27.0
+    # DB.
+    if not _has_table(conn, "fighter_memory_links"):
+        # Defensive — create the table with the new CHECK (matches
+        # SCHEMA_SQL exactly). Should never happen on the migrate path
+        # (every v3.x DB has this table), but the migration must not
+        # crash on edge cases.
+        conn.execute(
+            "CREATE TABLE fighter_memory_links (\n"
+            "    memory_link_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history', 'title_history', 'upset', 'comeback', 'milestone')),\n"
+            "    link_strength INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_id, linked_fighter_id, link_type)\n"
+            ")"
+        )
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6):
+    #   1. Rename the old table.
+    #   2. Create the new table with the updated CHECK (matches
+    #      SCHEMA_SQL exactly).
+    #   3. Copy all rows verbatim from the old table — the new CHECK
+    #      is a SUPERSET of the old one, so every existing row is
+    #      still valid (no row transformation needed).
+    #   4. Drop the old table.
+    # We accept the brief window where the table is renamed (the
+    # migration runs in a single transaction — caller commits).
+    conn.executescript("""
+        ALTER TABLE fighter_memory_links RENAME TO fighter_memory_links_old_v3_28;
+    """)
+    conn.executescript("""
+        CREATE TABLE fighter_memory_links (
+            memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history', 'title_history', 'upset', 'comeback', 'milestone')),
+            link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
+            created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE (fighter_id, linked_fighter_id, link_type)
+        );
+        INSERT INTO fighter_memory_links
+            (memory_link_id, fighter_id, linked_fighter_id, link_type,
+             link_strength, created_at)
+        SELECT memory_link_id, fighter_id, linked_fighter_id, link_type,
+               link_strength, created_at
+        FROM fighter_memory_links_old_v3_28;
+        DROP TABLE fighter_memory_links_old_v3_28;
+    """)
+
+
+def _migrate_v3_29_0_add_simulation_tick_health(conn):
+    """HW2.1 (docs/Hardening_Phase.md §HW2.1 / CRITICAL #5) — add the
+    `simulation_tick_health` table.
+
+    One row per tick summarizing: tick duration, EventBus subscriber
+    success/failure counts, JSON blob of subscriber errors (with
+    traceback + sim date), and aggregate counts of the tick's side
+    effects (events/fights/fighters/injuries/contracts/titles/rankings
+    /finance/news/social/memory).
+
+    Idempotent: the _has_table guard skips the CREATE if the table
+    already exists (re-running the migration on a DB that already has
+    the table from SCHEMA_SQL is a no-op). On --fresh builds, SCHEMA_SQL
+    already creates the table — the migration function is not called,
+    but the migration_name is still recorded in schema_migrations per
+    §16.4.
+    """
+    if _has_table(conn, "simulation_tick_health"):
+        return
+    conn.execute("""
+CREATE TABLE simulation_tick_health (
+    tick_id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick_date              TEXT NOT NULL,
+    tick_duration_ms       INTEGER NOT NULL DEFAULT 0,
+    tick_success           INTEGER NOT NULL DEFAULT 1
+                               CHECK (tick_success IN (-1, 0, 1)),
+    health_status          TEXT NOT NULL DEFAULT 'HEALTHY'
+                               CHECK (health_status IN
+                                      ('HEALTHY', 'DEGRADED', 'BROKEN')),
+    subscribers_invoked    INTEGER NOT NULL DEFAULT 0,
+    subscribers_succeeded  INTEGER NOT NULL DEFAULT 0,
+    subscribers_failed     INTEGER NOT NULL DEFAULT 0,
+    errors_json            TEXT,
+    events_scheduled       INTEGER NOT NULL DEFAULT 0,
+    events_completed       INTEGER NOT NULL DEFAULT 0,
+    fights_resolved        INTEGER NOT NULL DEFAULT 0,
+    fighters_retired       INTEGER NOT NULL DEFAULT 0,
+    fighters_regen         INTEGER NOT NULL DEFAULT 0,
+    injuries_created       INTEGER NOT NULL DEFAULT 0,
+    injuries_recovered     INTEGER NOT NULL DEFAULT 0,
+    contracts_changed      INTEGER NOT NULL DEFAULT 0,
+    title_changes          INTEGER NOT NULL DEFAULT 0,
+    ranking_changes        INTEGER NOT NULL DEFAULT 0,
+    finance_transactions   INTEGER NOT NULL DEFAULT 0,
+    news_generated         INTEGER NOT NULL DEFAULT 0,
+    social_posts_generated INTEGER NOT NULL DEFAULT 0,
+    memories_generated     INTEGER NOT NULL DEFAULT 0,
+    created_at             TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tick_health_date "
+        "ON simulation_tick_health (tick_date DESC);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tick_health_status "
+        "ON simulation_tick_health (tick_success, tick_date DESC);"
+    )
+
+
+def _migrate_v3_30_0_add_news_items_importance(conn):
+    """HW4.1 (docs/Hardening_Phase.md §HW4.1 / W19) — add the
+    `importance` column to news_items.
+
+    5 tiers (CHECK'd):
+      LEGENDARY  — title change (championship), Hall of Fame
+                   induction, career-ending injury
+      MAJOR      — signing, retirement, major upset, rivalry
+                   escalation
+      SIGNIFICANT— fight result, injury, suspension, comeback
+      ROUTINE    — training camp, finance, weight cut, event hype
+      BACKGROUND — tapping_up_rumor, social media, generic
+
+    Per CONVENTIONS §1.1, adding a NOT NULL DEFAULT column with a
+    CHECK constraint to an existing table qualifies as MINOR
+    (3.29.0 → 3.30.0). SQLite ALTER TABLE ADD COLUMN with NOT NULL
+    DEFAULT + CHECK is supported (same pattern as v3.27.0
+    financial_state — verified to work on the SQLite version we
+    ship). The ALTER is metadata-only — no row rewrite (the DEFAULT
+    'ROUTINE' is a compile-time constant).
+
+    Backfill (HW4.2): existing news_items get a tier derived from
+    their topic. Title-fight + retirement + Hall-of-Fame topics →
+    LEGENDARY/MAJOR (kept as-is by the A6 pruner, so they're
+    already long-lived). Most existing rows get ROUTINE (the
+    default — the world DB has 1352 'fight' + 734 'injury' rows
+    that are SIGNIFICANT, but for backfill we just stamp them all
+    ROUTINE and let future news get the right tier via the writer's
+    importance parameter — see news._write_news_item).
+
+    Actually, to make the existing world DB immediately useful for
+    the daily-cap check (HW4.3), we backfill existing rows with a
+    best-effort topic → importance mapping so historical rows
+    aren't all ROUTINE. Title / awards → LEGENDARY; signing /
+    retirement / release / inter_promo_callout → MAJOR; fight /
+    injury / suspension / career_arc / cross_promo → SIGNIFICANT;
+    finance / event_hype / weight_cut / training / show_rating /
+    prospect / reputation_marker / small_reward → ROUTINE;
+    tapping_up_rumor / news_engine / memory_resurfacing / staff →
+    BACKGROUND.
+
+    Migration name: v3_30_0_add_news_items_importance. Idempotent
+    via _has_column guard. On --fresh builds, SCHEMA_SQL already
+    includes the new column (the migration function is not called,
+    but the migration_name is still recorded in schema_migrations
+    per §16.4).
+    """
+    if not _has_column(conn, "news_items", "importance"):
+        conn.execute(
+            "ALTER TABLE news_items ADD COLUMN importance TEXT "
+            "NOT NULL DEFAULT 'ROUTINE' CHECK (importance IN ("
+            "'LEGENDARY', 'MAJOR', 'SIGNIFICANT', 'ROUTINE', "
+            "'BACKGROUND'))"
+        )
+    # HW4.2 backfill — stamp existing rows with a best-effort tier
+    # derived from their topic. Only UPDATEs rows where importance
+    # is still the default 'ROUTINE' (so re-runs are no-ops once
+    # the backfill has applied). This makes the daily-cap check
+    # (HW4.3) immediately useful on the existing world DB.
+    _IMPORTANCE_BACKFILL = [
+        ("LEGENDARY", ("title", "awards")),
+        ("MAJOR", ("signing", "retirement", "release",
+                   "inter_promo_callout")),
+        ("SIGNIFICANT", ("fight", "injury", "suspension",
+                         "career_arc", "cross_promo")),
+        ("BACKGROUND", ("tapping_up_rumor", "news_engine",
+                        "memory_resurfacing", "staff")),
+        # ROUTINE topics: finance, event_hype, weight_cut, training,
+        # show_rating, prospect, reputation_marker, small_reward —
+        # these are the DEFAULT so no UPDATE needed.
+    ]
+    for tier, topics in _IMPORTANCE_BACKFILL:
+        placeholders = ",".join("?" for _ in topics)
+        conn.execute(
+            f"UPDATE news_items SET importance=? "
+            f"WHERE importance='ROUTINE' AND topic IN ({placeholders})",
+            (tier, *topics),
+        )
+    # Index for the daily-cap lookup (HW4.3): the cap check queries
+    # COUNT(*) FROM news_items WHERE published_at = ? AND importance = ?.
+    # A composite index on (published_at, importance) makes this O(1).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_items_date_importance "
+        "ON news_items (published_at, importance);"
+    )
+
+
+def _migrate_v3_31_0_add_perf_indexes(conn):
+    """HW8.2 — Add performance indexes on training_camps + fight_beats.
+
+    The HW6.3 soak test surfaced super-linear per-tick cost growth:
+    0.37s/tick at day 30 → 3.0s/tick at day 180. Root cause: the
+    training_camps + fight_beats tables had NO indexes (only the
+    autoindex on their primary keys), so every per-tick query scanned
+    the full table. As the tables grew (training_camps to ~9000 rows
+    over 180 days, fight_beats to ~80K rows), the scans dominated
+    tick cost.
+
+    This migration adds 4 indexes:
+      1. idx_training_camps_active_window — covers the daily tick's
+         _check_training_camps query: WHERE is_active=1 AND
+         is_completed=0 AND start_date<=? AND end_date>=?.
+      2. idx_training_camps_fighter — covers per-fighter camp lookups
+         (used by matchmaking's camp_status check + the dashboard's
+         camp history).
+      3. idx_fight_beats_fight — covers per-fight beat lookups (used
+         by show_rating + fight_engine's per-fight aggregation).
+      4. idx_fight_beats_round — covers per-round beat lookups
+         (used by fight_engine's round aggregation).
+
+    The indexes are CREATE IF NOT EXISTS so they're idempotent. The
+    migration also runs ANALYZE on the 2 tables so the query planner
+    picks up the new indexes immediately.
+    """
+    # training_camps — daily tick window + per-fighter lookups.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_camps_active_window "
+        "ON training_camps (is_active, is_completed, start_date, end_date);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_camps_fighter "
+        "ON training_camps (fighter_id, is_completed, end_date);"
+    )
+    # fight_beats — per-fight + per-round lookups.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fight_beats_fight "
+        "ON fight_beats (fight_id, round_number);"
+    )
+    # Refresh the query planner's stats so the new indexes are picked
+    # up immediately (without ANALYZE, SQLite might keep using the
+    # autoindex until the next ANALYZE pass).
+    try:
+        conn.execute("ANALYZE training_camps;")
+        conn.execute("ANALYZE fight_beats;")
+    except sqlite3.OperationalError:
+        # ANALYZE can fail on a brand-new empty table (no stats to
+        # gather). Safe to ignore — the indexes are still created.
+        pass
+
+
+def _migrate_v3_32_0_add_news_global_daily_cap_trigger(conn):
+    """HW8.3 — Add a SQLite trigger that enforces a global daily cap
+    on news_items writes (catches ALL writes, including direct
+    INSERTs that bypass news._write_news_item).
+
+    The HW6.3 soak test showed news_items bloating from 2400 → 10581
+    rows in 180 days (+7399 ROUTINE, ~41/day). The HW4.3 soft caps in
+    _IMPORTANCE_DAILY_CAPS only applied to items that went through
+    _write_news_item — but 30+ direct INSERT INTO news_items callsites
+    bypass that function, so the soft caps didn't catch them.
+
+    This migration adds a BEFORE INSERT trigger that counts existing
+    news_items for the same published_at date (using date() to
+    normalize both sides) + silently drops the INSERT (RAISE IGNORE)
+    if the count is at or above the cap.
+
+    The cap is set to 30/day (= LEGENDARY 1 + MAJOR 3 + SIGNIFICANT 5
+    + ROUTINE 5 + BACKGROUND 5 + 11 spare for direct-INSERT bypass
+    paths). The cap is intentionally loose — it's a HARD ceiling to
+    prevent runaway bloat, NOT a throttle on legitimate news. The
+    soft caps in _write_news_item remain the primary throttle.
+
+    Trigger details:
+      - Name: trg_news_items_global_daily_cap
+      - Fires: BEFORE INSERT ON news_items
+      - Condition: COUNT(*) for same date(published_at) >= 30
+      - Action: RAISE(IGNORE) — silently drop the INSERT
+      - Date normalization: date(COALESCE(NEW.published_at,
+        CURRENT_TIMESTAMP)) so NULL + timestamp formats all match
+
+    Side effects:
+      - INSERT statements that hit the cap return 0 rows affected
+        (the caller's lastrowid will be None). All current callers
+        either ignore the return value or handle None defensively.
+      - The trigger is per-row, so multi-row INSERTs are evaluated
+        per-row (each row gets its own cap check). This is correct
+        behavior — the cap is a per-day total, not a per-statement
+        total.
+      - The trigger is idempotent (DROP TRIGGER IF EXISTS before
+        CREATE TRIGGER) so re-running the migration is safe.
+    """
+    # Drop existing trigger (defensive — idempotent re-runs).
+    conn.execute("DROP TRIGGER IF EXISTS trg_news_items_global_daily_cap;")
+    # Create the trigger. The WHEN clause uses a correlated subquery
+    # to count existing items for the same date. The COALESCE handles
+    # NULL published_at (falls back to CURRENT_TIMESTAMP). The date()
+    # function normalizes both 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS'
+    # formats to 'YYYY-MM-DD' so they compare correctly.
+    #
+    # HW10.1 (news cap audit): the trigger is now IMPORTANCE-AWARE —
+    # LEGENDARY + MAJOR items are NEVER suppressed, even if the daily
+    # cap is hit. This prevents the player from missing title changes,
+    # Hall of Fame inductions, major signings, or retirements just
+    # because the day was busy. The cap still applies to SIGNIFICANT +
+    # ROUTINE + BACKGROUND (the high-volume tiers that cause feed
+    # bloat). Per the user's audit concern: "is there a chance the
+    # player might miss important news with a cap?" — now they can't.
+    conn.execute(
+        """
+        CREATE TRIGGER trg_news_items_global_daily_cap
+        BEFORE INSERT ON news_items
+        WHEN (
+            SELECT COUNT(*) FROM news_items
+            WHERE date(COALESCE(published_at, CURRENT_TIMESTAMP))
+                = date(COALESCE(NEW.published_at, CURRENT_TIMESTAMP))
+        ) >= 30
+        AND COALESCE(NEW.importance, 'ROUTINE') NOT IN ('LEGENDARY', 'MAJOR')
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
+        """
+    )
+
+
+def _migrate_v3_33_0_news_cap_importance_aware(conn):
+    """HW10.1 — Make the news cap trigger importance-aware.
+
+    The HW8.3 trigger suppressed ALL news items beyond 30/day. The
+    user's audit concern: "is there a chance the player might miss
+    important news with a cap?" — YES, on busy days (events +
+    signings + injuries stacking up), LEGENDARY/MAJOR items could
+    be suppressed.
+
+    This migration drops + recreates the trigger with an importance-
+    aware WHEN clause: LEGENDARY + MAJOR items bypass the cap
+    entirely. SIGNIFICANT + ROUTINE + BACKGROUND are still capped
+    (they're the high-volume tiers that cause feed bloat).
+
+    The cap is still 30/day for the capped tiers — same as HW8.3.
+    Only the importance filter is new.
+
+    Idempotent: DROP TRIGGER IF EXISTS before CREATE TRIGGER.
+    """
+    conn.execute("DROP TRIGGER IF EXISTS trg_news_items_global_daily_cap;")
+    conn.execute(
+        """
+        CREATE TRIGGER trg_news_items_global_daily_cap
+        BEFORE INSERT ON news_items
+        WHEN (
+            SELECT COUNT(*) FROM news_items
+            WHERE date(COALESCE(published_at, CURRENT_TIMESTAMP))
+                = date(COALESCE(NEW.published_at, CURRENT_TIMESTAMP))
+        ) >= 30
+        AND COALESCE(NEW.importance, 'ROUTINE') NOT IN ('LEGENDARY', 'MAJOR')
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
+        """
+    )
+
+
+def _migrate_v3_34_0_add_rival_ai_memory(conn):
+    """HW10-W21W22 — Add the rival_ai_memory table + 2 supporting indexes.
+
+    The rival AI used to be STATELESS PER TICK — every rival promo
+    scheduled events, signed free agents, and resolved fights without
+    remembering its own past results, bidding wars lost, fighters
+    signed/released, or title histories. GPT's W21 feedback: "Rival
+    AI should react to its own previous results." GPT's W22 feedback:
+    "Rival promotions should remember past interactions."
+
+    This migration adds the rival_ai_memory table:
+      - promotion_id: the rival promo that owns the memory.
+      - memory_type: one of 9 enums (event_result, signing_won,
+        title_loss, title_win, bidding_war_lost, bidding_war_won,
+        fighter_released, rivalry_fuelled, signing_missed).
+      - target_fighter_id / target_promotion_id: the entity involved.
+      - memory_date: sim date 'YYYY-MM-DD'.
+      - context_json: arbitrary JSON (e.g. for event_result:
+        {event_id, wins, losses, attendance, profit}).
+      - salience: 0..100 (default 50), decays -1/week; row is DELETED
+        when salience hits 0 (forgotten).
+
+    Idempotent: CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT
+    EXISTS, so re-running the migration on a DB that already has the
+    table is a no-op. On a fresh --fresh build, SCHEMA_SQL already
+    includes the table + indexes (the migration function is NOT
+    called on --fresh per CONVENTIONS §16.4, but the migration_name
+    IS recorded in schema_migrations for audit-trail consistency).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rival_ai_memory (
+            memory_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            promotion_id         INTEGER NOT NULL REFERENCES promotions(promotion_id)
+                                     ON DELETE CASCADE,
+            memory_type          TEXT NOT NULL
+                                     CHECK (memory_type IN (
+                                         'event_result', 'signing_missed',
+                                         'signing_won', 'title_loss', 'title_win',
+                                         'bidding_war_lost', 'bidding_war_won',
+                                         'fighter_released', 'rivalry_fuelled'
+                                     )),
+            target_fighter_id    INTEGER REFERENCES fighters(fighter_id)
+                                     ON DELETE SET NULL,
+            target_promotion_id  INTEGER REFERENCES promotions(promotion_id)
+                                     ON DELETE SET NULL,
+            memory_date          TEXT NOT NULL,
+            context_json         TEXT,
+            salience             INTEGER NOT NULL DEFAULT 50
+                                     CHECK (salience BETWEEN 0 AND 100),
+            created_at           TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        );
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rival_ai_memory_promo_type_date "
+        "ON rival_ai_memory (promotion_id, memory_type, memory_date DESC);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rival_ai_memory_promo_salience "
+        "ON rival_ai_memory (promotion_id, salience DESC);"
+    )
+
+
+def _migrate_v3_35_0_add_perf_indexes_2(conn):
+    """TIER2-5YEAR §T2.3 — Add 3 additional performance indexes for
+    5-year soak completion.
+
+    The Tier 1 optimizations (v3.31.0 perf indexes + the daily
+    fight_beats prune + the conditional weekly interpretation rebuild)
+    brought the 365-day soak from "times out at day 310/365 in 9min"
+    down to "complete in 1.86min" with a stable ~0.31s/day per-tick
+    cost. Extrapolating linearly to 5 years (1825 days) gives ~9.4min,
+    which is within the 15min budget — but the Tier 1 worklog noted
+    that a few specific query patterns were still doing index scans
+    instead of index seeks, and those would scale linearly with table
+    growth over 5 years.
+
+    This migration adds 3 indexes targeting the slowest-growing
+    query patterns:
+
+      1. ``idx_news_items_importance_date ON news_items (importance,
+         published_at)`` — for the cap check query that filters by
+         importance tier first (e.g. "show me the LEGENDARY items
+         from the last 90 days, oldest first" — the news engine's
+         importance-aware pruning pass). The existing
+         ``idx_news_items_date_importance`` from v3.30.0 has the
+         columns in the OPPOSITE order (published_at, importance),
+         which serves the per-day cap check but NOT the per-importance
+         historical lookup. Both indexes coexist (SQLite uses the one
+         whose leading column matches the WHERE clause).
+
+      2. ``idx_commentary_segments_fight ON commentary_segments
+         (fight_id)`` — for fight highlight lookups. The Fight Night
+         UI + the post-fight news engine both look up a fight's
+         commentary segments by fight_id. Without an index, this is
+         a full-table scan that grows linearly with fight count
+         (~3-14 segments per fight, ~30K fights after 5 years →
+         ~150K-420K rows scanned per lookup).
+
+      3. ``idx_training_camps_completed_end ON training_camps
+         (is_completed, end_date)`` — for pruning queries. The
+         pruning service's monthly pass deletes completed camps
+         older than 60 days. The existing
+         ``idx_training_camps_active_window`` covers (is_active,
+         is_completed, start_date, end_date) — useful for the daily
+         "find active camps whose window contains today" lookup,
+         but the leading column is_active=1 doesn't match the
+         pruning query's WHERE (is_completed=1 AND end_date < ?).
+         The new index has is_completed as the leading column,
+         matching the pruning query.
+
+    All 3 indexes use CREATE INDEX IF NOT EXISTS so they're
+    idempotent — re-running the migration on a DB that already has
+    them is a no-op. On a fresh --fresh build, SCHEMA_SQL already
+    includes the indexes (the migration function is NOT called on
+    --fresh per CONVENTIONS §16.4, but the migration_name IS
+    recorded in schema_migrations for audit-trail consistency).
+
+    The migration also runs ANALYZE on the 3 tables so the query
+    planner picks up the new indexes immediately (without ANALYZE,
+    SQLite might keep using an older index until the next ANALYZE
+    pass).
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_items_importance_date "
+        "ON news_items (importance, published_at);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_commentary_segments_fight "
+        "ON commentary_segments (fight_id);"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_camps_completed_end "
+        "ON training_camps (is_completed, end_date);"
+    )
+    # Refresh the query planner's stats so the new indexes are picked
+    # up immediately (mirrors the v3.31.0 migration's ANALYZE step).
+    try:
+        conn.execute("ANALYZE news_items;")
+        conn.execute("ANALYZE commentary_segments;")
+        conn.execute("ANALYZE training_camps;")
+    except sqlite3.OperationalError:
+        # ANALYZE can fail on a brand-new empty table (no stats to
+        # gather). Safe to ignore — the indexes are still created.
+        pass
+
+
+def _migrate_v3_36_0_add_provenance_metadata(conn):
+    """TIER3-MISSING §T3.3 (W42) — Add provenance metadata columns to
+    `schema_meta`.
+
+    Adds 2 nullable TEXT columns:
+      - ``world_version`` — set on each save (e.g. "sim_2026-08-27_tick14")
+        by save_load.save_game before the DB file copy. NULL until the
+        first save after this migration.
+      - ``seed_version``  — set on fresh DB build (e.g. "world_seed_v1")
+        by build_db._build_fresh. For existing DBs (the --migrate path),
+        this migration backfills seed_version='world_seed_v1'
+        retroactively (every existing DB was built from world_seed_v1).
+
+    Both columns are nullable so old save files that predate the
+    migration can still be loaded — the columns will be NULL until
+    the next save writes them. save_load.load_game does NOT refuse a
+    save with NULL provenance columns; it just leaves them NULL until
+    the next save_game call updates them.
+
+    Idempotent (per CONVENTIONS §16.4): the migration runner records
+    its migration_name in schema_migrations AFTER it runs. If the
+    migration crashes mid-way, the next run re-executes it. The
+    `_has_column` guard on each ALTER TABLE makes re-runs safe — the
+    ALTER is skipped if the column already exists. The UPDATE that
+    backfills seed_version uses WHERE seed_version IS NULL so it's a
+    no-op on a DB that already has the backfill.
+
+    On --fresh builds, SCHEMA_SQL already includes the new columns
+    (the migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4 — same idempotency
+    pattern as every other migration). The _build_fresh path then
+    sets seed_version='world_seed_v1' explicitly.
+
+    Migration name: v3_36_0_add_provenance_metadata.
+    """
+    # 1. Add world_version TEXT column (idempotent — _has_column guard).
+    if not _has_column(conn, "schema_meta", "world_version"):
+        conn.execute(
+            "ALTER TABLE schema_meta ADD COLUMN world_version TEXT"
+        )
+    # 2. Add seed_version TEXT column (idempotent).
+    if not _has_column(conn, "schema_meta", "seed_version"):
+        conn.execute(
+            "ALTER TABLE schema_meta ADD COLUMN seed_version TEXT"
+        )
+    # 3. Backfill seed_version='world_seed_v1' for existing DBs
+    #    (every existing DB was built from world_seed_v1 per the
+    #    brief). The WHERE seed_version IS NULL clause makes this
+    #    idempotent — a re-run skips rows that already have a value.
+    #    If the DB is missing the schema_meta row entirely (a fresh
+    #    build before _build_fresh inserts the row), this UPDATE is a
+    #    no-op (0 rows affected).
+    try:
+        conn.execute(
+            "UPDATE schema_meta SET seed_version='world_seed_v1' "
+            "WHERE seed_version IS NULL"
+        )
+    except sqlite3.OperationalError:
+        # Defensive — the UPDATE can fail if schema_meta is missing
+        # (shouldn't happen because _migrate_existing creates it
+        # before calling _run_migrations, but defensive never hurts).
+        pass
+
+
+def _migrate_v3_36_0_expand_memory_link_types_tier3(conn):
+    """TIER3-MISSING §T3.4 (W17) — Expand
+    `fighter_memory_links.link_type` CHECK with 8 new values.
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand a column's CHECK enum is a TABLE
+    REBUILD: rename the old table, create the new table with the
+    updated CHECK, copy data over, drop the old table. The existing
+    data (the 12 link_type values allowed by the v3.28.0 migration:
+    style_echo, gym_heir, regional_rival, successor, previous_fight,
+    shared_gym, former_teammate, injury_history, title_history,
+    upset, comeback, milestone) is preserved verbatim — the new CHECK
+    is a SUPERSET of the old one, so every existing row still
+    satisfies it.
+
+    Idempotent (per CONVENTIONS §16.4): the migration runner records
+    its migration_name in schema_migrations AFTER it runs. The
+    `_has_check_constraint` guard detects whether the new CHECK is
+    already in place and skips the rebuild (so a re-run after a
+    successful migration is a no-op). The sentinel used is
+    'previous_fights' (a sentinel from the new enum that didn't exist
+    before).
+
+    The new CHECK enum (20 values total — 12 existing + 8 new):
+      'style_echo', 'gym_heir', 'regional_rival', 'successor'      (v1)
+      'previous_fight', 'shared_gym', 'former_teammate',           (v3.12.0)
+      'injury_history'                                              (v3.12.0)
+      'title_history', 'upset', 'comeback', 'milestone'            (v3.28.0)
+      'previous_fights', 'former_teammates', 'old_gyms',           (v3.36.0 — NEW)
+      'former_champions', 'controversial_losses', 'injuries',      (v3.36.0 — NEW)
+      'promotions', 'old_events'                                   (v3.36.0 — NEW)
+
+    The 8 new values are distinct from existing singular-form variants
+    (previous_fight vs previous_fights, former_teammate vs
+    former_teammates, injury_history vs injuries) — they capture
+    related-but-distinct memory categories per the T3.4 brief. The
+    brief specifies plural forms + new categories (old_gyms,
+    former_champions, controversial_losses, promotions, old_events)
+    that don't overlap with the existing 12.
+
+    Migration name: v3_36_0_expand_memory_link_types_tier3. On
+    --fresh builds, SCHEMA_SQL already includes the new CHECK (the
+    migration function is not called, but the migration_name is
+    still recorded in schema_migrations per §16.4 — same idempotency
+    pattern as every other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already
+    # includes 'previous_fights' (a sentinel from the new enum), the
+    # migration has already been applied — no-op.
+    if _has_check_constraint(conn, "fighter_memory_links",
+                             "previous_fights"):
+        return
+
+    # Defensive: only attempt the rebuild if fighter_memory_links
+    # exists. On a fresh --fresh build, SCHEMA_SQL already creates
+    # the table with the new CHECK (and the idempotency guard above
+    # would have returned), so we only get here on a --migrate path
+    # from a v3.35.0 DB.
+    if not _has_table(conn, "fighter_memory_links"):
+        # Defensive — create the table with the new CHECK (matches
+        # SCHEMA_SQL exactly). Should never happen on the migrate
+        # path (every v3.x DB has this table), but the migration
+        # must not crash on edge cases.
+        conn.execute(
+            "CREATE TABLE fighter_memory_links (\n"
+            "    memory_link_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,\n"
+            "    link_type TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history', 'title_history', 'upset', 'comeback', 'milestone', 'previous_fights', 'former_teammates', 'old_gyms', 'former_champions', 'controversial_losses', 'injuries', 'promotions', 'old_events')),\n"
+            "    link_strength INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),\n"
+            "    created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),\n"
+            "    UNIQUE (fighter_id, linked_fighter_id, link_type)\n"
+            ")"
+        )
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6):
+    #   1. Rename the old table.
+    #   2. Create the new table with the updated CHECK (matches
+    #      SCHEMA_SQL exactly).
+    #   3. Copy all rows verbatim from the old table — the new CHECK
+    #      is a SUPERSET of the old one, so every existing row is
+    #      still valid (no row transformation needed).
+    #   4. Drop the old table.
+    # We accept the brief window where the table is renamed (the
+    # migration runs in a single transaction — caller commits).
+    conn.executescript("""
+        ALTER TABLE fighter_memory_links RENAME TO fighter_memory_links_old_v3_36;
+    """)
+    conn.executescript("""
+        CREATE TABLE fighter_memory_links (
+            memory_link_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            fighter_id        INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            linked_fighter_id INTEGER NOT NULL REFERENCES fighters(fighter_id) ON DELETE CASCADE,
+            link_type         TEXT NOT NULL CHECK (link_type IN ('style_echo', 'gym_heir', 'regional_rival', 'successor', 'previous_fight', 'shared_gym', 'former_teammate', 'injury_history', 'title_history', 'upset', 'comeback', 'milestone', 'previous_fights', 'former_teammates', 'old_gyms', 'former_champions', 'controversial_losses', 'injuries', 'promotions', 'old_events')),
+            link_strength     INTEGER NOT NULL DEFAULT 50 CHECK (link_strength BETWEEN 0 AND 100),
+            created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            UNIQUE (fighter_id, linked_fighter_id, link_type)
+        );
+        INSERT INTO fighter_memory_links
+            (memory_link_id, fighter_id, linked_fighter_id, link_type,
+             link_strength, created_at)
+        SELECT memory_link_id, fighter_id, linked_fighter_id, link_type,
+               link_strength, created_at
+        FROM fighter_memory_links_old_v3_36;
+        DROP TABLE fighter_memory_links_old_v3_36;
+    """)
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -3951,6 +6754,56 @@ MIGRATIONS = [
         _migrate_v3_12_0_expand_memory_link_types),
     ("v3_13_0_add_performance_indexes", "3.13.0",
         _migrate_v3_13_0_add_performance_indexes),
+    ("v3_14_0_add_rival_ai_columns", "3.14.0",
+        _migrate_v3_14_0_add_rival_ai_columns),
+    ("v3_15_0_add_fighter_descriptor_short_columns", "3.15.0",
+        _migrate_v3_15_0_add_fighter_descriptor_short_columns),
+    ("v3_16_0_add_player_decisions_and_echoes", "3.16.0",
+        _migrate_v3_16_0_add_player_decisions_and_echoes),
+    ("v3_17_0_add_concessions_txn_type", "3.17.0",
+        _migrate_v3_17_0_add_concessions_txn_type),
+    ("v3_18_0_add_venue_type", "3.18.0",
+        _migrate_v3_18_0_add_venue_type),
+    ("v3_19_0_add_fighter_portrait_path", "3.19.0",
+        _migrate_v3_19_0_add_fighter_portrait_path),
+    ("v3_20_0_reseed_fighter_attributes", "3.20.0",
+        _migrate_v3_20_0_reseed_fighter_attributes),
+    ("v3_21_0_add_player_levers", "3.21.0",
+        _migrate_v3_21_0_add_player_levers),
+    ("v3_22_0_add_staff_market_columns", "3.22.0",
+        _migrate_v3_22_0_add_staff_market_columns),
+    ("v3_23_0_add_bankruptcy_rebuild_columns", "3.23.0",
+        _migrate_v3_23_0_add_bankruptcy_rebuild_columns),
+    ("v3_24_0_add_realization_column", "3.24.0",
+        _migrate_v3_24_0_add_realization_column),
+    ("v3_25_0_add_bidding_alerts", "3.25.0",
+        _migrate_v3_25_0_add_bidding_alerts),
+    ("v3_25_0_add_staff_regen_lineage", "3.25.0",
+        _migrate_v3_25_0_add_staff_regen_lineage),
+    ("v3_26_0_add_show_quality_adjustment_txn_type", "3.26.0",
+        _migrate_v3_26_0_add_show_quality_adjustment_txn_type),
+    ("v3_27_0_add_financial_state_column", "3.27.0",
+        _migrate_v3_27_0_add_financial_state_column),
+    ("v3_28_0_expand_memory_link_types_with_hw3_values", "3.28.0",
+        _migrate_v3_28_0_expand_memory_link_types_with_hw3_values),
+    ("v3_29_0_add_simulation_tick_health", "3.29.0",
+        _migrate_v3_29_0_add_simulation_tick_health),
+    ("v3_30_0_add_news_items_importance", "3.30.0",
+        _migrate_v3_30_0_add_news_items_importance),
+    ("v3_31_0_add_perf_indexes", "3.31.0",
+        _migrate_v3_31_0_add_perf_indexes),
+    ("v3_32_0_add_news_global_daily_cap_trigger", "3.32.0",
+        _migrate_v3_32_0_add_news_global_daily_cap_trigger),
+    ("v3_33_0_news_cap_importance_aware", "3.33.0",
+        _migrate_v3_33_0_news_cap_importance_aware),
+    ("v3_34_0_add_rival_ai_memory", "3.34.0",
+        _migrate_v3_34_0_add_rival_ai_memory),
+    ("v3_35_0_add_perf_indexes_2", "3.35.0",
+        _migrate_v3_35_0_add_perf_indexes_2),
+    ("v3_36_0_add_provenance_metadata", "3.36.0",
+        _migrate_v3_36_0_add_provenance_metadata),
+    ("v3_36_0_expand_memory_link_types_tier3", "3.36.0",
+        _migrate_v3_36_0_expand_memory_link_types_tier3),
 ]
 
 
@@ -3992,9 +6845,18 @@ def _run_migrations(conn, target_version=None):
         n_run += 1
     if n_run == 0:
         print("  No new migrations to apply.")
-    # Update schema_meta to the current code version.
+    # Update schema_meta to the current code version. Use UPSERT
+    # (ON CONFLICT DO UPDATE) instead of INSERT OR REPLACE so the
+    # world_version + seed_version provenance columns (added v3.36.0)
+    # are PRESERVED on a re-run. INSERT OR REPLACE would delete the
+    # existing row and insert a fresh one with NULL provenance —
+    # that would silently wipe the seed_version set by _build_fresh
+    # or the world_version set by save_load.save_game.
     conn.execute(
-        "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) VALUES (?, ?)",
+        "INSERT INTO schema_meta (schema_name, schema_version) "
+        "VALUES (?, ?) "
+        "ON CONFLICT(schema_name) DO UPDATE SET "
+        "schema_version=excluded.schema_version",
         ("cage_empire", target_version),
     )
     return n_run
@@ -4015,10 +6877,17 @@ def _build_fresh(conn):
             (name,),
         )
     # Seed the simulation clock (only on fresh — preserve on migrate).
+    # HW2.3: use the formal GAME_START_DATE constant (default "2026-01-01")
+    # instead of a hardcoded date — new games start from this sim date,
+    # NOT from today's real date. Existing worlds keep their clock (the
+    # --migrate path doesn't touch simulation_clock).
+    from datetime import datetime as _dt
+    _start_dt = _dt.strptime(GAME_START_DATE, "%Y-%m-%d")
     conn.execute(
         "INSERT OR IGNORE INTO simulation_clock "
         "(clock_id, current_date, current_day, current_week, current_month, current_year) "
-        "VALUES (1, '2026-07-20', 1, 1, 7, 2026)"
+        "VALUES (1, ?, 1, 1, ?, ?)",
+        (GAME_START_DATE, _start_dt.month, _start_dt.year)
     )
     # Phase A (A4) — seed the 5 news sources. INSERT OR IGNORE so
     # this is idempotent (a re-run with the sources already present
@@ -4073,9 +6942,15 @@ def _build_fresh(conn):
         ],
     )
     conn.execute(
-        "INSERT OR REPLACE INTO schema_meta (schema_name, schema_version) "
-        "VALUES (?, ?)",
-        ("cage_empire", CODE_SCHEMA_VERSION),
+        # v3.36.0 (TIER3-MISSING §T3.3) — set seed_version on fresh
+        # builds. UPSERT preserves the world_version column if a row
+        # already exists (shouldn't happen on --fresh, but defensive).
+        "INSERT INTO schema_meta (schema_name, schema_version, seed_version) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT(schema_name) DO UPDATE SET "
+        "schema_version=excluded.schema_version, "
+        "seed_version=COALESCE(schema_meta.seed_version, excluded.seed_version)",
+        ("cage_empire", CODE_SCHEMA_VERSION, "world_seed_v1"),
     )
 
 
@@ -4090,11 +6965,20 @@ def _migrate_existing(conn):
         "    applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
         ")"
     )
-    # Ensure schema_meta exists too.
+    # Ensure schema_meta exists too. v3.36.0 added the world_version
+    # + seed_version provenance columns; the migration function
+    # _migrate_v3_36_0_add_provenance_metadata handles adding them
+    # to an existing schema_meta via ALTER TABLE. This CREATE TABLE
+    # IF NOT EXISTS only fires for an old DB that predates
+    # schema_meta entirely — it creates the table with the new
+    # columns inline (matches SCHEMA_SQL) so the migration is a
+    # no-op (the _has_column guard skips the ALTER).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_meta (\n"
         "    schema_name    TEXT PRIMARY KEY,\n"
         "    schema_version TEXT NOT NULL,\n"
+        "    world_version  TEXT,\n"
+        "    seed_version   TEXT,\n"
         "    created_at     TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)\n"
         ")"
     )

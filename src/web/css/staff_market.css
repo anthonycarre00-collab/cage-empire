@@ -1,0 +1,147 @@
+/* ============================================================
+   CAGE EMPIRE — Staff Market Screen Styles ("Staff Market")
+   ============================================================
+   Phase E4 (docs/MASTER_PLAN.md §3 Phase E4 + docs/ECON_STAFF_PLAN.md
+   §4-5 + task brief).
+
+   Reuses free_agents.css for the sticky sign bar, modal dialog,
+   negotiation sliders, acceptance indicator, and toast. This file
+   adds the Staff-Market-specific styles:
+     - Skill-tier color coding (world-class / established / promising
+       / unproven) on the Skill column.
+     - Specialty summary (italic, dim) under the staff name.
+     - Nation flag emoji inline with the name.
+     - View button styling in the Action column.
+     - Section header with 📋 icon + gold accent.
+   ============================================================ */
+
+.ce-sm {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 110px;  /* bottom padding for sticky sign bar */
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ============================================================
+   TABLE — skill tier color coding + specialty summary + flag
+   ============================================================ */
+
+/* Skill tier colors on the Skill column cell. Mirrors the ceiling-
+   tier colors from Free Agents (gold for top, dim for bottom).
+   NEVER shows the raw 0-100 int — only the voice phrase. */
+.ce-sm-skill--world-class {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-sm-skill--established {
+  color: var(--green);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-sm-skill--promising {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-sm-skill--unproven {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-style: italic;
+}
+
+/* Staff name cell — name on top, specialty summary below. */
+.ce-sm-name {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.ce-sm-specialty {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+
+/* Nation flag emoji inline with the staff name. */
+.ce-sm-flag {
+  font-size: 13px;
+  line-height: 1;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* Role label cell — uppercase, slightly emphasized. */
+.ce-sm-role {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* View button in the Action column — small ghost button. */
+.ce-sm-view-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  background: transparent;
+}
+.ce-sm-view-btn:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: var(--gold-tint);
+}
+
+/* ============================================================
+   HIRE BAR — reuse ce-fa-signbar from free_agents.css.
+   The "BRING HIM ONTO YOUR TEAM" button replaces "Sign for $X".
+   ============================================================ */
+.ce-fa-signbar .ce-sm-flag {
+  font-size: 16px;
+}
+
+/* ============================================================
+   MODAL — reuse ce-modal-overlay / ce-modal-dialog / ce-fa-lever
+   from free_agents.css. The title is "BRING HIM ONTO YOUR TEAM"
+   (mirrors the "BRING HIM INTO YOUR STABLE" phrasing from Free
+   Agents — staff version uses "team" instead of "stable").
+   ============================================================ */
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .ce-sm {
+    padding: 16px 12px 110px;
+  }
+  /* Table → horizontal scroll on small screens (mirrors roster.css). */
+  .ce-roster-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ce-roster-table {
+    min-width: 720px;
+  }
+}

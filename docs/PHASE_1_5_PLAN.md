@@ -1,3 +1,10 @@
+> ⚠️ **OBSOLETE** — This is a historical planning doc. The current source of truth is
+> [`docs/Hardening_Phase.md`](Hardening_Phase.md) (the canonical hardening plan) +
+> [`docs/CURRENT_SYSTEM_STATE.md`](CURRENT_SYSTEM_STATE.md) (what exists, what works,
+> what's broken). This doc is preserved for historical context only.
+
+---
+
 # CAGE EMPIRE — Phase 1.5: World DB Data Reconciliation Plan
 
 > **Status:** Awaiting supervisor sign-off. 19 fixes (4 critical + 15

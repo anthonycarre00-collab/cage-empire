@@ -84,8 +84,13 @@ A_ID = 1
 B_ID = 2
 
 # Seeded event values from src/seed_data.py — used for assertions.
+# HW8.1: the seeded event's date now follows simulation_clock.current_date
+# (was hardcoded "2026-08-15" while the clock started at "2026-08-14" —
+# 1 day in the future, which the event-lifecycle fix correctly blocks
+# from resolving). The fresh-DB clock starts at GAME_START_DATE = "2026-01-01"
+# (per build_db.py), so the seeded event is now dated "2026-01-01".
 SEEDED_EVENT_NAME = "Alpha Combat: Test Night"
-SEEDED_EVENT_DATE = "2026-08-15"
+SEEDED_EVENT_DATE = "2026-01-01"
 
 # Non-existent event_id used by case D — never assigned by AUTOINCREMENT
 # in a freshly-seeded DB (only event_id=1 exists after seed).

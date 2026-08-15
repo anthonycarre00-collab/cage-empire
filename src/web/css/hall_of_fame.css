@@ -1,0 +1,293 @@
+/* ============================================================
+   CAGE EMPIRE — Legends (Hall of Fame) Screen Styles
+   ============================================================
+   Voice/design (per P1_PLAN_WIRE_SCREENS §2 + CONVENTIONS §14):
+     - Section header: "LEGENDS" (gold accent — Legacy pillar).
+     - Summary strip: stat tiles + voice quote.
+     - Filter bar: search + sort dropdown.
+     - Inductee grid (auto-fill 320px): large portrait, name,
+       nickname, induction date, style chip, voice-layered
+       career_summary (italic serif), bullet highlights.
+     - Career record + title reigns at the bottom of each card.
+     - Cards have a gold-bordered portrait + gold-tinted header
+       to convey gravitas (Legacy pillar).
+     - Empty state with voice-appropriate phrasing.
+   ============================================================ */
+
+.ce-hof {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ce-hof .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   SUMMARY STRIP
+   ============================================================ */
+.ce-hof__summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-hof__stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-hof__stat--gold {
+  border-left: 3px solid var(--gold);
+  background: var(--gold-tint);
+}
+.ce-hof__stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-hof__stat-val {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-hof__stat--gold .ce-hof__stat-val { color: var(--gold); }
+.ce-hof__stat-quote {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ============================================================
+   FILTERS
+   ============================================================ */
+.ce-hof__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.ce-hof__filters .ce-filter-search { flex: 1; min-width: 200px; }
+.ce-hof__filters .ce-filter-group { min-width: 180px; }
+.ce-hof__filters .ce-filter-clear { margin-left: auto; }
+
+/* ============================================================
+   INDUCTEE GRID + CARD
+   ============================================================ */
+.ce-hof__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.ce-hof__card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+.ce-hof__card:hover {
+  border-color: var(--gold);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(224, 169, 87, 0.08);
+}
+
+/* Card header — portrait + name + inducted date + style chip */
+.ce-hof__card-header {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.ce-hof__portrait {
+  width: 84px;
+  height: 104px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 2px solid var(--gold);
+  background: var(--bg-base);
+  flex-shrink: 0;
+}
+.ce-hof__portrait--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--gold);
+  background: var(--bg-card-elevated);
+  border: 2px solid var(--gold);
+}
+.ce-hof__header-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ce-hof__name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+  line-height: 1.2;
+}
+.ce-hof__name:hover { color: var(--gold-bright); text-decoration: underline; }
+.ce-hof__nick {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ce-hof__inducted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.ce-hof__style-chip {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+/* Career summary — voice-layered prose */
+.ce-hof__summary-text {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+}
+
+/* Career highlights — bulleted list */
+.ce-hof__highlights {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-hof__highlight {
+  position: relative;
+  padding-left: 16px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.ce-hof__highlight::before {
+  content: '◆';
+  position: absolute;
+  left: 0;
+  color: var(--gold);
+  font-size: 10px;
+  top: 4px;
+}
+
+/* Card footer — record + reigns */
+.ce-hof__card-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-hof__stat-line {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-hof__stat-line .ce-mono {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 14px;
+  margin-right: 2px;
+}
+.ce-hof__stat-line--gold .ce-mono { color: var(--gold); }
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.ce-hof__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 64px 24px;
+  text-align: center;
+}
+.ce-hof__empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+.ce-hof__empty-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.ce-hof__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 520px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-hof { padding: 16px 12px 60px; }
+  .ce-hof__summary { grid-template-columns: 1fr; }
+  .ce-hof__grid { grid-template-columns: 1fr; }
+  .ce-hof__filters { flex-direction: column; align-items: stretch; }
+  .ce-hof__filters .ce-filter-clear { margin-left: 0; }
+  .ce-hof__card-header { flex-direction: column; align-items: center; text-align: center; }
+  .ce-hof__header-info { align-items: center; }
+}

@@ -1,0 +1,373 @@
+/* ============================================================
+   CAGE EMPIRE — Belts Screen Styles
+   ============================================================
+   Voice/design (per INFO-SCREENS-BATCH-1 §4):
+     - Section header: "THE BELTS" (gold accent) + subtitle
+       "who holds the gold".
+     - Summary strip: 3 stat tiles — Titles in play, Currently
+       held, player's promo held count (gold accent).
+     - Promo sections grouped, player's promo first + gold border
+       + "YOUR PROMO" chip.
+     - Title grid: each card shows weight class + champion
+       portrait + name (gold link) + reign voice phrase +
+       defense/reign/since meta.
+     - Vacant titles get a stripped-down card with "VACANT"
+       label + voice body.
+     - Voice phrases for reign length ("just won the belt" /
+       "long-reigning champion" / "era-defining reign").
+     - Voice empty state: "No titles have been contested yet."
+   ============================================================ */
+
+.ce-titles {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ce-titles .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   SUMMARY STRIP
+   ============================================================ */
+.ce-titles__summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-titles__summary-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-titles__summary-stat--player {
+  border-left: 3px solid var(--gold);
+  background: var(--gold-tint);
+}
+.ce-titles__summary-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-titles__summary-val {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-titles__summary-val--gold {
+  color: var(--gold);
+  font-size: 18px;
+}
+
+/* ============================================================
+   PROMO SECTION
+   ============================================================ */
+.ce-titles__promo {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ce-titles__promo--player {
+  border: 1px solid var(--gold);
+  box-shadow: 0 0 0 1px var(--gold-tint);
+}
+
+.ce-titles__promo-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+  background: var(--bg-card);
+}
+.ce-titles__promo-header:hover {
+  background: var(--bg-card-elevated);
+}
+.ce-titles__promo-header:focus {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+.ce-titles__promo-header--player {
+  background: var(--gold-tint);
+}
+.ce-titles__promo-header--player:hover {
+  background: var(--gold-tint-strong);
+}
+
+.ce-titles__promo-caret {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--gold);
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.ce-titles__promo-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.ce-titles__promo-logo--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+.ce-titles__promo-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ce-titles__promo-name {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ce-titles__promo-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-titles__sep {
+  color: var(--text-tertiary);
+}
+
+.ce-titles__player-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 3px 8px;
+}
+
+/* ============================================================
+   TITLE GRID — cards inside each promo section
+   ============================================================ */
+.ce-titles__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  padding: 12px 16px 16px;
+}
+
+.ce-titles__card {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.ce-titles__card:hover {
+  border-color: var(--gold);
+  transform: translateY(-1px);
+}
+.ce-titles__card--vacant {
+  background: var(--bg-card);
+  border-style: dashed;
+  border-color: var(--border-strong);
+  opacity: 0.7;
+}
+.ce-titles__card--vacant:hover {
+  border-color: var(--text-tertiary);
+  transform: none;
+}
+
+.ce-titles__card-wc {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-titles__wc-short {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.04em;
+}
+.ce-titles__wc-full {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.ce-titles__wc-women {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.ce-titles__card-body {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.ce-titles__portrait {
+  width: 72px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 2px solid var(--gold);
+  background: var(--bg-base);
+  flex-shrink: 0;
+}
+.ce-titles__portrait--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--gold);
+  background: var(--bg-card-elevated);
+  border: 2px solid var(--gold);
+}
+
+.ce-titles__champ-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ce-titles__champ-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.ce-titles__champ-name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-titles__champ-nick {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.ce-titles__champ-reign {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.ce-titles__champ-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+
+/* Vacant card body */
+.ce-titles__vacant-mark {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 12px 0 4px;
+}
+.ce-titles__vacant-body {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   EMPTY STATE — voice-phrased
+   ============================================================ */
+.ce-titles__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-titles__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-titles__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-titles {
+    padding: 16px 12px 60px;
+  }
+  .ce-titles__summary {
+    grid-template-columns: 1fr;
+  }
+  .ce-titles__grid {
+    grid-template-columns: 1fr;
+  }
+  .ce-titles__promo-header {
+    flex-wrap: wrap;
+  }
+  .ce-titles__player-tag {
+    flex-basis: 100%;
+    text-align: center;
+  }
+}

@@ -73,6 +73,7 @@ USAGE:
 """
 
 import random
+import sqlite3
 from datetime import datetime
 
 from voice import (
@@ -492,6 +493,27 @@ def generate_post(conn, fighter_id, post_type, target_fighter_id=None,
         ).fetchone()
         post_date = clock[0] if clock else "2026-08-15"
 
+    # HW5.4 (W18 — social media date integrity) — enforce
+    # post_date <= sim_date. If a caller passed a post_date in the
+    # future (e.g., an event_date for a scheduled-but-not-yet-fought
+    # event), clamp it to the sim's current_date. This prevents
+    # future-dated social posts from polluting the timeline (which
+    # would break the dashboard "recent posts" feed + the
+    # invariant_checker's future-dated-data check, should it be
+    # extended to social_posts in a future hardening pass).
+    try:
+        clock = conn.execute(
+            "SELECT simulation_clock.current_date FROM simulation_clock "
+            "WHERE clock_id=1"
+        ).fetchone()
+        if clock and clock[0]:
+            sim_date_str = clock[0]
+            if (isinstance(post_date, str)
+                    and post_date > sim_date_str):
+                post_date = sim_date_str
+    except sqlite3.Error:
+        pass
+
     # Verify the fighter exists.
     fighter_exists = conn.execute(
         "SELECT 1 FROM fighters WHERE fighter_id=?", (fighter_id,)
@@ -802,6 +824,23 @@ def _maybe_write_inter_promo_callout_news(conn, fighter_id, target_id,
             "WHERE clock_id=1"
         ).fetchone()
         post_date = clock[0] if clock else "2026-08-15"
+
+    # HW5.4 (W18 — social media date integrity) — clamp post_date
+    # to sim_date if it would be in the future. This news item is
+    # written alongside a social post (which is already clamped in
+    # generate_post), so we apply the same rule here for consistency.
+    try:
+        clock = conn.execute(
+            "SELECT simulation_clock.current_date FROM simulation_clock "
+            "WHERE clock_id=1"
+        ).fetchone()
+        if clock and clock[0]:
+            sim_date_str = clock[0]
+            if (isinstance(post_date, str)
+                    and post_date > sim_date_str):
+                post_date = sim_date_str
+    except sqlite3.Error:
+        pass
 
     fighter_full = _fighter_full_name(conn, fighter_id)
     target_full = _fighter_full_name(conn, target_id)

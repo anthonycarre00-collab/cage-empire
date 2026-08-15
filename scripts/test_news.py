@@ -85,9 +85,28 @@ def _resolve_seeded_fight(conn, seed=42):
 
     Resets the bus, registers news engine subscribers, resolves the
     fight, commits. Returns the fight_id.
+
+    HW8.1: advance the sim clock to the seeded event's date before
+    resolving — the engine now filters by event_date <= sim_date
+    (was previously unfiltered, which let future-dated events resolve).
     """
     reset_bus()
     news.register_subscribers()
+    # HW8.1 — advance clock to the seeded event's date (2026-08-15).
+    # The fresh-DB clock starts at 2026-08-14; without this advance,
+    # resolve_next_fight returns None (event is future-dated).
+    seeded = conn.execute(
+        "SELECT event_date FROM events "
+        "WHERE status='scheduled' "
+        "ORDER BY event_id ASC LIMIT 1"
+    ).fetchone()
+    if seeded and seeded[0]:
+        conn.execute(
+            "UPDATE simulation_clock SET current_date=? "
+            "WHERE clock_id=1",
+            (seeded[0],),
+        )
+        conn.commit()
     random.seed(seed)
     fid = app.resolve_next_fight(conn)
     conn.commit()
@@ -142,6 +161,11 @@ def case_b_variety():
     }
     # Call generate_fight_news 10 times directly (NOT via the bus).
     # Each call uses a fresh RNG so the template pick varies.
+    # HW4.3 — daily caps: fight news is SIGNIFICANT (cap 5/day). All
+    # 10 calls share the same event_date, so only 5 are written (the
+    # other 5 are suppressed by the SIGNIFICANCE cap). The test
+    # verifies both the cap (5 written, 5 suppressed) AND that the 5
+    # written items have ≥3 unique headlines.
     for _ in range(10):
         news.generate_fight_news(conn, mock_event)
     conn.commit()
@@ -150,8 +174,9 @@ def case_b_variety():
         "ORDER BY news_item_id"
     ).fetchall()]
     unique = set(headlines)
-    check("B", "10 calls wrote 10 news items",
-          len(headlines) == 10, f"got={len(headlines)}")
+    # HW4.3 — daily cap on SIGNIFICANT is 5/day. 10 calls → 5 written.
+    check("B", "10 calls wrote 5 news items (HW4.3 SIGNIFICANT cap=5/day)",
+          len(headlines) == 5, f"got={len(headlines)}")
     check("B", "at least 3 unique headlines produced",
           len(unique) >= 3, f"got={len(unique)} unique")
     if unique:
@@ -241,6 +266,20 @@ def case_e_title_changed_triggers():
     bus.subscribe(Events.TITLE_CHANGED,
                   lambda c, e: title_events.append(e),
                   name="test_capture")
+    # HW8.1 — advance clock to the seeded event's date so
+    # resolve_next_fight can pick its fights.
+    seeded = conn.execute(
+        "SELECT event_date FROM events "
+        "WHERE status='scheduled' "
+        "ORDER BY event_id ASC LIMIT 1"
+    ).fetchone()
+    if seeded and seeded[0]:
+        conn.execute(
+            "UPDATE simulation_clock SET current_date=? "
+            "WHERE clock_id=1",
+            (seeded[0],),
+        )
+        conn.commit()
     random.seed(42)
     app.resolve_next_fight(conn)
     conn.commit()
@@ -407,6 +446,14 @@ def case_tick_retirement():
     # (age 40+ AND career_health < 60). Vale was born 1994-05-11,
     # so by 2026-08-15 he's 32 — too young. Set his DOB back to
     # 1975 (makes him ~51) and career_health=30 to force retirement.
+    # HW2.3: also set the sim clock to 2026-07-20 so the next tick
+    # lands on 2026-07-21 — the fighter's birthday. _check_retirements
+    # is birthday-gated (only checks fighters whose DOB month/day
+    # matches current_date month/day), so without this clock override
+    # the test would silently pass on the old seed (2026-07-20) and
+    # silently fail on the new seed (2026-01-01, tick → 2026-01-02,
+    # not the fighter's birthday). Making the clock explicit removes
+    # the seed-date dependency.
     conn.execute(
         "UPDATE fighters SET date_of_birth='1975-07-21' WHERE fighter_id=1"
     )
@@ -414,6 +461,11 @@ def case_tick_retirement():
         "UPDATE fighter_career SET career_health=30, "
         "record_wins=18, record_losses=7, record_draws=1, "
         "title_reigns=2 WHERE fighter_id=1"
+    )
+    conn.execute(
+        "UPDATE simulation_clock SET current_date='2026-07-20', "
+        "current_day=1, current_month=7, current_year=2026 "
+        "WHERE clock_id=1"
     )
     conn.commit()
     # Run a tick — _check_retirements will retire Vale and write

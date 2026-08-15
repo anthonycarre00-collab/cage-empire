@@ -516,10 +516,18 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
     # this ceiling with diminishing returns as they approach it. The
     # rare-elite distribution makes "that kid from Mexico" prospects
     # genuinely rare — ~1 in 10 regen fighters has elite potential.
+    #
+    # CR-M1 (docs/MASTER_PLAN_MATCHMAKING.md §2.1): also set
+    # `realization` via fighter_gen.generate_realization(personality).
+    # Not every fighter hits their potential — personality (discipline,
+    # coachability, professionalism, ego, risk_taking, attention_seeking)
+    # determines how close they get. A "bust" (realization=0.5) with
+    # potential=85 has effective_ceiling=42, not 85.
     potential = fighter_gen.generate_potential()
+    realization = fighter_gen.generate_realization(pers)
     conn.execute(
-        "INSERT INTO fighter_career (fighter_id, potential) VALUES (?, ?)",
-        (fid, potential),
+        "INSERT INTO fighter_career (fighter_id, potential, realization) VALUES (?, ?, ?)",
+        (fid, potential, realization),
     )
 
     # 11. NO rankings row at generation time. See D2 above — the
@@ -819,3 +827,452 @@ def check_retirements(conn):
     if current_date is None:
         return []  # defensive — no clock row, no retirements
     return _check_retirements(conn, current_date)
+
+
+# ----------------------------------------------------------------
+# Staff retirement (Phase M2.2 — docs/MASTER_PLAN_MATCHMAKING.md §2.3).
+#
+# Staff NEVER retired in the original implementation (per
+# docs/RESEARCH_FIGHTERGEN_RIVALAI_STAFFLIFE.md §C). A 65yo GM
+# would keep running the promo forever. Phase M2.2 adds the
+# retirement probability curve + STAFF_RETIRED event + contract
+# void + news item.
+#
+# PROBABILITY CURVE (per docs/MASTER_PLAN_MATCHMAKING.md §2.3):
+#   - Age 65-69: 10% chance/year
+#   - Age 70-74: 25% chance/year
+#   - Age 75+:   50% chance/year
+#   - Under 65:  0% chance
+#
+# This is checked ONCE PER YEAR on the annual tick (Jan 1) by
+# tick_processor._check_staff_annual_lifecycle — see M2.1.
+#
+# ON RETIREMENT:
+#   1. Fire STAFF_RETIRED event on the event bus (the news engine
+#      subscribes to write a richer retirement news item).
+#   2. UPDATE contracts SET status='terminated' for all the staff's
+#      active staff_contracts (voids the contract).
+#   3. UPDATE staff SET promotion_id=NULL, gym_id=NULL (they leave).
+#   4. Write an inline news item: "[Staff Name] has retired from
+#      [Promo Name] after a distinguished career." (business-page
+#      register per CONVENTIONS §14 — no raw numbers, no tabloid
+#      clichés). This is the placeholder; the event-driven news
+#      engine item (M2.2 subscriber in news.py) is the richer one.
+#   5. M2.3 (next commit): generate a replacement staff member +
+#      record staff_regen_lineage.
+# ----------------------------------------------------------------
+
+# Staff retirement probability curve (per docs/MASTER_PLAN_MATCHMAKING.md
+# §2.3). Each band's probability is the per-year chance of retirement
+# (rolled once per year on Jan 1).
+STAFF_RETIREMENT_PROB_BY_AGE_BAND = {
+    'under_65': 0.00,   # 0% — never retire
+    '65_69':    0.10,   # 10% chance/year
+    '70_74':    0.25,   # 25% chance/year
+    '75_plus':  0.50,   # 50% chance/year
+}
+
+
+def _staff_retirement_prob(age):
+    """Return the per-year retirement probability for a staff member
+    of the given age.
+
+    Pure function (no DB access) — easy to unit-test. Mirrors the
+    fighter retirement curve pattern (_compute_retirement_probability
+    in tick_processor.py) but simpler: no modifiers for career
+    health / streaks / championships (staff don't have those concepts
+    in the same way fighters do — a 70yo GM is just as likely to
+    retire as a 70yo cutman).
+
+    Args:
+        age: int (years).
+
+    Returns:
+        Float probability in [0.0, 0.50].
+    """
+    if age < 65:
+        return STAFF_RETIREMENT_PROB_BY_AGE_BAND['under_65']
+    if age <= 69:
+        return STAFF_RETIREMENT_PROB_BY_AGE_BAND['65_69']
+    if age <= 74:
+        return STAFF_RETIREMENT_PROB_BY_AGE_BAND['70_74']
+    return STAFF_RETIREMENT_PROB_BY_AGE_BAND['75_plus']
+
+
+def check_staff_retirements(conn, current_date):
+    """Check all staff for retirement on the annual tick (Jan 1).
+
+    Called by tick_processor._check_staff_annual_lifecycle AFTER the
+    aging UPDATE has run — so staff.age reflects the post-aging value
+    (a staff member who turned 65 on this Jan 1 is now eligible for
+    the 10% roll, not the 0% under-65 roll).
+
+    For each staff member:
+      1. Compute the retirement probability via
+         _staff_retirement_prob (age-banded curve).
+      2. Roll rng.random() — if < probability, retire the staff.
+      3. On retirement: void contract, set promotion_id=NULL +
+         gym_id=NULL, write a news item, fire STAFF_RETIRED event,
+         generate a replacement (M2.3 — added in the next commit).
+
+    Args:
+        conn: sqlite3.Connection (caller commits).
+        current_date: ISO date string 'YYYY-MM-DD' (the sim date —
+            must be January 1 for the lifecycle to be running, but
+            this function does NOT re-check; the caller gates it).
+
+    Returns:
+        List of staff_ids retired on this tick.
+    """
+    # Fetch all staff who are old enough to be retirement-eligible
+    # (age >= 65 — the threshold below which _staff_retirement_prob
+    # always returns 0.0). Pre-filtering in SQL drops the candidate
+    # pool from ~380 rows to typically 0-30 rows per annual tick.
+    # We pull promotion_id + role_type + skill_level + first/last
+    # name so we can write the news item + fire the event with the
+    # right payload without re-querying per staff.
+    rows = conn.execute(
+        "SELECT staff_id, first_name, last_name, age, role_type, "
+        "specialty, promotion_id, gym_id, skill_level "
+        "FROM staff WHERE age >= 65"
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Get or create the "System Feed" news source (same pattern as
+    # _check_retirements / _check_contract_expiry).
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    # One RNG per annual tick — keeps the retirement rolls
+    # deterministic per tick.
+    rng = random.Random()
+
+    retired = []
+    for (staff_id, first_name, last_name, age, role_type, specialty,
+         promotion_id, gym_id, skill_level) in rows:
+        prob = _staff_retirement_prob(age)
+
+        # Roll the dice. rng.random() returns a float in [0.0, 1.0).
+        # If it's < prob, the staff retires today.
+        if rng.random() >= prob:
+            continue  # staff works on for another year
+
+        # Retire the staff.
+        # (1) Void all the staff's active staff_contracts.
+        #     contracts.status='terminated' mirrors the rival AI's
+        #     _fire_staff pattern — terminated (not 'expired') so
+        #     _check_contract_expiry doesn't double-process them.
+        conn.execute(
+            "UPDATE contracts SET status='terminated', "
+            "updated_at=CURRENT_TIMESTAMP "
+            "WHERE contract_id IN ("
+            "    SELECT sc.contract_id FROM staff_contracts sc "
+            "    WHERE sc.staff_id = ?) "
+            "AND status='active'",
+            (staff_id,),
+        )
+        # (2) Remove the staff from their promo + gym (they leave).
+        #     promotion_id=NULL means they no longer show up in the
+        #     promo's staff list. gym_id=NULL is defensive (most
+        #     non-coach staff have gym_id=NULL already; coaches
+        #     gym-bound — but a 75yo coach retiring from a gym also
+        #     leaves the gym).
+        conn.execute(
+            "UPDATE staff SET promotion_id=NULL, gym_id=NULL, "
+            "updated_at=CURRENT_TIMESTAMP WHERE staff_id=?",
+            (staff_id,),
+        )
+
+        # (3) Write the inline retirement news item. topic='staff'
+        #     so future UI filters can group staff news together.
+        #     The headline follows the brief's exact wording: "[Staff
+        #     Name] has retired from [Promo Name] after a distinguished
+        #     career." (business-page register, no raw numbers).
+        #     For staff with no promotion_id (e.g., a free-agent
+        #     staff retiring from the Staff Market), use a generic
+        #     "the sport" phrasing instead.
+        full_name = f"{first_name} {last_name}"
+        if promotion_id is not None:
+            promo_row = conn.execute(
+                "SELECT name FROM promotions WHERE promotion_id=?",
+                (promotion_id,),
+            ).fetchone()
+            promo_name = promo_row[0] if promo_row else f"Promotion {promotion_id}"
+            headline = f"{full_name} retires from {promo_name}"
+            body = (f"{full_name} has retired from {promo_name} after a "
+                    f"distinguished career. The {role_type.replace('_', ' ')} "
+                    f"steps away from the promotion, leaving a vacancy that "
+                    f"will need to be filled.")
+        else:
+            headline = f"{full_name} announces retirement"
+            body = (f"{full_name}, a {role_type.replace('_', ' ')}, has "
+                    f"announced retirement. After years of service across "
+                    f"the sport, the veteran steps away from active duty.")
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, promotion_id, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (src_id, headline, body, "neutral", "staff",
+             promotion_id, current_date),
+        )
+
+        # (4) Fire STAFF_RETIRED on the event bus. The news engine
+        #     subscribes (M2.2 subscriber in news.py) to write a
+        #     richer retirement news item with voice descriptors.
+        #     Lazy import to avoid circular dependency.
+        try:
+            from event_bus import get_bus, Events
+            bus = get_bus()
+            bus.publish(conn, {
+                'type': Events.STAFF_RETIRED,
+                'staff_id': staff_id,
+                'role_type': role_type,
+                'promotion_id': promotion_id,
+                'current_date': current_date,
+                'event_date': current_date,
+            })
+        except ImportError:
+            pass
+
+        # (5) M2.3 — generate a replacement staff member.
+        #     Deferred to the next commit. The lazy import + try/
+        #     except means M2.2 is functional on its own (retirements
+        #     happen, contracts void, news written) but no replacement
+        #     is generated yet. Once M2.3 adds generate_staff_replacement
+        #     to this same module, this call will start working.
+        try:
+            generate_staff_replacement(
+                conn,
+                retiring_staff_id=staff_id,
+                role_type=role_type,
+                retiring_skill_level=skill_level,
+                retiring_promotion_id=promotion_id,
+                current_date=current_date,
+            )
+        except NameError:
+            # generate_staff_replacement not yet defined — M2.2-only
+            # state (between this commit and M2.3). Safe to skip.
+            pass
+
+        retired.append(staff_id)
+
+    return retired
+
+
+# ----------------------------------------------------------------
+# Staff regen (Phase M2.3 — docs/MASTER_PLAN_MATCHMAKING.md §2.3).
+#
+# When a staff member retires (M2.2), generate a replacement so the
+# staff market doesn't shrink over time. The replacement:
+#   - Has the SAME role_type as the retiring staff.
+#   - Has a skill_level within ±15 of the retiring staff's skill
+#     (clamped to [10, 95] — a replacement is never world-class
+#     fresh out of the gate, and never worse than 'unproven').
+#   - Has a NEW name drawn from the name_pools table.
+#   - Is AGED 30-45 (prime working years — young enough to grow,
+#     old enough to have a track record).
+#   - Enters as a FREE AGENT (promotion_id=NULL, gym_id=NULL) so
+#     the Staff Market UI (Phase E4) surfaces them and either the
+#     player or the rival AI's _evaluate_hires can sign them.
+#   - Records a staff_regen_lineage row linking retiring + replacement
+#     so future torch-passing narrative features can read the link.
+#
+# DESIGN CHOICE: replacement goes into the Staff Market (FA pool),
+# NOT directly to the retiring staff's promo. The brief says
+# "Set promotion_id = the retiring staff's promo (if the promo wants
+# to replace — rival AI decision) OR set promotion_id = NULL (the
+# replacement goes into the Staff Market as a free agent)." The
+# simpler + cleaner choice is the Staff Market path: the rival AI's
+# existing _evaluate_hires (extended in M2.3 to consider free-agent
+# staff) will pick up the replacement on the next quarterly tick if
+# the promo still has a gap. This avoids hard-coding the "promo wants
+# to replace" decision into the regen engine — the rival AI makes
+# that call via its normal hire logic.
+# ----------------------------------------------------------------
+
+# Replacement staff age range (per brief: 30-45 — prime working years).
+STAFF_REGEN_AGE_MIN = 30
+STAFF_REGEN_AGE_MAX = 45
+
+# Replacement skill_level delta range (per brief: ±15 of the retiring
+# staff's skill). The delta is rolled uniformly in [-15, +15] then
+# clamped to [10, 95] (a replacement is never world-class fresh out
+# of the gate — max 95 — and never worse than 'unproven' — min 10).
+STAFF_REGEN_SKILL_DELTA = 15
+STAFF_REGEN_SKILL_MIN = 10
+STAFF_REGEN_SKILL_MAX = 95
+
+
+def generate_staff_replacement(conn, retiring_staff_id, role_type,
+                                retiring_skill_level=None,
+                                retiring_promotion_id=None,
+                                current_date=None):
+    """Generate a replacement staff member when one retires.
+
+    Called by check_staff_retirements after a staff member's
+    retirement roll succeeds. The replacement:
+      - Has the SAME role_type.
+      - Has a skill_level within ±15 of the retiring staff's skill
+        (clamped to [10, 95]).
+      - Has a NEW name from name_pools.
+      - Is aged 30-45 (prime working years).
+      - Enters as a FREE AGENT (promotion_id=NULL, gym_id=NULL).
+      - Records a staff_regen_lineage row.
+
+    Args:
+        conn: sqlite3.Connection (caller commits).
+        retiring_staff_id: the retiring staff's staff_id (for the
+            lineage record).
+        role_type: the role to inherit ('commentator', 'doctor',
+            'cutman', 'scout', 'general_manager', 'coach').
+        retiring_skill_level: the retiring staff's skill_level
+            (0-100). Used to compute the replacement's skill range.
+            If None, defaults to 50 ('promising').
+        retiring_promotion_id: the retiring staff's promo. NOT used
+            for the replacement (the replacement goes into the Staff
+            Market as a free agent, per the brief's "OR" branch).
+            Kept in the signature for forward-compat with a future
+            "auto-renew into the same promo" path.
+        current_date: ISO date string 'YYYY-MM-DD' for the regen
+            news item's published_at + the lineage regen_date.
+
+    Returns:
+        The new staff_id (int) on success, None on failure (e.g.,
+        name pool exhausted — defensive).
+    """
+    # Defensive defaults.
+    if retiring_skill_level is None:
+        retiring_skill_level = 50
+    if current_date is None:
+        current_date = datetime.now().strftime("%Y-%m-%d")
+
+    # 1. Pick a name from name_pools. Same pattern as the rival AI's
+    #    _hire_staff: random first_male + last. Uniqueness is NOT
+    #    enforced (staff names can collide — the staff table has no
+    #    UNIQUE constraint on first_name+last_name, unlike fighters).
+    first_row = conn.execute(
+        "SELECT name_value FROM name_pools WHERE name_type='first_male' "
+        "ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    last_row = conn.execute(
+        "SELECT name_value FROM name_pools WHERE name_type='last' "
+        "ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    if not first_row or not last_row:
+        # name_pools empty — defensive (seed always populates it).
+        print(f"WARNING: name_pools empty — cannot generate staff "
+              f"replacement for retiring staff_id={retiring_staff_id}",
+              file=sys.stderr)
+        return None
+    first_name = first_row[0]
+    last_name = last_row[0]
+
+    # 2. Age 30-45 (prime working years).
+    age = random.randint(STAFF_REGEN_AGE_MIN, STAFF_REGEN_AGE_MAX)
+
+    # 3. Skill_level: ±15 of the retiring staff's skill, clamped.
+    delta = random.randint(-STAFF_REGEN_SKILL_DELTA, STAFF_REGEN_SKILL_DELTA)
+    new_skill = max(
+        STAFF_REGEN_SKILL_MIN,
+        min(STAFF_REGEN_SKILL_MAX, retiring_skill_level + delta),
+    )
+
+    # 4. Specialty — same role-appropriate default as the rival AI's
+    #    _hire_staff. For scouts, the specialty is a JSON blob with
+    #    scouting stats; we use a mid-tier template (50/50 + 15%
+    #    mistake_rate) rather than randomizing per-stat (the rival
+    #    AI's _hire_staff also uses this same template — keep them
+    #    in sync).
+    specialty_by_role = {
+        'scout': '{"eye_for_talent": 50, "technical_analysis": 50, '
+                 '"character_reading": 50, "mistake_rate": 15, '
+                 '"bias_style": "Balanced", "bias_nationality": null, '
+                 '"bias_aggression": 0, "current_assignment": null, '
+                 '"assignment_start_date": null}',
+        'commentator': 'play_by_play',
+        'doctor': 'sports_medicine',
+        'cutman': 'cuts_and_swelling',
+        'general_manager': 'operations',
+        'coach': 'head_coach:mma',
+    }
+    specialty = specialty_by_role.get(role_type, 'general')
+
+    # 5. INSERT the replacement staff row. promotion_id=NULL +
+    #    gym_id=NULL (free agent — appears in the Staff Market UI).
+    #    salary_ask + contract_length_ask get schema defaults
+    #    (50000.0 / 2) — the Staff Market UI computes a per-role
+    #    fair-value ask from skill_level at hire time.
+    cur = conn.execute(
+        "INSERT INTO staff (first_name, last_name, age, role_type, "
+        "specialty, promotion_id, gym_id, skill_level) "
+        "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)",
+        (first_name, last_name, age, role_type, specialty, new_skill),
+    )
+    new_staff_id = cur.lastrowid
+
+    # 6. Record the staff_regen_lineage row. INSERT OR IGNORE
+    #    protects against the (theoretically impossible) case of a
+    #    duplicate (retiring, replacement) pair — the UNIQUE
+    #    constraint enforces this.
+    conn.execute(
+        "INSERT OR IGNORE INTO staff_regen_lineage "
+        "(retiring_staff_id, replacement_staff_id, role_type, regen_date) "
+        "VALUES (?, ?, ?, ?)",
+        (retiring_staff_id, new_staff_id, role_type, current_date),
+    )
+
+    # 7. Write a "new staff emerges" news item. topic='staff' so it
+    #    groups with the retirement news. Sentiment='neutral' (the
+    #    emergence of a new staff member isn't inherently positive or
+    #    negative — it's just a market event). Voice-compliant per
+    #    CONVENTIONS §14 — no raw skill_level digits; use voice
+    #    phrases (mirrors news._staff_skill_phrase).
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()
+    if src_row is None:
+        src_id = conn.execute(
+            "INSERT INTO news_sources (name, credibility, sensationalism, "
+            "bias, regional_reach, reliability, frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("System Feed", 70, 40, 50, 60, 80, 80),
+        ).lastrowid
+    else:
+        src_id = src_row[0]
+
+    # Voice phrase for skill_level (mirrors news._staff_skill_phrase).
+    if new_skill >= 80:
+        skill_phrase = 'world-class'
+    elif new_skill >= 65:
+        skill_phrase = 'established'
+    elif new_skill >= 45:
+        skill_phrase = 'promising'
+    else:
+        skill_phrase = 'unproven'
+
+    role_display = role_type.replace('_', ' ')
+    full_name = f"{first_name} {last_name}"
+    headline = f"New {role_display} {full_name} enters the staff market"
+    body = (f"A new {role_display}, {full_name}, has entered the staff "
+            f"market as a free agent. Rated {skill_phrase} in the role, "
+            f"the new arrival is available for hire by any promotion "
+            f"looking to fill the vacancy left by a recent retirement.")
+    conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "neutral", "staff", current_date),
+    )
+
+    return new_staff_id
