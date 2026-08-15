@@ -14,9 +14,11 @@
 
 ## 1. What exists — All 22 screens
 
-The web UI (`src/web/`) is the active UI; `src/ui_legacy/` is the
-deprecated Tkinter UI kept only for the `save_load` screen. The 22
-screens are:
+The web UI (`src/web/`) is the active UI. The legacy Tkinter UI
+(`src/ui_legacy/`) was removed in the NEWS-FINANCE-GYM-LEGACY
+sweep (Issue 9) — the web UI now has full save/load support via
+the `save_game` / `load_game` API methods in `src/app_web.py`.
+The 22 screens are:
 
 | #  | Screen                  | JS module                        | Backend module                        |
 |----|-------------------------|----------------------------------|---------------------------------------|
@@ -41,12 +43,14 @@ screens are:
 | 19 | Gyms                    | `src/web/js/gyms.js`             | `src/app.py`                          |
 | 20 | Scouting                | `src/web/js/scouting.js`         | `src/scouting.py` + `src/services/scouting_svc.py` |
 | 21 | Staff Market            | `src/web/js/staff_market.js`     | `src/app.py`                          |
-| 22 | Save/Load               | `src/ui_legacy/screens/screens/save_load.py` (legacy Tk) | `src/save_load.py` |
+| 22 | Save/Load               | `src/web/js/app.js` (modal)      | `src/app_web.py` (Api.save_game / Api.load_game) + `src/save_load.py` |
 
 The web shell (`src/web/index.html` + `app.js` + `bridge.js` + `wire.js`)
-loads the 21 web screens into a tabbed SPA. The legacy Tkinter shell
-(`src/ui_legacy/app.py`) is kept for `Save/Load` only — the web shell
-doesn't yet have a native save/load screen.
+loads all 22 web screens into a tabbed SPA. The Save/Load screen is a
+modal triggered from the header — calls `Api.save_game(name)` /
+`Api.load_game(name)` which delegate to `save_load.save_game` /
+`save_load.load_game` (file-copy + WAL checkpoint + .meta.json sidecar
++ 4-step compatibility check).
 
 ---
 

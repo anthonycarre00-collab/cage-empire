@@ -95,7 +95,8 @@ _PRUNE_POLICY = (
     # runs (the original 365/90/180 values let news_items / social_
     # posts / injuries / suspensions grow to 50K+ rows by year 2,
     # slowing every "recent news" query).
-    ("news_items",        "published_at",         180, None),
+    ("news_items",        "published_at",         180,
+     "topic NOT IN ('awards', 'rival_recap', 'gym_transfer')"),
     ("daily_headlines",   "headline_date",         60, None),
     ("social_posts",      "post_date",             90, None),
     # Only prune RESOLVED injuries (is_active=0). Active injuries
@@ -172,6 +173,30 @@ _PRUNE_POLICY = (
     # recent issues; old tick health is irrelevant. 365 days keeps
     # a full year of history for post-mortem analysis.
     ("simulation_tick_health", "tick_date",        365, None),
+    # ----------------------------------------------------------------
+    # NEWS-FINANCE-GYM-LEGACY Issue 6.5 — long-lived news topics.
+    #
+    # The new news topics added by Issue 6.3 (year-end awards),
+    # Issue 6.4 (rival event recaps), and Issue 8 (gym transfers)
+    # are "year-in-review" content the player may browse up to a
+    # year later. They're excluded from the 180-day news_items
+    # prune above (via the extra_where clause) and pruned at 365
+    # days via the entries below.
+    #
+    # Volume estimate: ~6 awards + ~150 rival recaps + ~15 gym
+    # transfers = ~170 rows/year. At 365-day retention the steady-
+    # state size is ~170 rows (acceptable — the table can hold
+    # millions).
+    # ----------------------------------------------------------------
+    # awards — 6 LEGENDARY news items per Jan 1.
+    ("news_items",        "published_at",         365,
+     "topic = 'awards'"),
+    # rival_recap — SIGNIFICANT news item per rival EVENT_COMPLETED.
+    ("news_items",        "published_at",         365,
+     "topic = 'rival_recap'"),
+    # gym_transfer — ROUTINE news item per fighter gym change.
+    ("news_items",        "published_at",         365,
+     "topic = 'gym_transfer'"),
 )
 
 

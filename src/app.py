@@ -1033,22 +1033,17 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     # PYWEBVIEW-BUILD: the CustomTkinter UI has been migrated to a
-    # pywebview desktop app (src/app_web.py). The old CTk shell lived
-    # in src/ui/app.py but has been archived to src/ui_legacy/app.py.
-    # This file remains the home of the game-logic helpers (_vacate_
-    # title_on_retirement, generate_fighter, _CAMP_FOCUS_ATTRS, etc.)
-    # that tick_processor imports — but it is NO LONGER the user-
-    # facing entry point.
+    # pywebview desktop app (src/app_web.py). This file remains the
+    # home of the game-logic helpers (_vacate_title_on_retirement,
+    # generate_fighter, _CAMP_FOCUS_ATTRS, etc.) that tick_processor
+    # imports — but it is NO LONGER the user-facing entry point.
     #
-    # To launch the OLD tkinter App (legacy debugging only):
-    #   python src/app.py --legacy
-    # To launch the archived CTk shell (will likely fail — deps moved):
-    #   python src/ui_legacy/app.py
-    # To launch the NEW pywebview app (default):
+    # NEWS-FINANCE-GYM-LEGACY Issue 9 — the legacy Tkinter UI
+    # (src/ui_legacy/) has been removed entirely. The web UI
+    # (src/app_web.py + src/web/) is the only UI; it has full
+    # save/load support via the save_game / load_game API methods.
+    # To launch the game:
     #   python src/app_web.py
-    if "--legacy" in sys.argv:
-        App().mainloop()
-    else:
-        # Delegate to the new pywebview entry point.
-        from app_web import main as _web_main
-        _web_main()
+    # Delegate to the pywebview entry point.
+    from app_web import main as _web_main
+    _web_main()

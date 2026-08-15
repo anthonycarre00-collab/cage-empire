@@ -715,6 +715,10 @@ def register_all_subscribers():
         "suspensions", "agent_offers", "career_arc", "rival_ai",
         "show_rating", "venues", "save_load", "player_settings",
         "reputation", "scouting",
+        # NEWS-FINANCE-GYM-LEGACY Issue 8 — weekly gym-transfer
+        # subscriber. Registered here so the soak test exercises the
+        # same gym-transfer flow as the live web app.
+        "gym_transfers",
     ]
     for mod_name in top_level_modules:
         try:

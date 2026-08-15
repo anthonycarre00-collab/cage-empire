@@ -145,6 +145,14 @@ PROMO_REP_DELTA_BANKRUPTCY = -2     # current_cash < 0 after event
 PROMO_REP_DELTA_BANKRUPTCY_FAILURE = -10  # was -15 — less harsh
 PROMO_FAN_TRUST_DELTA_BANKRUPTCY_FAILURE = -15  # was -20 — less harsh
 BANKRUPTCY_CONSECUTIVE_MONTHS_REQUIRED = 3  # was 2 — give promos more time to recover
+# NEWS-FINANCE-GYM-LEGACY Issue 7.1 — confirmed at 3 (the brief asked
+# for "3+ consecutive months of negative cash flow, was likely 1-2
+# months". The pre-fix value was 2; this constant was already raised
+# to 3 in the v3.23.0 DESIGN_REVIEW_E5 sweep. The threshold for
+# REACHING the CRISIS state (the step before BANKRUPT) is also
+# immediate-cash<0 — that stays at 1 month so a sudden catastrophic
+# loss still puts the promo on alert, but the BANKRUPT → REBUILDING
+# transition now requires 3 full months of sustained insolvency.
 BANKRUPTCY_CASH_RESET_FRACTION = 0.50  # was 0.25 — give promos 50% of starting budget (more recovery cash)
 BANKRUPTCY_TOP_FIGHTERS_RELEASED = 2  # was 3 — release fewer fighters
 BANKRUPTCY_RANDOM_FIGHTERS_RELEASED_MIN = 1  # was 3 — release fewer random fighters
@@ -956,6 +964,15 @@ def _check_rebuilding_status(conn, current_date):
                 "updated_at=CURRENT_TIMESTAMP WHERE promotion_id=?",
                 (promo_id,),
             )
+            # NEWS-FINANCE-GYM-LEGACY Issue 7.2 — clear the cash-
+            # injection flag so a future bankruptcy on this promo is
+            # eligible for the "new ownership" injection again.
+            try:
+                _clear_rebuilding_injection_flag(conn, promo_id)
+            except Exception as e:
+                print(f"[reputation._check_rebuilding_status] WARN: "
+                      f"clear injection flag failed for promo "
+                      f"{promo_id}: {e}", flush=True)
             try:
                 from news import generate_rebuild_complete_news
                 generate_rebuild_complete_news(
@@ -983,6 +1000,10 @@ def _process_rebuilding_recovery(conn, current_date):
     Defensive: only applies to promos with is_rebuilding=1. The rep
     gain is small (+1) and clamped to REP_CEIL by _adjust_promotion_
     rep. A "rebuild continues" news item is also written.
+
+    NEWS-FINANCE-GYM-LEGACY Issue 7.2 — also calls
+    _process_rebuilding_cash_injection to apply the one-time "new
+    ownership" cash injection 3 months into the rebuilding period.
     """
     # Compute the 30-day window start (ISO date string).
     try:
@@ -1023,6 +1044,227 @@ def _process_rebuilding_recovery(conn, current_date):
             print(f"[reputation._process_rebuilding_recovery] WARN: "
                   f"rebuild continues news write failed: {e}",
                   flush=True)
+
+    # NEWS-FINANCE-GYM-LEGACY Issue 7.2 — apply the one-time "new
+    # ownership" cash injection 3 months into the rebuilding period.
+    # Called once per monthly tick AFTER the per-promo reputation
+    # loop so the cash injection doesn't gate the rep gain.
+    try:
+        _process_rebuilding_cash_injection(conn, current_date)
+    except Exception as e:
+        print(f"[reputation._process_rebuilding_recovery] WARN: "
+              f"cash injection failed: {e}", flush=True)
+
+
+# ----------------------------------------------------------------
+# NEWS-FINANCE-GYM-LEGACY Issue 7.2 — Rebuilding cash injection.
+#
+# Per the brief: "When a promotion is in REBUILDING, give them a
+# cash injection after 3 months (the 'new ownership' narrative):
+# +$2M for small, +$5M for mid, +$10M for major."
+#
+# A bankrupt promo gets current_cash reset to 50% of starting_budget
+# at bankruptcy time. 3 months later, "new ownership" injects fresh
+# capital to keep the recovery viable. This is applied ONCE per
+# bankruptcy event (tracked via the rebuilding_cash_injections
+# player_settings JSON blob).
+# ----------------------------------------------------------------
+
+# Cash injection amount by promo size_tier.
+REBUILDING_CASH_INJECTION_BY_TIER = {
+    "major": 10_000_000,
+    "mid":    5_000_000,
+    "small":  2_000_000,
+}
+# Months into the rebuilding period before the injection fires.
+# The rebuilding period itself is 6 months (REBUILDING_PERIOD_MONTHS).
+# At month 3 (halfway), new ownership injects capital.
+REBUILDING_CASH_INJECTION_MONTH = 3
+REBUILDING_INJECTIONS_SETTING_KEY = "rebuilding_cash_injections"
+
+
+def _load_rebuilding_injections(conn):
+    """Return the dict of promo_id (as str) → injection_applied_flag.
+
+    A promo's entry is set to 1 once the cash injection fires. Cleared
+    when the rebuilding period completes (so a future bankruptcy on
+    the same promo is eligible again).
+    """
+    row = conn.execute(
+        "SELECT setting_value FROM player_settings WHERE setting_key=?",
+        (REBUILDING_INJECTIONS_SETTING_KEY,),
+    ).fetchone()
+    if not row or not row[0]:
+        return {}
+    try:
+        d = json.loads(row[0])
+        return d if isinstance(d, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _save_rebuilding_injections(conn, injections):
+    """Persist the rebuilding_cash_injections dict back to player_settings."""
+    conn.execute(
+        "INSERT OR REPLACE INTO player_settings (setting_key, setting_value) "
+        "VALUES (?, ?)",
+        (REBUILDING_INJECTIONS_SETTING_KEY, json.dumps(injections)),
+    )
+
+
+def _process_rebuilding_cash_injection(conn, current_date):
+    """Apply the one-time "new ownership" cash injection to rebuilding
+    promos that are >= 3 months into their rebuilding period.
+
+    For each promo with is_rebuilding=1:
+      1. Compute months_since_bankruptcy by subtracting
+         (REBUILDING_PERIOD_MONTHS) from rebuilding_until_date and
+         diffing against current_date.
+      2. If months_since_bankruptcy >= 3 AND the promo hasn't already
+         received the injection (tracked in player_settings):
+           - Read size_tier, look up the injection amount.
+           - UPDATE promotions.current_cash += amount.
+           - Record a finance_transactions row of type 'sponsorship'
+             (the closest existing transaction_type for an inflow)
+             with description "New ownership capital injection".
+           - Mark the injection applied in player_settings.
+           - Write a 'finance' news item announcing the injection.
+
+    Defensive — every step is wrapped so a failure on one promo
+    doesn't block the others. The injection is applied at most once
+    per bankruptcy event; when the rebuilding period ends (handled
+    by _check_rebuilding_status), the entry is cleared so a future
+    bankruptcy on the same promo is eligible again.
+    """
+    try:
+        from datetime import datetime
+        current_dt = datetime.strptime(current_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return  # bad date — bail
+
+    rows = conn.execute(
+        "SELECT promotion_id, name, size_tier, current_cash, "
+        "rebuilding_until_date "
+        "FROM promotions WHERE is_rebuilding=1"
+    ).fetchall()
+    if not rows:
+        return
+    injections = _load_rebuilding_injections(conn)
+    src_row = conn.execute(
+        "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+    ).fetchone()
+    src_id = src_row[0] if src_row else None
+    if src_id is None:
+        try:
+            src_id = conn.execute(
+                "INSERT INTO news_sources (name, credibility, "
+                "sensationalism, bias, regional_reach, reliability, "
+                "frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("System Feed", 70, 40, 50, 60, 80, 80),
+            ).lastrowid
+        except Exception:
+            src_id = None
+
+    for promo_id, promo_name, size_tier, current_cash, until_date in rows:
+        if not until_date:
+            continue
+        # Compute months_since_bankruptcy. The bankruptcy fired at
+        # (until_date - REBUILDING_PERIOD_MONTHS) months. We use a
+        # simple month-arithmetic helper (no external deps).
+        try:
+            uy, um, ud = (int(x) for x in until_date.split("-"))
+        except (ValueError, AttributeError):
+            continue
+        # Bankruptcy month = um - REBUILDING_PERIOD_MONTHS (with year
+        # rollover).
+        bank_m = um - REBUILDING_PERIOD_MONTHS
+        bank_y = uy
+        while bank_m <= 0:
+            bank_m += 12
+            bank_y -= 1
+        # Months since bankruptcy = (current_year - bank_year) * 12 +
+        # (current_month - bank_month). Defensive — clamp to >= 0.
+        cy, cm = current_dt.year, current_dt.month
+        months_since = (cy - bank_y) * 12 + (cm - bank_m)
+        if months_since < REBUILDING_CASH_INJECTION_MONTH:
+            continue  # not yet at month 3
+        key = str(promo_id)
+        if injections.get(key, 0) == 1:
+            continue  # already injected — skip
+        amount = REBUILDING_CASH_INJECTION_BY_TIER.get(
+            size_tier, REBUILDING_CASH_INJECTION_BY_TIER["small"],
+        )
+        new_cash = (current_cash or 0) + amount
+        try:
+            conn.execute(
+                "UPDATE promotions SET current_cash=?, "
+                "updated_at=CURRENT_TIMESTAMP WHERE promotion_id=?",
+                (new_cash, promo_id),
+            )
+        except Exception as e:
+            print(f"[reputation._process_rebuilding_cash_injection] "
+                  f"WARN: cash UPDATE failed for promo {promo_id}: "
+                  f"{e}", flush=True)
+            continue
+        # Record the inflow as a finance_transactions row (use
+        # 'sponsorship' type — closest existing inflow type).
+        try:
+            conn.execute(
+                "INSERT INTO finance_transactions (promotion_id, "
+                "transaction_type, amount, description, "
+                "transaction_date) VALUES (?, 'sponsorship', ?, "
+                "'New ownership capital injection', ?)",
+                (promo_id, amount, current_date),
+            )
+        except Exception as e:
+            print(f"[reputation._process_rebuilding_cash_injection] "
+                  f"WARN: finance_transactions INSERT failed for "
+                  f"promo {promo_id}: {e}", flush=True)
+        # Write a 'finance' news item announcing the injection.
+        if src_id is not None:
+            try:
+                # Format amount as $XM / $XK for voice compliance.
+                if amount >= 1_000_000:
+                    amount_str = f"${amount / 1_000_000:.0f} million"
+                else:
+                    amount_str = f"${amount / 1_000:.0f}K"
+                headline = (f"New ownership injects capital into "
+                            f"{promo_name}")
+                body = (
+                    f"The new ownership group behind {promo_name} "
+                    f"has injected {amount_str} in fresh capital — "
+                    f"a show of faith three months into the rebuild. "
+                    f"The promotion's recovery now has the runway "
+                    f"to plan a return card."
+                )
+                conn.execute(
+                    "INSERT INTO news_items (news_source_id, headline, "
+                    "body, sentiment, topic, promotion_id, "
+                    "published_at, importance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (src_id, headline, body, "positive", "finance",
+                     promo_id, current_date, "MAJOR"),
+                )
+            except Exception as e:
+                print(f"[reputation._process_rebuilding_cash_injection] "
+                      f"WARN: news INSERT failed for promo {promo_id}: "
+                      f"{e}", flush=True)
+        # Mark the injection applied.
+        injections[key] = 1
+    _save_rebuilding_injections(conn, injections)
+
+
+def _clear_rebuilding_injection_flag(conn, promotion_id):
+    """Clear the cash-injection flag for a promo whose rebuilding
+    period just completed (so a future bankruptcy is eligible again).
+
+    Called by _check_rebuilding_status when is_rebuilding flips to 0.
+    """
+    injections = _load_rebuilding_injections(conn)
+    key = str(promotion_id)
+    if key in injections:
+        del injections[key]
+        _save_rebuilding_injections(conn, injections)
 
 
 def _void_staff_contracts(conn, promotion_id):

@@ -95,6 +95,10 @@ def register_all_subscribers():
         "suspensions", "agent_offers", "career_arc", "rival_ai",
         "show_rating", "finance", "venues", "save_load",
         "player_settings", "reputation",
+        # NEWS-FINANCE-GYM-LEGACY Issue 8 — weekly gym-transfer
+        # subscriber. Registered here so the live web app processes
+        # gym transfers on Advance Day.
+        "gym_transfers",
     ]
     for mod_name in registration_modules:
         try:

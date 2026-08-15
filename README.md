@@ -156,8 +156,6 @@ UI (web — 22 JS modules via bridge.js API)
 - **Fight engine calibration:** KO rate is too low (0% in 1-year sim), split decisions too high (38% vs target 10%). The reseeded fighter data should improve this, but the fight engine thresholds may also need tuning.
 - **Financial state machine:** Most promotions end up in REBUILDING after 1 year — thresholds may be too aggressive.
 - **Gym changes:** Fighters never switch gyms during the sim. The gym-transfer flow doesn't exist yet.
-- **Web Save/Load screen:** Only the legacy Tkinter save/load screen exists.
-- **14 pre-existing test failures:** Caused by GAME_START_DATE change + probability-based retirement design changes.
 
 ---
 

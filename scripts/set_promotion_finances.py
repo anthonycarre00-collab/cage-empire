@@ -4,7 +4,10 @@
   * Set current_cash by size_tier:
       major (P1)        : $50,000,000
       mid   (P2-P4)     : $10,000,000 each
-      small (P5-P10)    : $2,000,000 each
+      small (P5-P10)    : $5,000,000 each  (NEWS-FINANCE-GYM-LEGACY
+                                            Issue 7.3 — was $2M; raised
+                                            to give small promos more
+                                            runway before CRISIS fires)
   * Write opening-balance finance_transactions rows.
       DEVIATION: finance_transactions.transaction_type has a CHECK
       constraint that does NOT include 'opening_balance' (it would
@@ -31,7 +34,7 @@ SIM_DATE = date(2026, 7, 20)
 CASH_BY_TIER = {
     "major": 50_000_000,
     "mid":   10_000_000,
-    "small":  2_000_000,
+    "small":  5_000_000,  # NEWS-FINANCE-GYM-LEGACY Issue 7.3 — was 2_000_000
 }
 
 

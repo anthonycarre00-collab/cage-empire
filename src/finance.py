@@ -143,7 +143,12 @@ _N_EVENTS_PER_YEAR = 3       # pro-rata assumption (was 4 — fighters paid 33% 
 # IRL but their salary is annualized — the × 1.5 multiplier makes a
 # mid-card $200k/yr fighter's per-event base purse $75k (vs $33k at
 # the old /6 × 1.0 formula), which is closer to real-world MMA purses.
-_BASE_PURSE_MULTIPLIER = 1.5
+# NEWS-FINANCE-GYM-LEGACY Issue 7.4 — reduced from 1.5 → 1.2 (~20%
+# reduction in fighter_purse per event). Combined with the venue_rental
+# reduction above, this brings total event cost down ~20% vs ticket
+# revenue, giving small promos (post-Issue-7.3 $5M starting cash) a
+# realistic path to solvency.
+_BASE_PURSE_MULTIPLIER = 1.2
 
 # Phase F1.2 — star multiplier for main event fighters. A main-event
 # fighter's base purse scales with their marketability (1.0 + mkt/100):
@@ -218,13 +223,18 @@ _MARKETING_PPV_MULT_DIVISOR = 250000  # spend / $250k → multiplier delta
 # Phase E2.7 — venue rental cost per seat by venue_type (§3.2.3).
 # CR-DESIGN: increased costs — was too cheap. Arena $10, ballroom $7,
 # theater $5, outdoor $4.
+# NEWS-FINANCE-GYM-LEGACY Issue 7.4 — reduced by ~20% across the board
+# to bring venue_rental + fighter_purse ratios back in line with
+# ticket revenue (post-Issue-7.3 small-promo cash raise, the
+# economics were too tight — small promos were bleeding cash on a
+# single bad card). New: arena $8, ballroom $6, theater $4, outdoor $3.
 _VENUE_COST_PER_SEAT_BY_TYPE = {
-    "arena":    10,
-    "ballroom": 7,
-    "theater":  5,
-    "outdoor":  4,
+    "arena":    8,
+    "ballroom": 6,
+    "theater":  4,
+    "outdoor":  3,
 }
-_DEFAULT_VENUE_COST_PER_SEAT = 5  # fallback if venue_type unknown
+_DEFAULT_VENUE_COST_PER_SEAT = 4  # fallback if venue_type unknown (was 5)
 
 # Legacy flat per-seat venue cost (kept for backward compat with any
 # caller that imports it — Phase E2.7 switches to the tiered dict).

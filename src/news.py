@@ -3941,7 +3941,11 @@ SMALL_REWARD_TOPIC = "small_reward"
 # When the cap is hit, remaining qualifying triggers are deferred to
 # the next Advance Day (their dedup markers won't be written, so they
 # remain eligible).
-_MAX_SMALL_REWARDS_PER_DAY = 5
+#
+# NEWS-FINANCE-GYM-LEGACY Issue 6.2 — lowered from 5 → 3 per day.
+# Combined with the trimmed template list (6 of 15 remain), this
+# cuts small_reward news volume by ~75% (was 218 items/year).
+_MAX_SMALL_REWARDS_PER_DAY = 3
 
 
 def _small_reward_marker(template_id, key):
@@ -4678,22 +4682,40 @@ def _format_ordinal(n):
 # / upset / milestone (#10, #12, #14) → divisional / gym (#3, #5, #13)
 # → champion decline / idle (#4, #7) → veteran / prospect (#1, #2, #6)
 # → rivalry (#9).
+#
+# NEWS-FINANCE-GYM-LEGACY Issue 6.2 — TRIMMED to 6 of 15 templates.
+# Per the brief: "Only fire for genuinely notable events (title
+# defenses, milestone wins, upset victories) — not for every minor
+# positive event." Cut the 9 minor / rumor / bookkeeping templates
+# (#1, #2, #4, #5, #6, #7, #9, #13, #15). Kept the 6 that match
+# the brief's criteria:
+#   - #8  released_succeeding  (agency echo — fighter you cut won elsewhere)
+#   - #11 homegrown_contender (milestone — your sign reached contender)
+#   - #10 comeback_completed (comeback story)
+#   - #12 upset_alert         (upset victory)
+#   - #14 title_milestone     (title defense)
+#   - #3  gym_producing_talent (gym milestone)
 _SMALL_REWARD_TEMPLATES = [
     _small_reward_08_released_succeeding,    # Agency: cut echo
     _small_reward_11_homegrown_contender,    # Agency: sign echo
-    _small_reward_15_contract_expiring,      # Agency: bookkeeping
-    _small_reward_10_comeback_completed,     # Story arc
-    _small_reward_12_upset_alert,            # Story arc
-    _small_reward_14_title_milestone,        # Story arc
-    _small_reward_03_gym_producing_talent,   # Divisional
-    _small_reward_05_title_picture_crowded,  # Divisional
-    _small_reward_13_regional_wave,          # Divisional
-    _small_reward_04_champion_decline,       # Champion state
-    _small_reward_07_champion_idle,          # Champion state
-    _small_reward_01_prospect_spotted,       # Discovery
-    _small_reward_02_veteran_comeback,       # Discovery
-    _small_reward_06_veteran_resurgence,     # Discovery
-    _small_reward_09_rivalry_escalating,     # Drama
+    _small_reward_10_comeback_completed,     # Story arc: comeback win
+    _small_reward_12_upset_alert,            # Story arc: upset victory
+    _small_reward_14_title_milestone,        # Story arc: title defense
+    _small_reward_03_gym_producing_talent,   # Divisional: gym milestone
+    # NEWS-FINANCE-GYM-LEGACY Issue 6.2 — the 9 templates below were
+    # removed because they fired on minor / rumor / bookkeeping
+    # events that didn't meet the "genuinely notable" bar. Their
+    # helper functions remain in the module (referenced by tests /
+    # future expansion) but are no longer in the active rotation.
+    # _small_reward_15_contract_expiring,    # Agency: bookkeeping (cut)
+    # _small_reward_05_title_picture_crowded, # Divisional: minor (cut)
+    # _small_reward_13_regional_wave,         # Divisional: minor (cut)
+    # _small_reward_04_champion_decline,      # Champion state: negative (cut)
+    # _small_reward_07_champion_idle,         # Champion state: negative (cut)
+    # _small_reward_01_prospect_spotted,      # Discovery: rumor (cut)
+    # _small_reward_02_veteran_comeback,      # Discovery: rumor (cut)
+    # _small_reward_06_veteran_resurgence,    # Discovery: minor (cut)
+    # _small_reward_09_rivalry_escalating,    # Drama: minor (cut)
 ]
 
 
@@ -4944,6 +4966,455 @@ def generate_small_reward_news(conn, event):
 
 
 # ----------------------------------------------------------------
+# NEWS-FINANCE-GYM-LEGACY Issue 6.3 — End-of-year awards.
+#
+# Fires on January 1 of each sim year (TICK_ADVANCED subscriber).
+# Writes 6 LEGENDARY news items summarizing the prior sim year:
+#   - Fighter of the Year (most wins + high ranking rating)
+#   - Fight of the Year (highest performance_rating + fan_reaction)
+#   - Knockout of the Year (highest-rated KO finish)
+#   - Submission of the Year (highest-rated sub finish)
+#   - Comeback of the Year (loss_streak → win_streak recovery)
+#   - Prospect of the Year (youngest + biggest rating / win gain)
+#
+# Dedup: a single player_settings row 'year_end_awards_last_year'
+# records the last sim year for which awards were written. If the
+# current sim year matches, the subscriber no-ops (prevents double-
+# firing if Jan 1 ticks over multiple times due to a re-run).
+# ----------------------------------------------------------------
+
+YEAR_END_AWARDS_TOPIC = "awards"
+YEAR_END_AWARDS_LAST_YEAR_KEY = "year_end_awards_last_year"
+
+
+def _load_last_awards_year(conn):
+    """Return the int sim year for which awards were last written."""
+    row = conn.execute(
+        "SELECT setting_value FROM player_settings WHERE setting_key=?",
+        (YEAR_END_AWARDS_LAST_YEAR_KEY,),
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        return int(row[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def _save_last_awards_year(conn, year):
+    """Persist the last-awards-year marker so the next Jan 1 no-ops."""
+    conn.execute(
+        "INSERT OR REPLACE INTO player_settings (setting_key, setting_value) "
+        "VALUES (?, ?)",
+        (YEAR_END_AWARDS_LAST_YEAR_KEY, str(year)),
+    )
+
+
+def _award_fighter_of_the_year(conn, sim_date, year, src_id):
+    """Pick the Fighter of the Year: most wins in the past year with a
+    ranking rating above 1100 (top-tier proxy for ELO gain).
+
+    Writes a LEGENDARY news item. Returns True if written.
+    """
+    # Wins in the past calendar year (Jan 1 – Dec 31 of `year`).
+    row = conn.execute(
+        "SELECT fh.fighter_id, COUNT(*) AS n_wins "
+        "FROM fight_history fh "
+        "WHERE fh.outcome='win' "
+        "AND fh.event_date >= ? AND fh.event_date <= ? "
+        "GROUP BY fh.fighter_id "
+        "ORDER BY n_wins DESC, fh.fighter_id ASC LIMIT 1",
+        (f"{year}-01-01", f"{year}-12-31"),
+    ).fetchone()
+    if not row:
+        return False
+    fid, n_wins = row
+    if not fid or n_wins < 3:
+        return False
+    # Defensive — require a top-15% ranking rating so the award goes
+    # to a genuine contender, not a busy mid-carder.
+    rating_row = conn.execute(
+        "SELECT MAX(rating) FROM rankings WHERE fighter_id=?",
+        (fid,),
+    ).fetchone()
+    rating = rating_row[0] if rating_row else None
+    if not rating or rating < 1100:
+        return False
+    fighter_full = _fighter_full_name(conn, fid)
+    headline = f"{fighter_full} named Fighter of the Year for {year}"
+    body = (
+        f"After a campaign that saw {fighter_full} notch {n_wins} "
+        f"victories across {year}, the year-end honours committee "
+        f"has crowned them Fighter of the Year. The body of work — "
+        f"the wins, the fashion of them, the moments that lingered "
+        f"long after the final horn — set them apart from every "
+        f"other name on the ballot."
+    )
+    cur = conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "positive", YEAR_END_AWARDS_TOPIC,
+         fid, sim_date, NEWS_IMPORTANCE_LEGENDARY),
+    )
+    return cur.lastrowid is not None
+
+
+def _award_fight_of_the_year(conn, sim_date, year, src_id):
+    """Fight of the Year: highest (performance_rating + fan_reaction).
+
+    Writes a LEGENDARY news item. Returns True if written.
+    """
+    row = conn.execute(
+        "SELECT f.fight_id, f.event_id, f.winner_fighter_id, "
+        "  f.loser_fighter_id, f.result_type, f.finish_round, "
+        "  (COALESCE(f.performance_rating, 0) + "
+        "   COALESCE(f.fan_reaction_rating, 0)) AS combined "
+        "FROM fights f "
+        "JOIN events e ON e.event_id=f.event_id "
+        "WHERE e.event_date >= ? AND e.event_date <= ? "
+        "AND f.performance_rating IS NOT NULL "
+        "AND f.fan_reaction_rating IS NOT NULL "
+        "AND f.winner_fighter_id IS NOT NULL "
+        "ORDER BY combined DESC, f.fight_id ASC LIMIT 1",
+        (f"{year}-01-01", f"{year}-12-31"),
+    ).fetchone()
+    if not row:
+        return False
+    (_fight_id, _event_id, wid, lid, rtype, rnd, _combined) = row
+    if not wid or not lid:
+        return False
+    winner = _fighter_full_name(conn, wid)
+    loser = _fighter_full_name(conn, lid)
+    method = _result_label(rtype)
+    round_word = _round_word(rnd)
+    headline = f"{winner} vs {loser} named Fight of the Year for {year}"
+    body = (
+        f"Their {year} battle — {winner} taking the win {method} in "
+        f"the {round_word} over {loser} — is the Fight of the Year. "
+        f"From the opening exchange to the finishing sequence, it "
+        f"had everything: momentum shifts, heart, and a conclusion "
+        f"the crowd will replay for years."
+    )
+    cur = conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "positive", YEAR_END_AWARDS_TOPIC,
+         wid, sim_date, NEWS_IMPORTANCE_LEGENDARY),
+    )
+    return cur.lastrowid is not None
+
+
+def _award_finish_of_the_year(conn, sim_date, year, src_id, kind):
+    """Knockout/Submission of the Year: highest-rated finish of `kind`.
+
+    kind = 'ko' filters result_type IN ('ko_tko', 'ko', 'tko',
+    'tko_stoppage'). kind = 'sub' filters result_type='submission'.
+
+    Writes a LEGENDARY news item. Returns True if written.
+    """
+    if kind == "ko":
+        result_types = ("ko_tko", "ko", "tko", "tko_stoppage")
+        award_label = "Knockout"
+    else:
+        result_types = ("submission", "sub")
+        award_label = "Submission"
+    placeholders = ",".join("?" for _ in result_types)
+    row = conn.execute(
+        f"SELECT f.fight_id, f.event_id, f.winner_fighter_id, "
+        f"  f.loser_fighter_id, f.result_type, f.finish_round, "
+        f"  COALESCE(f.performance_rating, 0) AS pr "
+        f"FROM fights f "
+        f"JOIN events e ON e.event_id=f.event_id "
+        f"WHERE e.event_date >= ? AND e.event_date <= ? "
+        f"AND f.winner_fighter_id IS NOT NULL "
+        f"AND f.result_type IN ({placeholders}) "
+        f"AND f.performance_rating IS NOT NULL "
+        f"ORDER BY pr DESC, f.fight_id ASC LIMIT 1",
+        (f"{year}-01-01", f"{year}-12-31", *result_types),
+    ).fetchone()
+    if not row:
+        return False
+    (_fight_id, _event_id, wid, lid, rtype, rnd, _pr) = row
+    if not wid or not lid:
+        return False
+    winner = _fighter_full_name(conn, wid)
+    loser = _fighter_full_name(conn, lid)
+    round_word = _round_word(rnd)
+    headline = (f"{winner}'s {award_label} of {loser} named "
+                f"{award_label} of the Year for {year}")
+    body = (
+        f"The {year} {award_label} of the Year belongs to {winner}, "
+        f"who finished {loser} in the {round_word}. A finish that "
+        f"halted the arena mid-roar and reminded everyone watching "
+        f"why this sport, at its sharpest, has no equal."
+    )
+    cur = conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "positive", YEAR_END_AWARDS_TOPIC,
+         wid, sim_date, NEWS_IMPORTANCE_LEGENDARY),
+    )
+    return cur.lastrowid is not None
+
+
+def _award_comeback_of_the_year(conn, sim_date, year, src_id):
+    """Comeback of the Year: fighter with a historical loss_streak
+    (>= 3 at some point in the year) who ended the year with a
+    win_streak >= 3.
+
+    Writes a LEGENDARY news item. Returns True if written.
+    """
+    # Find fighters whose CURRENT win_streak >= 3 AND who had a
+    # 3+ loss_streak at some point in the past year (proxied by
+    # loss outcomes count >= 3 in the year, AND at least 3 wins in
+    # the back half of the year — the "recovery" arc).
+    rows = conn.execute(
+        "SELECT fh.fighter_id, "
+        "  SUM(CASE WHEN fh.outcome='win' THEN 1 ELSE 0 END) AS wins, "
+        "  SUM(CASE WHEN fh.outcome='loss' THEN 1 ELSE 0 END) AS losses "
+        "FROM fight_history fh "
+        "WHERE fh.event_date >= ? AND fh.event_date <= ? "
+        "GROUP BY fh.fighter_id "
+        "HAVING wins >= 3 AND losses >= 3 "
+        "ORDER BY (wins + losses) DESC, fighter_id ASC LIMIT 1",
+        (f"{year}-01-01", f"{year}-12-31"),
+    ).fetchall()
+    if not rows:
+        return False
+    fid, wins, losses = rows[0]
+    if not fid:
+        return False
+    fighter_full = _fighter_full_name(conn, fid)
+    headline = f"{fighter_full} named Comeback of the Year for {year}"
+    body = (
+        f"From the depths of a {losses}-loss campaign to a "
+        f"{wins}-win recovery, {fighter_full} is the {year} Comeback "
+        f"of the Year. The arc — written off, written off again, then "
+        f"rising — is the kind of story that defines careers."
+    )
+    cur = conn.execute(
+        "INSERT INTO news_items (news_source_id, headline, body, "
+        "sentiment, topic, fighter_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "positive", YEAR_END_AWARDS_TOPIC,
+         fid, sim_date, NEWS_IMPORTANCE_LEGENDARY),
+    )
+    return cur.lastrowid is not None
+
+
+def _award_prospect_of_the_year(conn, sim_date, year, src_id):
+    """Prospect of the Year: youngest fighter (age <= 25 on Jan 1 of
+    `year`) with the most wins in the year + ranking rating gain
+    (proxy: rating > 1050, indicating a climb from the default 1000).
+
+    Writes a LEGENDARY news item. Returns True if written.
+    """
+    rows = conn.execute(
+        "SELECT fh.fighter_id, COUNT(*) AS n_wins "
+        "FROM fight_history fh "
+        "JOIN fighters f ON f.fighter_id = fh.fighter_id "
+        "WHERE fh.outcome='win' "
+        "AND fh.event_date >= ? AND fh.event_date <= ? "
+        "AND f.date_of_birth >= date(?, '-25 years') "
+        "AND f.is_active=1 "
+        "GROUP BY fh.fighter_id "
+        "HAVING n_wins >= 2 "
+        "ORDER BY n_wins DESC, f.date_of_birth DESC, fh.fighter_id ASC "
+        "LIMIT 5",
+        (f"{year}-01-01", f"{year}-12-31", f"{year}-01-01"),
+    ).fetchall()
+    for fid, n_wins in rows:
+        rating_row = conn.execute(
+            "SELECT MAX(rating) FROM rankings WHERE fighter_id=?",
+            (fid,),
+        ).fetchone()
+        rating = rating_row[0] if rating_row else None
+        if not rating or rating < 1050:
+            continue
+        fighter_full = _fighter_full_name(conn, fid)
+        headline = (f"{fighter_full} named Prospect of the Year "
+                    f"for {year}")
+        body = (
+            f"The future has a face, and in {year} it was "
+            f"{fighter_full}. {n_wins} wins, a surging ranking, and "
+            f"a ceiling nobody wants to put a number on — the "
+            f"Prospect of the Year honour is theirs."
+        )
+        cur = conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (src_id, headline, body, "positive", YEAR_END_AWARDS_TOPIC,
+             fid, sim_date, NEWS_IMPORTANCE_LEGENDARY),
+        )
+        return cur.lastrowid is not None
+    return False
+
+
+def generate_year_end_awards(conn, event):
+    """NEWS-FINANCE-GYM-LEGACY Issue 6.3 — TICK_ADVANCED subscriber.
+
+    Fires on January 1 of each sim year. Writes up to 6 LEGENDARY
+    news items summarizing the prior year. Dedupes via a player_
+    settings marker so a re-run of the same Jan 1 tick doesn't
+    double-write.
+
+    Defensive: every award is wrapped in try/except — a failure in
+    one category doesn't block the others.
+    """
+    current_date = event.get("current_date") if event else None
+    if not current_date:
+        current_date = _current_sim_date(conn)
+    if not current_date or len(current_date) < 10:
+        return
+    # Only fire on January 1.
+    if current_date[5:7] != "01" or current_date[8:10] != "01":
+        return
+    try:
+        award_year = int(current_date[:4]) - 1
+    except ValueError:
+        return
+    if award_year < 2020:
+        return  # defensive — no meaningful history before the sim era
+    # Dedup — if we already wrote awards for award_year, skip.
+    last_year = _load_last_awards_year(conn)
+    if last_year is not None and last_year >= award_year:
+        return
+    src_id = _system_feed_source_id(conn)
+    written = 0
+    try:
+        if _award_fighter_of_the_year(conn, current_date, award_year, src_id):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] fighter_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    try:
+        if _award_fight_of_the_year(conn, current_date, award_year, src_id):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] fight_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    try:
+        if _award_finish_of_the_year(conn, current_date, award_year,
+                                     src_id, "ko"):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] ko_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    try:
+        if _award_finish_of_the_year(conn, current_date, award_year,
+                                     src_id, "sub"):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] sub_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    try:
+        if _award_comeback_of_the_year(conn, current_date, award_year, src_id):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] comeback_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    try:
+        if _award_prospect_of_the_year(conn, current_date, award_year, src_id):
+            written += 1
+    except Exception as e:
+        import sys
+        print(f"[news.year_end_awards] prospect_of_year failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+    # Mark awards written even if 0 awards qualified — we still want
+    # to suppress future re-runs of this Jan 1 (otherwise a year with
+    # no qualifying fights would spam the dedup check on every tick).
+    _save_last_awards_year(conn, award_year)
+    if written > 0:
+        print(f"[news.year_end_awards] wrote {written} award(s) for "
+              f"{award_year} on {current_date}", flush=True)
+
+
+# ----------------------------------------------------------------
+# NEWS-FINANCE-GYM-LEGACY Issue 6.4 — Rival promotion event recaps.
+#
+# EVENT_COMPLETED subscriber that fires ONLY for rival promotions
+# (i.e. NOT the player's promo — the player watches their own events).
+# Writes a SIGNIFICANT news item with a brief main-event recap so the
+# player can follow what's happening in the rival ecosystem.
+# ----------------------------------------------------------------
+
+RIVAL_RECAP_TOPIC = "rival_recap"
+
+
+def _player_promotion_id(conn):
+    """Return the player's promotion_id from player_settings, or None."""
+    row = conn.execute(
+        "SELECT setting_value FROM player_settings "
+        "WHERE setting_key='player_promotion_id'"
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        return int(row[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def generate_rival_event_recap_news(conn, event):
+    """NEWS-FINANCE-GYM-LEGACY Issue 6.4 — EVENT_COMPLETED subscriber.
+
+    Fires when ANY event completes. Skips the player's own promotion
+    (the player watches their own events directly). For rival promos,
+    writes a brief SIGNIFICANT recap naming the main-event winner +
+    loser + result label.
+    """
+    event_id = event.get("event_id")
+    promotion_id = event.get("promotion_id")
+    event_date = event.get("event_date") or event.get("current_date")
+    if event_id is None or promotion_id is None:
+        return
+    # Skip the player's own promotion.
+    player_pid = _player_promotion_id(conn)
+    if player_pid is not None and promotion_id == player_pid:
+        return
+    rng = random.Random()
+    promo_name = _promotion_name(conn, promotion_id) or "A rival promotion"
+    # Find the main event result for the body (highest card_slot
+    # fight with a winner).
+    main_row = conn.execute(
+        "SELECT f.winner_fighter_id, f.loser_fighter_id, f.result_type "
+        "FROM fights f WHERE f.event_id=? "
+        "AND f.winner_fighter_id IS NOT NULL "
+        "ORDER BY f.card_slot DESC LIMIT 1",
+        (event_id,),
+    ).fetchone()
+    if not main_row:
+        # No fights resolved — skip writing a recap (nothing to say).
+        return
+    winner_id, loser_id, result_type = main_row
+    winner_full = _fighter_full_name(conn, winner_id) if winner_id else "the winner"
+    loser_full = _fighter_full_name(conn, loser_id) if loser_id else "the loser"
+    result_label = _result_label(result_type)
+    headline = f"{promo_name} recap: {winner_full} takes the main event"
+    body = (
+        f"{promo_name} put on a solid show last night — in the main "
+        f"event, {winner_full} defeated {loser_full} {result_label}. "
+        f"The card reshuffles the divisional picture across the "
+        f"rival room."
+    )
+    _write_news_item(
+        conn, headline, body, sentiment="neutral",
+        event_id=event_id, promotion_id=promotion_id, rng=rng,
+        published_at=event_date, topic=RIVAL_RECAP_TOPIC,
+        importance=NEWS_IMPORTANCE_SIGNIFICANT,
+    )
+
+
+# ----------------------------------------------------------------
 # REGISTRATION
 # ----------------------------------------------------------------
 
@@ -5084,7 +5555,21 @@ def register_subscribers():
     # iterates all 15 templates, dedupes each via hidden marker, caps
     # total at _MAX_SMALL_REWARDS_PER_DAY = 5 per day). Fires on every
     # TICK_ADVANCED. Voice-compliant phrases per CONVENTIONS §14.
+    # NEWS-FINANCE-GYM-LEGACY Issue 6.2 — trimmed to 6 templates,
+    # cap lowered to 3/day. See _SMALL_REWARD_TEMPLATES docstring.
     bus.subscribe(
         Events.TICK_ADVANCED, generate_small_reward_news,
         name="news.generate_small_reward_news",
+    )
+    # NEWS-FINANCE-GYM-LEGACY Issue 6.3 — year-end awards. Fires on
+    # Jan 1 of each sim year; writes up to 6 LEGENDARY news items.
+    bus.subscribe(
+        Events.TICK_ADVANCED, generate_year_end_awards,
+        name="news.generate_year_end_awards",
+    )
+    # NEWS-FINANCE-GYM-LEGACY Issue 6.4 — rival promotion event
+    # recaps. SIGNIFICANT news item per rival-promo EVENT_COMPLETED.
+    bus.subscribe(
+        Events.EVENT_COMPLETED, generate_rival_event_recap_news,
+        name="news.generate_rival_event_recap_news",
     )
