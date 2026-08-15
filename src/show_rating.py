@@ -90,6 +90,22 @@ import sqlite3
 # Constants
 # ----------------------------------------------------------------
 
+# FIX-V3-ALL5 #4 — promotion_id of the player's promo. Mirrors
+# PLAYER_PROMOTION_ID in src/services/rival_ai/archetypes.py and
+# src/morale.py. Defined locally to avoid a circular import (those
+# modules import nothing from show_rating, but show_rating is imported
+# by app_web at startup, so a top-level import of rival_ai here would
+# risk re-ordering issues if a future refactor adds a back-edge).
+_PLAYER_PROMOTION_ID = 1
+
+# FIX-V3-ALL5 #4 — news importance tiers used by _award_card_bonuses
+# to tag the Fight-of-the-Night news item. Mirrors the
+# NEWS_IMPORTANCE_* constants in src/news.py (single source of truth
+# is news.py — these local constants are kept in sync to avoid the
+# import).
+_NEWS_IMPORTANCE_SIGNIFICANT = "SIGNIFICANT"
+_NEWS_IMPORTANCE_ROUTINE = "ROUTINE"
+
 # Broadcast tier bonuses for commercial_rating (per the brief).
 _BROADCAST_BONUS = {
     "ppv_global":    20,
@@ -1265,24 +1281,59 @@ def _award_card_bonuses(conn, event_id, promo_id, event_date, fights):
     # Write the awards news item — one item per card summarizing the
     # honors. Voice-compliant per CONVENTIONS §14 (no raw numbers in
     # the prose; the amounts are in the finance_transactions rows).
+    #
+    # FIX-V3-ALL5 #4 (FOTN bonus news importance):
+    #   - Player events (promo_id=PLAYER_PROMOTION_ID): always write
+    #     the news; importance = SIGNIFICANT if any title fight on the
+    #     card, else ROUTINE.
+    #   - Rival AI events: ONLY write the news if the card had a
+    #     title fight (suppress non-title rival Fight-of-the-Night
+    #     news — the player doesn't need every regional promo's FOTN).
+    #     When written, importance = SIGNIFICANT.
+    # This keeps the player's news feed focused on cards they care
+    # about (their own + any rival title fight) while still paying
+    # the bonus_payment finance_transactions rows for every event
+    # (the fighters earned them).
+    has_title_fight = any(f.get('is_title_fight') for f in fights)
+    is_player_promo = (promo_id == _PLAYER_PROMOTION_ID)
+    if not is_player_promo and not has_title_fight:
+        return  # suppress non-title rival bonus news
+    importance = (
+        _NEWS_IMPORTANCE_SIGNIFICANT if has_title_fight
+        else _NEWS_IMPORTANCE_ROUTINE
+    )
     _write_awards_news(
         conn, promo_id, event_id, event_date,
         fotn_a_name=fotn_a_name, fotn_b_name=fotn_b_name,
         best_ko_name=best_ko_winner_name,
         best_sub_name=best_sub_winner_name,
+        importance=importance,
     )
 
 
 def _write_awards_news(conn, promo_id, event_id, event_date, *,
                        fotn_a_name, fotn_b_name,
-                       best_ko_name, best_sub_name):
+                       best_ko_name, best_sub_name, importance=None):
     """Phase P2.5 — write the post-event 'awards' news item.
 
     Voice-compliant: "Fight of the Night honors went to [A] vs [B].
     [C] earned Best KO. [D] earned Best Submission." If any category
     had no qualifying fight (e.g. a card with no submissions), that
     clause is omitted from the news body.
+
+    FIX-V3-ALL5 #4 — the `importance` parameter (default None) sets
+    the news_items.importance tier. If None, the schema default
+    'ROUTINE' is used. Caller (_award_card_bonuses) now passes:
+      - SIGNIFICANT when the card had a title fight
+      - ROUTINE otherwise
+    and suppresses the call entirely for non-title rival AI cards.
     """
+    # FIX-V3-ALL5 #4 — default to ROUTINE if the caller didn't pass
+    # an importance (defensive — keeps backward compat with any
+    # external caller that hasn't been updated).
+    if importance is None:
+        importance = _NEWS_IMPORTANCE_ROUTINE
+
     # Get or create the System Feed news source.
     src_row = conn.execute(
         "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
@@ -1321,10 +1372,11 @@ def _write_awards_news(conn, promo_id, event_id, event_date, *,
 
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, event_id, promotion_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "sentiment, topic, event_id, promotion_id, published_at, "
+        "importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (src_id, headline, body, "positive", "awards",
-         event_id, promo_id, event_date),
+         event_id, promo_id, event_date, importance),
     )
 
 

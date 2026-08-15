@@ -725,6 +725,53 @@ def _get_venue_type(conn, venue_id):
 
 
 def _process_event_finance(conn, event):
+    """Process finances when an event completes (FIX-V3-ALL5 #1a wrapper).
+
+    Thin wrapper around `_process_event_finance_impl` that catches any
+    unexpected exception and prints the full traceback to stderr. This
+    is a defensive guard added to diagnose the silent-crash symptom
+    reported in FIX-V3-ALL5: pre-existing events had ZERO
+    finance_transactions rows, and 16 events that transitioned during
+    the sim also produced 0 rows — likely a crash inside the impl
+    that was silently swallowed by the event bus. With this wrapper,
+    the traceback will at least be visible on stderr.
+
+    The wrapper does NOT re-raise — finance is one of several
+    EVENT_COMPLETED subscribers, and a crash here shouldn't prevent
+    show_rating / reputation / news from running on the same event.
+    The bus's own try/except would also catch it, but bus-side
+    catch is generic (logs at WARNING level only); printing the
+    full traceback here gives a richer error for debugging.
+
+    Args:
+        conn: sqlite3.Connection (caller commits; wrapper does not
+            commit either — impl writes are visible to the caller's
+            transaction).
+        event: dict with keys 'event_id', 'promotion_id', and
+            optionally 'event_date' / 'type'.
+    """
+    import sys
+    import traceback
+    try:
+        _process_event_finance_impl(conn, event)
+    except Exception:
+        # Print full traceback to stderr so silent crashes become
+        # visible. Do NOT re-raise — see docstring above.
+        try:
+            sys.stderr.write(
+                f"[finance._process_event_finance] CRASH on "
+                f"event={event!r}\n"
+            )
+            sys.stderr.flush()
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+        except Exception:
+            # Last-resort: if even the error logging crashes, swallow
+            # (matches the defensive pattern in _compute_show_ratings).
+            pass
+
+
+def _process_event_finance_impl(conn, event):
     """Process finances when an event completes.
 
     Computes all revenue + expenses for the event and records them
