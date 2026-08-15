@@ -663,15 +663,20 @@ def _sign_fighter_immediately(conn, winner_intent, salary, current_date):
                     "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
                 ).fetchone()
                 src_id = src[0] if src else 1
+                # NEWS-SPAM-MEMORY-CHECK — tag as MAJOR (signings are
+                # major roster moves). Was defaulting to ROUTINE via
+                # the column default (the previous INSERT omitted the
+                # importance column).
                 conn.execute(
                     "INSERT INTO news_items (news_source_id, headline, body, "
-                    "sentiment, topic, fighter_id, published_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "sentiment, topic, fighter_id, published_at, importance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (src_id,
                      f"{f_row[0]} {f_row[1]} signs with {p_row[0]}",
                      f"{f_row[0]} {f_row[1]} has signed a contract with "
                      f"{p_row[0]}.",
-                     "neutral", "signing", fighter_id, current_date),
+                     "neutral", "signing", fighter_id, current_date,
+                     "MAJOR"),
                 )
     except Exception as e:
         import sys

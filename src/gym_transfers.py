@@ -372,6 +372,32 @@ def on_tick_advanced(conn, event):
                   f"fighter {fighter_id}: {type(e).__name__}: {e}",
                   file=sys.stderr)
             continue
+        # NEWS-SPAM-MEMORY-CHECK — wire the Tier 3 memory writers
+        # (former_teammates + old_gyms) into the gym-transfer flow.
+        # Per the T3.4 brief, these writers fire on gym changes, but
+        # they were never wired into gym_transfers.py — so the links
+        # were never written during a sim, and surface_memories could
+        # never find them. This call writes (a) bidirectional
+        # 'former_teammates' links between the transferring fighter
+        # and other fighters at the OLD gym, and (b) an 'old_gyms'
+        # self-link flagging the fighter as having changed gyms.
+        # Both writers are defensive (idempotent INSERT OR IGNORE,
+        # never raise). Wrapped in try/except so a memory-write
+        # failure can't break the transfer.
+        try:
+            from services.memory_svc import (
+                write_former_teammates_links_on_gym_change,
+                write_old_gyms_link,
+            )
+            write_former_teammates_links_on_gym_change(
+                conn, fighter_id, old_gym_id=current_gym_id,
+                new_gym_id=new_gym_id,
+            )
+            write_old_gyms_link(conn, fighter_id, old_gym_id=current_gym_id)
+        except Exception as e:
+            print(f"[gym_transfers] WARN: memory-link write failed for "
+                  f"fighter {fighter_id}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
         # Write the news item.
         try:
             _write_gym_transfer_news(

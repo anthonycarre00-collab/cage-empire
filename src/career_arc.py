@@ -694,12 +694,16 @@ def _write_decline_news(conn, fighter_id, age, current_date,
             f"that built the reputation isn't the version in the gym "
             f"anymore.")
 
+    # NEWS-SPAM-MEMORY-CHECK — tag as SIGNIFICANT (career decline is
+    # a meaningful state change — the player needs to know a fighter
+    # is on the downslope). Was defaulting to ROUTINE via direct
+    # INSERT (omitting the importance column).
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, fighter_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "sentiment, topic, fighter_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (src_id, headline, body, "negative", "career_arc",
-         fighter_id, current_date),
+         fighter_id, current_date, "SIGNIFICANT"),
     )
 
 

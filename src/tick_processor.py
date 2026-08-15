@@ -149,21 +149,44 @@ def _check_injury_recovery(conn, current_date):
             (fighter_id,),
         ).fetchone()
         fighter_name_str = name_row[0] if name_row else f"Fighter {fighter_id}"
-        conn.execute(
-            "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, fighter_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                src_id,
-                f"{fighter_name_str} cleared to return from {injury_type}",
-                f"{fighter_name_str} has been medically cleared to return "
-                f"from {injury_type} and is eligible to compete again.",
-                "positive",
-                "injury",
-                fighter_id,
-                current_date,
-            ),
-        )
+        # NEWS-SPAM-MEMORY-CHECK — route through news._write_news_item
+        # so the importance tier is tagged (SIGNIFICANT for injuries,
+        # per the topic→tier mapper). The previous direct INSERT
+        # defaulted to importance='ROUTINE', contributing to ROUTINE
+        # spam (injury news is meaningful — fighters returning from
+        # injury is a state change the player cares about).
+        try:
+            from news import _write_news_item, NEWS_IMPORTANCE_SIGNIFICANT
+            _write_news_item(
+                conn,
+                headline=f"{fighter_name_str} cleared to return from {injury_type}",
+                body=(f"{fighter_name_str} has been medically cleared to "
+                      f"return from {injury_type} and is eligible to "
+                      f"compete again."),
+                sentiment="positive", topic="injury",
+                fighter_id=fighter_id, published_at=current_date,
+                source_id=src_id,
+                importance=NEWS_IMPORTANCE_SIGNIFICANT,
+            )
+        except ImportError:
+            # Fallback — direct INSERT (preserves old behavior if the
+            # news module isn't importable for any reason).
+            conn.execute(
+                "INSERT INTO news_items (news_source_id, headline, body, "
+                "sentiment, topic, fighter_id, published_at, importance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    src_id,
+                    f"{fighter_name_str} cleared to return from {injury_type}",
+                    f"{fighter_name_str} has been medically cleared to return "
+                    f"from {injury_type} and is eligible to compete again.",
+                    "positive",
+                    "injury",
+                    fighter_id,
+                    current_date,
+                    "SIGNIFICANT",
+                ),
+            )
 
         # Phase A5 — publish INJURY_RECOVERED on the event bus. The
         # news engine subscribes to write a richer clearance news item
@@ -1325,23 +1348,43 @@ def _check_retirements(conn, current_date):
             )
         except ImportError:
             career_stage = "veteran fighter"
-        conn.execute(
-            "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, fighter_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                src_id,
-                f"{full_name} announces retirement",
-                f"After a long career, {full_name} — the {career_stage} "
-                f"— has announced retirement from professional MMA "
-                f"competition. The cage loses a fighter who left it all "
-                f"inside.",
-                "neutral",
-                "retirement",
-                fighter_id,
-                current_date,
-            ),
-        )
+        # NEWS-SPAM-MEMORY-CHECK — route through news._write_news_item
+        # so the importance tier is tagged MAJOR for retirements (was
+        # defaulting to ROUTINE via direct INSERT). Retirements are
+        # major career events the player cares about.
+        try:
+            from news import _write_news_item, NEWS_IMPORTANCE_MAJOR
+            _write_news_item(
+                conn,
+                headline=f"{full_name} announces retirement",
+                body=(f"After a long career, {full_name} — the {career_stage} "
+                      f"— has announced retirement from professional MMA "
+                      f"competition. The cage loses a fighter who left it all "
+                      f"inside."),
+                sentiment="neutral", topic="retirement",
+                fighter_id=fighter_id, published_at=current_date,
+                source_id=src_id,
+                importance=NEWS_IMPORTANCE_MAJOR,
+            )
+        except ImportError:
+            conn.execute(
+                "INSERT INTO news_items (news_source_id, headline, body, "
+                "sentiment, topic, fighter_id, published_at, importance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    src_id,
+                    f"{full_name} announces retirement",
+                    f"After a long career, {full_name} — the {career_stage} "
+                    f"— has announced retirement from professional MMA "
+                    f"competition. The cage loses a fighter who left it all "
+                    f"inside.",
+                    "neutral",
+                    "retirement",
+                    fighter_id,
+                    current_date,
+                    "MAJOR",
+                ),
+            )
 
         # Phase A5 — publish FIGHTER_RETIRED on the event bus. The
         # news engine subscribes to write a richer career-retrospective
@@ -1482,8 +1525,8 @@ def _check_retirements(conn, current_date):
                 )
                 conn.execute(
                     "INSERT INTO news_items (news_source_id, headline, "
-                    "body, sentiment, topic, fighter_id, published_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "body, sentiment, topic, fighter_id, published_at, importance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         src_id,
                         f"New prospect {replacement_name} emerges on "
@@ -1500,6 +1543,7 @@ def _check_retirements(conn, current_date):
                         "legacy",
                         replacement_id,
                         current_date,
+                        "MAJOR",
                     ),
                 )
             # v3.8.0 (Task 6.0 — D-GUI-4): populate style_echo memory
@@ -1660,11 +1704,14 @@ def _check_contract_expiry(conn, current_date):
                 (fighter_id,),
             )
             # (c) Write the free-agency news item.
+            # NEWS-SPAM-MEMORY-CHECK — tag as MAJOR (signings/releases
+            # are major roster moves). Was defaulting to ROUTINE via
+            # direct INSERT (omitting the importance column).
             full_name = f"{first_name} {last_name}"
             conn.execute(
                 "INSERT INTO news_items (news_source_id, headline, body, "
-                "sentiment, topic, fighter_id, published_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "sentiment, topic, fighter_id, published_at, importance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     src_id,
                     f"{full_name} becomes a free agent",
@@ -1674,6 +1721,7 @@ def _check_contract_expiry(conn, current_date):
                     "signing",
                     fighter_id,
                     current_date,
+                    "MAJOR",
                 ),
             )
             # Phase A5 — publish CONTRACT_EXPIRED on the event bus.
@@ -1724,10 +1772,13 @@ def _check_contract_expiry(conn, current_date):
                             (staff_id,),
                         )
                         # Write a news item (voice-compliant)
+                        # NEWS-SPAM-MEMORY-CHECK — staff free-agency
+                        # is BACKGROUND-tier (player-irrelevant roster
+                        # churn). Was defaulting to ROUTINE.
                         conn.execute(
                             "INSERT INTO news_items (news_source_id, headline, body, "
-                            "sentiment, topic, published_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            "sentiment, topic, published_at, importance) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
                             (
                                 src_id,
                                 f"{full_name} becomes a free agent",
@@ -1736,6 +1787,7 @@ def _check_contract_expiry(conn, current_date):
                                 "neutral",
                                 "staff",
                                 current_date,
+                                "BACKGROUND",
                             ),
                         )
             expired.append((contract_id, None))

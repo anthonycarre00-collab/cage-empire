@@ -147,7 +147,7 @@ def roster_cache_invalidate(promotion_id=None):
 
 def write_news_item(conn, headline, body, topic, sentiment='neutral',
                     promotion_id=None, fighter_id=None, event_id=None,
-                    fight_id=None, published_at=None, importance=50,
+                    fight_id=None, published_at=None, importance=None,
                     news_source_id=None):
     """Insert a news_items row + return its news_item_id.
 
@@ -168,38 +168,74 @@ def write_news_item(conn, headline, body, topic, sentiment='neutral',
         promotion_id, fighter_id, event_id, fight_id: optional FKs.
         published_at: optional sim date string ('YYYY-MM-DD').
             Defaults to current sim date.
-        importance: 0-100 (drives news feed filtering).
+        importance: optional importance tier name (one of
+            NEWS_IMPORTANCE_LEGENDARY / MAJOR / SIGNIFICANT /
+            ROUTINE / BACKGROUND). If None, the tier is derived from
+            the `topic` via news._importance_for_topic (the canonical
+            topic→tier mapper). NOTE: this used to be a numeric 0-100
+            value which was silently ignored (the INSERT omitted the
+            importance column, so all writes defaulted to 'ROUTINE'
+            via the schema column default — contributing to ROUTINE
+            spam). NEWS-SPAM-MEMORY-CHECK changed it to a tier-name
+            string and routed the write through
+            news._write_news_item so the daily cap + GPT-question
+            downgrade apply uniformly.
         news_source_id: optional news_sources.news_source_id. Defaults
             to the 'System Feed' source (id resolved at INSERT time).
 
     Returns:
-        The new news_item_id (int), or None on failure.
+        The new news_item_id (int), or None if the write was
+        suppressed by the daily cap (HW4.3) or a fatal error.
     """
     if published_at is None:
         published_at = current_sim_date(conn)
-    if news_source_id is None:
-        # Resolve the 'System Feed' source lazily — mirrors the
-        # pattern in app.write_news.
-        row = conn.execute(
-            "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
-        ).fetchone()
-        if row is None:
-            # Fallback: create the System Feed source on demand.
-            cur = conn.execute(
-                "INSERT INTO news_sources "
-                "(name, credibility, sensationalism, bias, regional_reach, "
-                "reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("System Feed", 70, 40, 50, 60, 80, 80),
-            )
-            news_source_id = cur.lastrowid
-        else:
-            news_source_id = row[0]
-    cur = conn.execute(
-        "INSERT INTO news_items "
-        "(news_source_id, headline, body, sentiment, topic, "
-        " event_id, fight_id, fighter_id, promotion_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (news_source_id, headline, body, sentiment, topic,
-         event_id, fight_id, fighter_id, promotion_id, published_at),
-    )
-    return cur.lastrowid
+
+    # NEWS-SPAM-MEMORY-CHECK — route through news._write_news_item so
+    # the importance tier is tagged (derived from `topic` via the
+    # canonical mapper, or from the `importance` arg if the caller
+    # passed an explicit tier name). The previous direct INSERT
+    # omitted the importance column entirely, defaulting everything
+    # to ROUTINE — including 'release' (should be MAJOR) and
+    # 'tapping_up_rumor' (should be BACKGROUND).
+    try:
+        from news import _write_news_item as _news_write
+        return _news_write(
+            conn, headline, body, sentiment=sentiment,
+            event_id=event_id, fight_id=fight_id, fighter_id=fighter_id,
+            promotion_id=promotion_id, published_at=published_at,
+            source_id=news_source_id, topic=topic, importance=importance,
+        )
+    except ImportError:
+        # Fallback — direct INSERT (preserves old behavior if the
+        # news module isn't importable for any reason). Defensive —
+        # shouldn't happen since news.py is a core module.
+        if news_source_id is None:
+            row = conn.execute(
+                "SELECT news_source_id FROM news_sources WHERE name='System Feed'"
+            ).fetchone()
+            if row is None:
+                cur = conn.execute(
+                    "INSERT INTO news_sources "
+                    "(name, credibility, sensationalism, bias, regional_reach, "
+                    "reliability, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("System Feed", 70, 40, 50, 60, 80, 80),
+                )
+                news_source_id = cur.lastrowid
+            else:
+                news_source_id = row[0]
+        # Resolve importance tier (defensive — if it's not a valid
+        # tier name, fall back to 'ROUTINE').
+        valid_tiers = ("LEGENDARY", "MAJOR", "SIGNIFICANT",
+                       "ROUTINE", "BACKGROUND")
+        tier = importance if importance in valid_tiers else "ROUTINE"
+        cur = conn.execute(
+            "INSERT INTO news_items "
+            "(news_source_id, headline, body, sentiment, topic, "
+            " event_id, fight_id, fighter_id, promotion_id, published_at, "
+            " importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (news_source_id, headline, body, sentiment, topic,
+             event_id, fight_id, fighter_id, promotion_id, published_at,
+             tier),
+        )
+        return cur.lastrowid

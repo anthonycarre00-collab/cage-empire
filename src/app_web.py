@@ -7043,11 +7043,15 @@ class Api:
                             "WHERE name = 'System Feed'"
                         ).fetchone()
                         if src_row:
+                            # NEWS-SPAM-MEMORY-CHECK — short-notice
+                            # bout declines are BACKGROUND-tier (low-
+                            # stakes booking churn). Was defaulting to
+                            # ROUTINE via direct INSERT.
                             conn.execute(
                                 "INSERT INTO news_items (news_source_id, "
                                 "headline, body, sentiment, topic, fighter_id, "
-                                "promotion_id, published_at) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                "promotion_id, published_at, importance) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 (src_row[0],
                                  f"{fname} turns down short-notice bout",
                                  (f"{fname} has turned down a short-notice "
@@ -7057,7 +7061,8 @@ class Api:
                                  "booking",
                                  fid,
                                  pid,
-                                 get_clock(conn)[0] if get_clock(conn) else None),
+                                 get_clock(conn)[0] if get_clock(conn) else None,
+                                 "BACKGROUND"),
                             )
                         conn.commit()
                         return {
@@ -9136,6 +9141,10 @@ class Api:
             )
 
             # 4. News item
+            # NEWS-SPAM-MEMORY-CHECK — release news is MAJOR (roster
+            # move the player cares about). Was defaulting to ROUTINE
+            # via direct INSERT (the topic was 'signing' but no
+            # importance was set, so it fell to the column default).
             src_row = conn.execute(
                 "SELECT news_source_id FROM news_sources WHERE name = 'System Feed'"
             ).fetchone()
@@ -9143,15 +9152,16 @@ class Api:
             if src_id:
                 conn.execute(
                     "INSERT INTO news_items (news_source_id, headline, body, "
-                    "sentiment, topic, fighter_id, promotion_id, published_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "sentiment, topic, fighter_id, promotion_id, published_at, importance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (src_id,
                      f"{fighter_name} released by {promo_name}",
                      f"{fighter_name} has been released from {promo_name}. "
                      "The roster move frees up cap space and opens the door "
                      "for new signings.",
-                     "negative", "signing", fid, pid,
-                     get_clock(conn)[0] if get_clock(conn) else None),
+                     "negative", "release", fid, pid,
+                     get_clock(conn)[0] if get_clock(conn) else None,
+                     "MAJOR"),
                 )
 
             # PHASE-R (Reward Layer §6 Principle 4): log the cut

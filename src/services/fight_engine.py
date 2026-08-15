@@ -4748,13 +4748,19 @@ def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
                 f"as a penalty"
                 f"{' and will start the fight with depleted cardio' if cardio_penalty > 0 else ''}.")
         sentiment = "negative"
-    conn.execute(
-        "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, fighter_id, fight_id, event_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (src_id, headline, body, sentiment, "weight_cut", fighter_id,
-         fight_id, event_id, event_date),
-    )
+    # NEWS-SPAM-MEMORY-CHECK — suppress the "made weight" news entirely
+    # (it's not interesting — every fighter on every card makes weight
+    # most of the time). Only write news when a fighter MISSES weight,
+    # tagged SIGNIFICANT (a weight miss changes the fight — catch-
+    # weight, purse penalty, or cancellation).
+    if cut_outcome != "made_weight":
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, fight_id, event_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (src_id, headline, body, sentiment, "weight_cut", fighter_id,
+             fight_id, event_id, event_date, "SIGNIFICANT"),
+        )
 
     # Phase A5 — publish WEIGHT_CUT_COMPLETED on the event bus. The
     # news engine subscribes to write a richer weigh-in news item
@@ -6162,12 +6168,13 @@ def resolve_next_fight(conn, promotion_id=None, skip_beat_detail=False):
             src_id = src_row[0]
         conn.execute(
             "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, fight_id, event_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "sentiment, topic, fight_id, event_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (src_id, nc_headline,
              f"The fight has been cancelled due to a weight miss. "
              f"No winner will be declared.",
-             "negative", "weight_cut", fight_id, event_id, event_date),
+             "negative", "weight_cut", fight_id, event_id, event_date,
+             "SIGNIFICANT"),
         )
         # Phase A5 — publish FIGHT_CANCELLED on the event bus. The
         # news engine + morale system subscribe to write a richer

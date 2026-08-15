@@ -576,8 +576,9 @@ def generate_fighter(conn, style_dna_source_id=None, current_date=None, gender='
         published_at = current_dt.strftime("%Y-%m-%d")
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, sentiment, "
-        "topic, fighter_id, published_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (src_id, headline, body, "neutral", "prospect", fid, published_at),
+        "topic, fighter_id, published_at, importance) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "neutral", "prospect", fid, published_at,
+         "ROUTINE"),
     )
 
     # 13. v2.6.2 (user directive): generate a bio for EVERY regen
@@ -765,10 +766,13 @@ def _vacate_title_on_retirement(conn, fighter_id, current_date):
         # published_at is set to current_date (the sim date the
         # retirement happened on), NOT CURRENT_TIMESTAMP (which is
         # the wall-clock time the row was inserted).
+        # NEWS-SPAM-MEMORY-CHECK — tag as MAJOR (title vacation is a
+        # major event — the player needs to know a belt is now vacant).
+        # Was defaulting to ROUTINE via direct INSERT.
         conn.execute(
             "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, fighter_id, promotion_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "sentiment, topic, fighter_id, promotion_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 src_id,
                 f"{fighter_name} vacates the {promo_name} {wc_name} title",
@@ -780,6 +784,7 @@ def _vacate_title_on_retirement(conn, fighter_id, current_date):
                 fighter_id,
                 promo_id,
                 current_date,
+                "MAJOR",
             ),
         )
 
@@ -1022,10 +1027,10 @@ def check_staff_retirements(conn, current_date):
                     f"the sport, the veteran steps away from active duty.")
         conn.execute(
             "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, promotion_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "sentiment, topic, promotion_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (src_id, headline, body, "neutral", "staff",
-             promotion_id, current_date),
+             promotion_id, current_date, "BACKGROUND"),
         )
 
         # (4) Fire STAFF_RETIRED on the event bus. The news engine
@@ -1271,8 +1276,9 @@ def generate_staff_replacement(conn, retiring_staff_id, role_type,
             f"looking to fill the vacancy left by a recent retirement.")
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, published_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (src_id, headline, body, "neutral", "staff", current_date),
+        "sentiment, topic, published_at, importance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (src_id, headline, body, "neutral", "staff", current_date,
+         "BACKGROUND"),
     )
 
     return new_staff_id

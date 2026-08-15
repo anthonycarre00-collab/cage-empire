@@ -318,6 +318,9 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
     #    pulling in app.write_news from this same module (it would be
     #    fine since we're already in app.py, but the direct INSERT is
     #    what the brief specifies and matches the established pattern).
+    #    NEWS-SPAM-MEMORY-CHECK — tag as MAJOR (signings are major
+    #    roster moves). Was defaulting to ROUTINE via the column
+    #    default (the previous INSERT omitted the importance column).
     fighter_name_row = conn.execute(
         "SELECT first_name || ' ' || last_name FROM fighters "
         "WHERE fighter_id = ?",
@@ -346,8 +349,8 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
 
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, fighter_id, promotion_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "sentiment, topic, fighter_id, promotion_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             src_id,
             f"{fighter_name} signs with {promo_name}",
@@ -358,6 +361,7 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
             fighter_id,
             promotion_id,
             start_date,
+            "MAJOR",
         ),
     )
 
