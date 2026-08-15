@@ -873,6 +873,21 @@ def _maybe_sign_free_agent(conn, promotion_id, ai_spending_style, rng,
         return  # no eligible free agents this week
 
     fighter_id = rng.choice(rows)[0]
+
+    # RESEED Step 10 — Roster cap check. Skip signing if the promo is
+    # at or over its cap (major=100, mid=80, small=50). This avoids
+    # unnecessary news + event-bus churn from sign_free_agent's refuse
+    # path. The cap is enforced by services.contracts.sign_free_agent
+    # too, but we pre-check here so we don't waste a turn.
+    try:
+        from services.contracts import get_roster_cap, get_roster_count
+        cap = get_roster_cap(conn, promotion_id)
+        current_count = get_roster_count(conn, promotion_id)
+        if current_count >= cap:
+            return  # at/over cap — skip signing this week
+    except ImportError:
+        pass  # services.contracts not available — proceed (cap unchecked)
+
     try:
         sign_free_agent_fn(
             conn, fighter_id=fighter_id,

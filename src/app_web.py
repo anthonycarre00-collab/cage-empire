@@ -8369,6 +8369,20 @@ class Api:
                 }
 
             from services.contracts import sign_free_agent as _sign
+            from services.contracts import get_roster_cap, get_roster_count
+            # RESEED Step 10 — pre-check roster cap so we can return a
+            # clean error message (services.contracts.sign_free_agent
+            # also enforces the cap, but its error is generic).
+            cap = get_roster_cap(conn, pid)
+            current_count = get_roster_count(conn, pid)
+            if current_count >= cap:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Roster is full ({current_count}/{cap}). "
+                        f"Release a fighter to make room."
+                    ),
+                }
             contract_id = _sign(conn, fid, pid, start_date, salary=salary)
             if not contract_id:
                 return {"ok": False, "error": "Sign failed — fighter may already be signed or retired."}

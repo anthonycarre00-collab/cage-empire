@@ -128,6 +128,23 @@ def evaluate_cuts(conn, promotion_id, archetype=None, current_date=None, rng=Non
     ).fetchall():
         champion_ids.add(champ_id)
 
+    # RESEED Step 10 — Roster cap pressure. Compute once per
+    # evaluate_cuts call. If the promo's active roster exceeds its
+    # cap (major=100, mid=80, small=50), we bump cut_risk +25 per
+    # fighter below so the promo trims back down. The cap lookup is
+    # defensive — failures default to over_cap=False (no bump).
+    over_cap = False
+    try:
+        from services.contracts import get_roster_cap, get_roster_count
+        cap = get_roster_cap(conn, promotion_id)
+        current_count = get_roster_count(conn, promotion_id)
+        if current_count > cap:
+            over_cap = True
+    except ImportError:
+        pass
+    except Exception:
+        pass  # defensive — cap lookup failure MUST NOT block cutting
+
     # Fetch fighter_ids scheduled for a title fight in the next 60 days
     # (title-shot protection). We check events scheduled in the next
     # 60 days with is_title_fight=1.
@@ -183,6 +200,13 @@ def evaluate_cuts(conn, promotion_id, archetype=None, current_date=None, rng=Non
             pass  # services.rival_ai.memory not available — proceed
         except Exception:
             pass  # defensive — memory read failure MUST NOT block cutting
+
+        # RESEED Step 10 — Roster cap pressure. If the promo is over
+        # its roster cap (major=100, mid=80, small=50), bump cut_risk
+        # by +25 so over-cap promos trim back down. Computed once per
+        # evaluate_cuts call (passed in via the over_cap boolean).
+        if over_cap:
+            cut_risk = min(100.0, cut_risk + 25.0)
 
         # Apply protective rules.
         is_champion = fid in champion_ids
