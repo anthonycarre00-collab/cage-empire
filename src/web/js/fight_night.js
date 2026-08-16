@@ -51,7 +51,7 @@ window.CE.fightNight = (function () {
   // ============================================================
   var state = {
     phase: 'loading',           // 'loading'|'prefight'|'live'|'recap'|'empty'
-    mode: 'live',               // 'live' (resolve on start) | 'replay' (read existing)
+    mode: 'live',               // Always 'live' — replay mode removed (CLEANUP-AND-FIX Bug 8)
     event_id: null,             // the player's scheduled event (live mode)
     fight_id: null,             // the fight being shown (resolved by API)
     fight_data: null,           // the full payload from get_fight_night_data
@@ -240,7 +240,12 @@ window.CE.fightNight = (function () {
     var params = window.CE.app ? window.CE.app.getActiveParams() : {};
     state.event_id = params.event_id || params.eventId || null;
     state.fight_id = params.fight_id || params.fightId || null;
-    state.mode = state.fight_id ? 'replay' : 'live';
+    // CLEANUP-AND-FIX Bug 8 — replay mode removed. state.mode is
+    // always 'live'. When a fight_id is provided AND the fight is
+    // already resolved, we jump straight to renderRecap (no
+    // beat-by-beat animation). Otherwise we fall through to live
+    // resolution.
+    state.mode = 'live';
 
     // P3.4 — defensive: release any stale advance-day lock from a
     // previous Fight Night session that was interrupted (e.g. the
@@ -251,7 +256,10 @@ window.CE.fightNight = (function () {
     renderLoading();
 
     if (state.fight_id) {
-      // Replay mode — load the resolved fight's data.
+      // Direct navigation to a fight — load its data. If it's
+      // already resolved, show the recap directly (no animation).
+      // If unresolved (rare — deep-link to a scheduled but
+      // unplayed fight), fall through to live mode.
       window.CE.bridge.getFightNightData(state.fight_id).then(function (data) {
         if (!data || !data.ok) {
           renderEmpty(data && data.message ? data.message :
@@ -259,12 +267,14 @@ window.CE.fightNight = (function () {
           return;
         }
         state.fight_data = data;
-        // If the fight is unresolved (rare — player deep-links to an
-        // unresolved fight_id), fall back to live mode.
-        if (!data.is_resolved) {
-          state.mode = 'live';
+        if (data.is_resolved) {
+          // Skip pre-fight + live — go straight to the result.
+          // Release any advance-day lock since we're not animating.
+          setAdvanceDayLock(false);
+          renderRecap();
+        } else {
+          startPreFight();
         }
-        startPreFight();
       }).catch(function (err) {
         console.error('[fight_night] getFightNightData failed:', err);
         renderEmpty('Could not load this fight.');
@@ -1310,6 +1320,9 @@ window.CE.fightNight = (function () {
     }
 
     // Action buttons.
+    // CLEANUP-AND-FIX Bug 8 — Replay button removed (replay mode
+    // eliminated). The recap is shown directly when navigating to a
+    // resolved fight, so the player can't re-trigger animation.
     var actions_html = '<div class="ce-fn__recap-actions">';
     if (d.next_unresolved_fight_id) {
       actions_html += '<button class="ce-fn__action-btn" id="ce-fn-next-fight">▶ Next Fight</button>';
@@ -1318,7 +1331,6 @@ window.CE.fightNight = (function () {
     } else {
       actions_html += '<button class="ce-fn__action-btn" id="ce-fn-done">✓ Done</button>';
     }
-    actions_html += '<button class="ce-fn__action-btn ce-fn__action-btn--secondary" id="ce-fn-replay">↻ Replay</button>';
     actions_html += '<button class="ce-fn__action-btn ce-fn__action-btn--secondary" id="ce-fn-back-dashboard">Dashboard</button>';
     actions_html += '</div>';
 
@@ -1373,15 +1385,7 @@ window.CE.fightNight = (function () {
     if (doneBtn) doneBtn.addEventListener('click', function () {
       window.CE.app.navigate('dashboard');
     });
-    var replayBtn = document.getElementById('ce-fn-replay');
-    if (replayBtn) replayBtn.addEventListener('click', function () {
-      // Replay the same fight.
-      if (state.fight_data && state.fight_data.fight_id) {
-        state.fight_id = state.fight_data.fight_id;
-        state.mode = 'replay';
-        loadAndRender();
-      }
-    });
+    // CLEANUP-AND-FIX Bug 8 — Replay button + handler removed.
     var dashboardBtn = document.getElementById('ce-fn-back-dashboard');
     if (dashboardBtn) dashboardBtn.addEventListener('click', function () {
       window.CE.app.navigate('dashboard');

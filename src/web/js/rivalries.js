@@ -249,6 +249,16 @@ window.CE.rivalries = (function () {
 
     var fightsLabel = (riv.fights_count === 1) ? '1 fight' : (riv.fights_count + ' fights');
 
+    // CLEANUP-AND-FIX Bug 9 — show "Haven't met yet" when the
+    // rivalry has no recorded fights OR when the head_to_head is
+    // 0-0 / 0-0-0 despite fights_count > 0 (data-drift case).
+    var h2hDisplay = riv.head_to_head || '';
+    var fc = Number(riv.fights_count || 0);
+    var zeroZero = (h2hDisplay === '0-0' || h2hDisplay === '0-0-0');
+    if (fc === 0 || (fc > 0 && zeroZero)) {
+      h2hDisplay = "Haven't met yet";
+    }
+
     var originHtml = '';
     if (isExpanded && riv.origin_description) {
       originHtml = '<div class="ce-riv__origin">' +
@@ -267,7 +277,7 @@ window.CE.rivalries = (function () {
           renderFighterSide(riv.fighter_a, 'ce-riv__fighter--a') +
           '<div class="ce-riv__vs">' +
             '<div class="ce-riv__vs-label">VS</div>' +
-            '<div class="ce-riv__h2h ce-mono">' + escapeHtml(riv.head_to_head) + '</div>' +
+            '<div class="ce-riv__h2h ce-mono">' + escapeHtml(h2hDisplay) + '</div>' +
           '</div>' +
           renderFighterSide(riv.fighter_b, 'ce-riv__fighter--b') +
         '</div>' +

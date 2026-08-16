@@ -60,7 +60,7 @@ DB_PATH = Path(os.environ.get(
 
 WEB_DIR = BASE_DIR / "web"
 INDEX_HTML = WEB_DIR / "index.html"
-LOGO_DIR = BASE_DIR / "ui" / "assets" / "promo_logos"
+LOGO_DIR = BASE_DIR / "web" / "assets" / "promo_logos"
 
 
 # ============================================================
@@ -170,6 +170,8 @@ def _decode_label(stored):
 
 
 def _format_cash(cash):
+    if abs(cash) >= 1_000_000_000:
+        return f"${cash / 1_000_000_000:.2f}B"
     if abs(cash) >= 1_000_000:
         return f"${cash / 1_000_000:.1f}M"
     if abs(cash) >= 1_000:

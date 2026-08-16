@@ -97,7 +97,8 @@ window.CE.matchmaking = (function () {
     var neg = n < 0;
     var abs = Math.abs(n);
     var s;
-    if (abs >= 1e6) s = '$' + (abs / 1e6).toFixed(1) + 'M';
+    if (abs >= 1e9) s = '$' + (abs / 1e9).toFixed(2) + 'B';
+    else if (abs >= 1e6) s = '$' + (abs / 1e6).toFixed(1) + 'M';
     else if (abs >= 1e3) s = '$' + (abs / 1e3).toFixed(0) + 'K';
     else s = '$' + Math.round(abs).toLocaleString();
     return (neg ? '-' : '') + s;

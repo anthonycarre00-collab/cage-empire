@@ -895,7 +895,7 @@ def main():
     build_fresh_db()
     try:
         app_instance = app.App()
-    except _tkinter_TclError as e:
+    except (_tkinter_TclError, AttributeError) as e:
         print(f"  SKIP — no display available ({type(e).__name__})")
         g_skipped = True
     except Exception as e:

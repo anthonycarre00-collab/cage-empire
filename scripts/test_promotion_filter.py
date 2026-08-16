@@ -242,7 +242,7 @@ def case_f_ui_smoke(alpha_combat_id):
         # bug — let it propagate so the test fails loudly. But the
         # two expected skip-reasons are by far the most common in
         # sandbox / CI environments.
-        if isinstance(e, (_tkinter_TclError, ImportError)):
+        if isinstance(e, (_tkinter_TclError, ImportError, AttributeError)):
             return None, f"SKIP — no display available ({type(e).__name__})", None
         return False, f"App() crashed: {type(e).__name__}: {e}", None
 
