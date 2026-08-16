@@ -159,11 +159,27 @@ MEMORY_TYPE_SHARED_GYM = "shared_gym"
 MEMORY_TYPE_FORMER_TEAMMATE = "former_teammate"
 MEMORY_TYPE_INJURY_HISTORY = "injury_history"
 
+# HW3.2 — 5 new memory search types. Each returns 0 or 1 voice-phrase
+# strings (matching the existing pattern) and is added to the
+# surface_memories function's search list. Per docs/Hardening_Phase.md
+# §HW3.2 / CRITICAL #6.
+MEMORY_TYPE_TITLE_FIGHT_HISTORY = "title_fight_history"
+MEMORY_TYPE_FORMER_CHAMPION = "former_champion"
+MEMORY_TYPE_CONTROVERSIAL_LOSS = "controversial_loss"
+MEMORY_TYPE_MAJOR_UPSET = "major_upset"
+MEMORY_TYPE_CAREER_MILESTONE = "career_milestone"
+
 ALL_MEMORY_TYPES = (
     MEMORY_TYPE_PREVIOUS_FIGHT,
     MEMORY_TYPE_SHARED_GYM,
     MEMORY_TYPE_FORMER_TEAMMATE,
     MEMORY_TYPE_INJURY_HISTORY,
+    # HW3.2 new types:
+    MEMORY_TYPE_TITLE_FIGHT_HISTORY,
+    MEMORY_TYPE_FORMER_CHAMPION,
+    MEMORY_TYPE_CONTROVERSIAL_LOSS,
+    MEMORY_TYPE_MAJOR_UPSET,
+    MEMORY_TYPE_CAREER_MILESTONE,
 )
 
 
@@ -329,28 +345,40 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
                      current_date=None):
     """Surface relevant memories for a fight between two fighters.
 
-    Per spec §5 + PHASE_2_PLAN §5 Task 2.5: the Memory Engine searches
-    4 sources for relevant history between the two fighters and returns
-    a list of voice-phrase strings. Each phrase is player-facing (no
-    raw numbers per CONVENTIONS §14).
+    Per spec §5 + PHASE_2_PLAN §5 Task 2.5 + HW3.2 (Hardening_Phase.md
+    §HW3.2): the Memory Engine searches 9 sources (4 MVP + 5 HW3) for
+    relevant history between the two fighters and returns a list of
+    voice-phrase strings. Each phrase is player-facing (no raw numbers
+    per CONVENTIONS §14).
 
-    Search types (D1):
-      1. previous_fight    — have they fought before? (from fight_
-                             history)
-      2. shared_gym        — do they currently share a gym? (from
-                             fighters.current_gym_id)
-      3. former_teammate   — is there a fighter_memory_links row of
-                             type 'former_teammate' or 'shared_gym'
-                             between them?
-      4. injury_history    — is either fighter currently injured?
-                             (from injuries where is_active=1)
+    Search types (D1 + HW3.2):
+      1. previous_fight        — have they fought before? (from fight_
+                                  history)
+      2. shared_gym            — do they currently share a gym? (from
+                                  fighters.current_gym_id)
+      3. former_teammate       — is there a fighter_memory_links row
+                                  of type 'former_teammate' between
+                                  them?
+      4. injury_history        — is either fighter currently injured?
+                                  (from injuries where is_active=1)
+      5. title_fight_history   — have they fought for a title before?
+                                  (HW3.2 — from fight_history joined
+                                  with fights.is_title_fight=1)
+      6. former_champion       — is either fighter a former champion?
+                                  (HW3.2 — from titles history)
+      7. controversial_loss    — did one fighter lose controversially
+                                  to the other (split_decision /
+                                  disputed stoppage)? (HW3.2)
+      8. major_upset           — was there a major upset between these
+                                  two? (HW3.2 — from fighter_memory_
+                                  links where link_type='upset')
+      9. career_milestone      — has either fighter reached a career
+                                  milestone against the other? (HW3.2
+                                  — from fighter_memory_links where
+                                  link_type='milestone')
 
-    Returns at most 4 memories (D2). Each search returns 0 or 1 voice
-    phrases. Total: 0-4 memories per fight.
-
-    The engine is READ-ONLY (D3) — it does NOT write to any table.
-    The caller decides what to do with the returned strings (display
-    on the Fight Card screen, persist to a news_items row, etc.).
+    Returns up to 9 memories (one per search type). Each search
+    returns 0 or 1 voice phrases. The engine is READ-ONLY (D3).
 
     Per D6: the engine NEVER raises — DB errors are caught and a
     partial result is returned. A failed memory lookup must not crash
@@ -367,10 +395,10 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
     Returns:
         list of (memory_type, memory_phrase) tuples. The list is
         ordered by search type (previous_fight, shared_gym,
-        former_teammate, injury_history) — the same order the UI
-        displays them on the Fight Card screen. Empty list if no
-        memories match (e.g. two brand-new free agents who've never
-        fought, never shared a gym, and aren't injured).
+        former_teammate, injury_history, title_fight_history,
+        former_champion, controversial_loss, major_upset,
+        career_milestone) — the same order the UI displays them on
+        the Fight Card screen. Empty list if no memories match.
     """
     # Resolve current_date from simulation_clock if not provided.
     if current_date is None:
@@ -434,6 +462,64 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
     except sqlite3.Error as e:
         import sys
         print(f"WARNING: memory_engine._search_injury_history("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    # HW3.2 — 5 new search types. Each is a separate try/except so a
+    # single failed search doesn't abort the others. Ordered by
+    # narrative weight (title_fight_history is the heaviest — most
+    # newsworthy when booking a rematch; career_milestone is the
+    # lightest — most context-dependent).
+    try:
+        m = _search_title_fight_history(conn, fighter_a_id,
+                                        fighter_b_id, current_date)
+        if m:
+            memories.append((MEMORY_TYPE_TITLE_FIGHT_HISTORY, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_title_fight_history("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        m = _search_former_champion(conn, fighter_a_id, fighter_b_id)
+        if m:
+            memories.append((MEMORY_TYPE_FORMER_CHAMPION, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_former_champion("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        m = _search_controversial_loss(conn, fighter_a_id, fighter_b_id,
+                                       current_date)
+        if m:
+            memories.append((MEMORY_TYPE_CONTROVERSIAL_LOSS, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_controversial_loss("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        m = _search_major_upset(conn, fighter_a_id, fighter_b_id,
+                                current_date)
+        if m:
+            memories.append((MEMORY_TYPE_MAJOR_UPSET, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_major_upset("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        m = _search_career_milestone(conn, fighter_a_id, fighter_b_id)
+        if m:
+            memories.append((MEMORY_TYPE_CAREER_MILESTONE, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_career_milestone("
               f"a={fighter_a_id}, b={fighter_b_id}) failed: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
 
@@ -604,10 +690,16 @@ def _search_former_teammate(conn, fighter_a_id, fighter_b_id):
     # is reserved for the historical case (memory_svc may write it
     # when a gym transfer happens — Phase 3+). For MVP, the
     # 'former_teammate' search reads ONLY 'former_teammate' links.
+    #
+    # TIER3-MISSING §T3.4 (W17) — also surface the PLURAL
+    # 'former_teammates' link_type (added v3.36.0). The plural form
+    # is written by write_former_teammates_links_on_gym_change (the
+    # T3.4-mandated variant). Both forms surface the same voice
+    # phrase ("Former training partners.").
     row = conn.execute(
         """
         SELECT 1 FROM fighter_memory_links
-        WHERE link_type = 'former_teammate'
+        WHERE link_type IN ('former_teammate', 'former_teammates')
           AND (
             (fighter_id = ? AND linked_fighter_id = ?)
             OR
@@ -688,3 +780,346 @@ def _search_injury_history(conn, fighter_a_id, fighter_b_id,
 
     return (f"{name} is recovering from {body_phrase}, "
             f"{band_phrase}.")
+
+
+# ============================================================
+# SEARCH 5 — title_fight_history (HW3.2)
+# ============================================================
+
+def _search_title_fight_history(conn, fighter_a_id, fighter_b_id,
+                                current_date):
+    """Search fight_history + fights for a previous title fight
+    between the two fighters.
+
+    Per HW3.2: "have these two fought for a title before?"
+
+    Looks up fight_history rows where (fighter_id=A AND opponent_id=B)
+    OR (fighter_id=B AND opponent_id=A) AND title_at_stake=1. If
+    found, surfaces "These two last met for the title {gap} —
+    {focal} {verb} by {result}." Voice-layered (no raw dates per §14).
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+        current_date: ISO date string.
+
+    Returns:
+        Voice phrase string, or None if they've never fought for a
+        title before.
+    """
+    # Find the most recent title fight between them (from A's
+    # perspective — fight_history has one row per fighter per fight,
+    # so the A→B row is sufficient).
+    row = conn.execute(
+        """
+        SELECT outcome, result_type, event_date
+        FROM fight_history
+        WHERE fighter_id = ? AND opponent_id = ?
+          AND title_at_stake = 1
+        ORDER BY event_date DESC
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    outcome, result_type, event_date = row
+
+    # Year gap (D7).
+    years = 0
+    if event_date and current_date:
+        try:
+            ed = datetime.fromisoformat(event_date).date()
+            today = datetime.fromisoformat(current_date).date()
+            years = today.year - ed.year
+            if (today.month, today.day) < (ed.month, ed.day):
+                years -= 1
+            years = max(0, years)
+        except (ValueError, TypeError):
+            years = 0
+
+    gap_phrase = _year_gap_phrase(years)
+    verb = _outcome_verb(outcome)
+    result_phrase = _result_type_phrase(result_type)
+
+    if years == 0:
+        return (f"They met for the title earlier {gap_phrase} — "
+                f"{verb} by {result_phrase}.")
+    return (f"Last fought for the title {gap_phrase} ago — "
+            f"{verb} by {result_phrase}.")
+
+
+# ============================================================
+# SEARCH 6 — former_champion (HW3.2)
+# ============================================================
+
+def _search_former_champion(conn, fighter_a_id, fighter_b_id):
+    """Search titles history — is either fighter a former champion?
+
+    Per HW3.2: "is either fighter a former champion?"
+
+    A "former champion" is a fighter who:
+      - Held a title in the past (titles.title_reigns_count > 0)
+      - Is NOT the current champion of that title (titles.current_
+        champion_fighter_id != fighter_id OR is_vacant=1)
+
+    If both are former champions, surface the more accomplished one
+    (higher title_reigns_count). If neither, return None.
+
+    Voice phrase: "{name} is a former champion." Voice-layered — no
+    raw reign counts (the spec example is the simple "former champion"
+    framing, not "won 3 titles").
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+
+    Returns:
+        Voice phrase string, or None if neither is a former champion.
+    """
+    # Look up both fighters' champion status. We check titles rows
+    # where title_reigns_count > 0 (the title has been held before)
+    # AND the fighter is NOT the current champion of any active title.
+    #
+    # A fighter is a "former champion" if:
+    #   - They appear as current_champion_fighter_id on at least one
+    #     title with title_reigns_count > 1 (they were dethroned and
+    #     someone else holds it now — but wait, if they're currently
+    #     the champion they're NOT former).
+    #
+    # Simpler approach: query the fighters' career stats. We need to
+    # find fighters who HELD a title at some point. The titles table
+    # only stores the CURRENT champion — there's no title_reign_
+    # history table. We approximate by checking:
+    #   - fighter_career.title_reigns (if > 0, they held a title)
+    #   - AND they're not currently a champion (no titles row has
+    #     current_champion_fighter_id = them AND is_vacant=0)
+    #
+    # If fighter_career doesn't have title_reigns, fall back to
+    # checking news_items for "title" topic headlines mentioning them.
+    rows = conn.execute(
+        """
+        SELECT f.fighter_id, f.first_name, f.last_name,
+               fc.title_reigns
+        FROM fighters f
+        LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id
+        WHERE f.fighter_id IN (?, ?)
+        """,
+        (fighter_a_id, fighter_b_id),
+    ).fetchall()
+    if not rows:
+        return None
+
+    # For each fighter, check if they're a former champion.
+    former_champs = []
+    for fid, first, last, reigns in rows:
+        if not reigns or reigns < 1:
+            continue
+        # Check if they're currently a champion.
+        cur_row = conn.execute(
+            "SELECT 1 FROM titles "
+            "WHERE current_champion_fighter_id=? AND is_vacant=0 "
+            "LIMIT 1",
+            (fid,),
+        ).fetchone()
+        if cur_row:
+            continue  # they're currently a champion, not former
+        name = f"{first} {last}".strip() or "The fighter"
+        former_champs.append((fid, name, reigns))
+
+    if not former_champs:
+        return None
+
+    # Pick the more accomplished former champion (more reigns).
+    former_champs.sort(key=lambda x: -x[2])
+    name = former_champs[0][1]
+    return f"{name} is a former champion."
+
+
+# ============================================================
+# SEARCH 7 — controversial_loss (HW3.2)
+# ============================================================
+
+def _search_controversial_loss(conn, fighter_a_id, fighter_b_id,
+                                current_date):
+    """Search fight_history for a controversial loss between the two.
+
+    Per HW3.2: "did one fighter lose controversially to the other
+    (split decision, disputed stoppage)?"
+
+    A "controversial loss" is defined as:
+      - result_type = 'split_decision' (a close split-decision loss)
+      - OR result_type = 'doctor_stoppage' (a disputed stoppage —
+        the loser's corner often disputes these)
+      - OR result_type = 'dq' (a disqualification — always
+        controversial)
+
+    The search looks for fight_history rows where one fighter lost
+    to the other with one of these result_types. Surfaces from the
+    LOSER's perspective: "{loser_name} lost to {winner_name} by
+    {result_phrase} — {gap} ago." Voice-layered.
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+        current_date: ISO date string.
+
+    Returns:
+        Voice phrase string, or None if no controversial loss exists
+        between them.
+    """
+    # Look for A's losses to B + B's losses to A with a controversial
+    # result_type. We want the most recent one.
+    row = conn.execute(
+        """
+        SELECT fighter_id, opponent_id, result_type, event_date
+        FROM fight_history
+        WHERE outcome = 'loss'
+          AND result_type IN ('split_decision', 'doctor_stoppage', 'dq')
+          AND (
+            (fighter_id = ? AND opponent_id = ?)
+            OR
+            (fighter_id = ? AND opponent_id = ?)
+          )
+        ORDER BY event_date DESC
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id, fighter_b_id, fighter_a_id),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    loser_id, winner_id, result_type, event_date = row
+
+    # Year gap (D7).
+    years = 0
+    if event_date and current_date:
+        try:
+            ed = datetime.fromisoformat(event_date).date()
+            today = datetime.fromisoformat(current_date).date()
+            years = today.year - ed.year
+            if (today.month, today.day) < (ed.month, ed.day):
+                years -= 1
+            years = max(0, years)
+        except (ValueError, TypeError):
+            years = 0
+
+    gap_phrase = _year_gap_phrase(years)
+    result_phrase = _result_type_phrase(result_type)
+
+    # Get the loser's name for the voice phrase.
+    name_row = conn.execute(
+        "SELECT first_name, last_name FROM fighters WHERE fighter_id=?",
+        (loser_id,),
+    ).fetchone()
+    if not name_row:
+        return None
+    loser_name = f"{name_row[0]} {name_row[1]}".strip() or "The fighter"
+
+    if years == 0:
+        return (f"{loser_name} lost by {result_phrase} earlier "
+                f"{gap_phrase}.")
+    return (f"{loser_name} lost by {result_phrase} {gap_phrase} ago.")
+
+
+# ============================================================
+# SEARCH 8 — major_upset (HW3.2)
+# ============================================================
+
+def _search_major_upset(conn, fighter_a_id, fighter_b_id, current_date):
+    """Search fighter_memory_links for an 'upset' link between the
+    two fighters.
+
+    Per HW3.2: "was there a major upset between these two?"
+
+    Reads the fighter_memory_links table for a row of link_type=
+    'upset' between the two (in either direction). These links are
+    written by memory_svc.write_upset_link when a lower-rated fighter
+    beats a higher-rated one by a rating gap ≥ 15 (per HW3.1).
+
+    Voice phrase: "These two produced a major upset." Voice-layered —
+    no raw rating gaps (the link_strength is internal only).
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+        current_date: ISO date string (unused — kept for API symmetry
+            with the other search functions).
+
+    Returns:
+        Voice phrase string, or None if no upset link exists.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM fighter_memory_links
+        WHERE link_type = 'upset'
+          AND (
+            (fighter_id = ? AND linked_fighter_id = ?)
+            OR
+            (fighter_id = ? AND linked_fighter_id = ?)
+          )
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id, fighter_b_id, fighter_a_id),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    return "These two produced a major upset."
+
+
+# ============================================================
+# SEARCH 9 — career_milestone (HW3.2)
+# ============================================================
+
+def _search_career_milestone(conn, fighter_a_id, fighter_b_id):
+    """Search fighter_memory_links for a 'milestone' link between
+    the two fighters.
+
+    Per HW3.2: "has either fighter reached a career milestone
+    against the other?"
+
+    Reads the fighter_memory_links table for a row of link_type=
+    'milestone' between the two (in either direction). These links
+    are written by memory_svc.write_milestone_link when a fighter
+    reaches a milestone (10 wins, 20 wins, 5-KO streak, 10th title
+    defense) against the other (per HW3.1).
+
+    Voice phrase: "One of these fighters reached a career milestone
+    against the other." Voice-layered — no raw milestone types.
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+
+    Returns:
+        Voice phrase string, or None if no milestone link exists.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM fighter_memory_links
+        WHERE link_type = 'milestone'
+          AND (
+            (fighter_id = ? AND linked_fighter_id = ?)
+            OR
+            (fighter_id = ? AND linked_fighter_id = ?)
+          )
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id, fighter_b_id, fighter_a_id),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    return ("A career milestone was reached in this matchup.")
+

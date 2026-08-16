@@ -73,6 +73,63 @@ from datetime import datetime
 
 
 # ----------------------------------------------------------------
+# PERF-FIXES-3 — weekly dirty-fighter set for snapshot refresh.
+#
+# `_weekly_snapshot_refresh` previously called `_refresh_snapshot`
+# for EVERY active fighter (~4452) on EVERY weekly tick. Each
+# refresh runs ~7 queries (descriptor snapshot + context engine +
+# career_phase + narrative_family + legacy_engine). That's ~31K
+# queries per weekly tick = ~1-3 seconds of pure descriptor work.
+#
+# The HW9.1 tier-cross optimization (career_arc) solved the same
+# problem in the monthly interpretation pass by only refreshing
+# fighters whose attributes crossed a voice-tier boundary. We port
+# the same pattern here: the weekly drift functions mark fighters
+# "dirty" when their morale or personality actually changes, and
+# `_weekly_snapshot_refresh` only refreshes those dirty fighters.
+# Typical dirty count per weekly tick: 200-500 (vs 4452 before).
+#
+# The set is also forwarded to interpretation.snapshot_cache
+# via `mark_fighter_dirty_for_rebuild` so the next WEEKLY rebuild
+# re-touches the fighter (catches drift between the per-event
+# refresh and downstream writes).
+#
+# The set is cleared at the end of `_weekly_snapshot_refresh`.
+# ----------------------------------------------------------------
+_fighters_dirty_this_week: set = set()
+
+
+def _mark_fighter_dirty_weekly(fighter_id) -> None:
+    """Mark a fighter as needing a snapshot refresh on this weekly tick.
+
+    Called from `_weekly_morale_drift` (when morale actually changes
+    due to drift / ring rust / win-streak bonus / injury recovery)
+    and `_weekly_personality_drift` (when grit/ambition/resilience
+    change due to streaks or injury comeback).
+
+    Also forwards the mark to interpretation.snapshot_cache so the
+    next WEEKLY rebuild re-touches the fighter (mirrors career_arc's
+    HW9.1 behavior).
+    """
+    if fighter_id is None:
+        return
+    try:
+        _fighters_dirty_this_week.add(int(fighter_id))
+    except (TypeError, ValueError):
+        return
+    # Forward to the interpretation layer's dirty-for-rebuild set.
+    # Wrapped in try/except so a headless test environment without
+    # the interpretation layer doesn't crash (graceful degradation).
+    try:
+        from interpretation.snapshot_cache import (
+            mark_fighter_dirty_for_rebuild,
+        )
+        mark_fighter_dirty_for_rebuild(fighter_id)
+    except ImportError:
+        pass
+
+
+# ----------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------
 
@@ -115,6 +172,13 @@ WEIGHT_CUT_DIFFICULTY_AGE_THRESHOLD = 32
 # Exciting-fight threshold: >10 beats in round 1 = exciting (the
 # fight had early pace + action, not a feeling-out round).
 EXCITING_FIGHT_BEAT_THRESHOLD = 10
+
+# PERF-FIXES-3 — fallback exciting-fight threshold for AI vs AI
+# fights (skip_beat_detail=True path, no fight_beats rows). Uses
+# fights.performance_rating instead. 70 is the "above-average"
+# band — the full engine typically produces performance_rating > 70
+# for fights with >10 round-1 beats (high pace + damage differential).
+EXCITING_PERF_RATING_THRESHOLD = 70
 
 # Cap for consistency growth (per the brief).
 CONSISTENCY_CAP = 90
@@ -412,6 +476,12 @@ def _update_fight_dynamic_fields(conn, fight_id, winner_id, loser_id,
     is_finish = result_type in ('ko_tko', 'ko', 'tko', 'submission')
 
     # Determine "exciting fight" — >10 beats in round 1.
+    # PERF-FIXES-3: when fight_beats is empty (AI vs AI fights
+    # resolved with skip_beat_detail=True), fall back to checking
+    # fights.performance_rating > 70 (the "exciting" threshold —
+    # the full engine typically produces performance_rating > 70
+    # for fights with >10 round-1 beats, since high beat counts
+    # correlate with high damage differentials).
     exciting = False
     if fight_id is not None:
         row = conn.execute(
@@ -421,6 +491,16 @@ def _update_fight_dynamic_fields(conn, fight_id, winner_id, loser_id,
         ).fetchone()
         if row and row[0] > EXCITING_FIGHT_BEAT_THRESHOLD:
             exciting = True
+        elif not row or row[0] == 0:
+            # PERF-FIXES-3 — no fight_beats for this fight (AI vs AI
+            # skip_beat_detail path). Fall back to performance_rating.
+            perf_row = conn.execute(
+                "SELECT performance_rating FROM fights WHERE fight_id=?",
+                (fight_id,),
+            ).fetchone()
+            if perf_row and perf_row[0] is not None \
+                    and perf_row[0] > EXCITING_PERF_RATING_THRESHOLD:
+                exciting = True
 
     # ---- marketability ----
     if winner_id is not None:
@@ -859,6 +939,9 @@ def _weekly_morale_drift(conn, current_date):
                 "WHERE fighter_id=?",
                 (new_morale, fighter_id),
             )
+            # PERF-FIXES-3 — mark dirty for the weekly snapshot refresh.
+            # Only fighters whose morale actually changed need a refresh.
+            _mark_fighter_dirty_weekly(fighter_id)
 
     # Injury recovery scan (INJURY_RECOVERED surrogate). The
     # tick_processor._check_injury_recovery function (which runs
@@ -872,21 +955,41 @@ def _weekly_morale_drift(conn, current_date):
     ).fetchall()
     for (rec_fid,) in rec_rows:
         m = _get_morale(conn, rec_fid)
+        # PERF-FIXES-3 — the +5 morale changes the value (always +5,
+        # clamped to [10, 95]; only the clamp case is a no-op). Mark
+        # dirty unconditionally — the clamp case is rare (a fighter
+        # already at 95 who recovers from injury — they'd been at 95
+        # before the injury too, so no real change). A redundant
+        # refresh is cheap; a missed refresh leaves a stale descriptor.
         _set_morale(conn, rec_fid, m + 5, update_snapshot=False)
+        _mark_fighter_dirty_weekly(rec_fid)
 
 
 def _weekly_snapshot_refresh(conn):
-    """Refresh descriptor snapshots for all active fighters (batch).
+    """Refresh descriptor snapshots for fighters whose morale or
+    personality actually changed this week (PERF-FIXES-3).
 
-    The weekly drift loop updates morale without refreshing snapshots
-    (to avoid N snapshot writes per weekly tick). We refresh them all
-    here in one pass so the UI sees the new morale tiers.
+    Previously this refreshed ALL active fighters on every weekly tick
+    (~4452 fighters × ~7 queries = ~31K queries per week). Now it
+    only refreshes the dirty subset (typically 200-500 fighters) —
+    fighters whose morale drifted, took ring-rust, hit a streak
+    bonus, recovered from injury, or had a personality-field shift.
+
+    The set is populated by `_weekly_morale_drift` +
+    `_weekly_personality_drift` (via `_mark_fighter_dirty_weekly`).
+    The per-event subscribers (`_process_fight`, `_process_title_
+    change`, `_process_camp_*`) already refresh the snapshot inline
+    (via `_refresh_snapshot` or `_set_morale(update_snapshot=True)`)
+    — those fighters are NOT added to the dirty set, so this weekly
+    pass doesn't re-touch them.
     """
-    rows = conn.execute(
-        "SELECT fighter_id FROM fighters "
-        "WHERE is_active=1 AND is_retired=0"
-    ).fetchall()
-    for (fid,) in rows:
+    # Snapshot the dirty set so we can clear it BEFORE iterating
+    # (defensive — if any refresh publishes an event that re-marks
+    # a fighter dirty, we want those marks to land on the NEXT week's
+    # pass, not get cleared at the end of this one).
+    dirty = list(_fighters_dirty_this_week)
+    _fighters_dirty_this_week.clear()
+    for fid in dirty:
         _refresh_snapshot(conn, fid)
 
 
@@ -937,12 +1040,17 @@ def _weekly_personality_drift(conn, current_date):
                 conn, fighter_id, "ambition", cur_amb + 2,
                 update_snapshot=False,
             )
+            # PERF-FIXES-3 — personality changed, mark dirty for
+            # weekly snapshot refresh.
+            _mark_fighter_dirty_weekly(fighter_id)
         elif ws >= WIN_STREAK_COMFORT_ONSET:
             # Comfortable — riding high.
             _set_personality_field(
                 conn, fighter_id, "ambition", cur_amb - 1,
                 update_snapshot=False,
             )
+            # PERF-FIXES-3 — personality changed, mark dirty.
+            _mark_fighter_dirty_weekly(fighter_id)
 
     # ---- injury comeback: resilience +2, grit +1 ----
     # Same detection pattern as _weekly_morale_drift's injury scan
@@ -973,14 +1081,24 @@ def _weekly_personality_drift(conn, current_date):
             conn, rec_fid, "grit", cur_grit + 1,
             update_snapshot=False,
         )
+        # PERF-FIXES-3 — injury comeback shifts two personality
+        # fields; mark dirty so the snapshot reflects the new tiers.
+        _mark_fighter_dirty_weekly(rec_fid)
 
 
 def _birthday_aging(conn, current_date):
     """On a fighter's birthday, age up injury_proneness and
-    weight_cut_difficulty per the brief."""
+    weight_cut_difficulty per the brief.
+
+    HW9.1.5: replaced datetime.strptime with string slicing for the
+    per-fighter birthday check. strptime was 9.3us/call × 4452 fighters
+    = 41ms per tick. String slicing is 1.1us/call = 5ms per tick.
+    """
+    if not current_date or len(current_date) < 10:
+        return
     try:
-        dt = datetime.strptime(current_date, "%Y-%m-%d")
-    except (ValueError, TypeError):
+        cur_y, cur_m, cur_d = int(current_date[:4]), int(current_date[5:7]), int(current_date[8:10])
+    except (ValueError, IndexError, TypeError):
         return
 
     rows = conn.execute(
@@ -991,21 +1109,21 @@ def _birthday_aging(conn, current_date):
     ).fetchall()
 
     for fighter_id, dob, cur_pron, cur_wcd in rows:
-        if not dob:
+        if not dob or len(dob) < 10:
             continue
         try:
-            dob_dt = datetime.strptime(dob, "%Y-%m-%d")
-        except (ValueError, TypeError):
+            dob_y, dob_m, dob_d = int(dob[:4]), int(dob[5:7]), int(dob[8:10])
+        except (ValueError, IndexError, TypeError):
             continue
 
         # Birthday match (month + day).
-        if dob_dt.month != dt.month or dob_dt.day != dt.day:
+        if dob_m != cur_m or dob_d != cur_d:
             continue
 
         # Compute age. Today IS the birthday so the year-only diff
         # is correct, but be defensive.
-        age = dt.year - dob_dt.year
-        if (dt.month, dt.day) < (dob_dt.month, dob_dt.day):
+        age = cur_y - dob_y
+        if (cur_m, cur_d) < (dob_m, dob_d):
             age -= 1
 
         cur_pron = cur_pron if cur_pron is not None else 50

@@ -6,8 +6,12 @@ Thin wrapper module. Delegates to the existing
 the service layer (`services.injuries_svc`) without depending
 directly on tick_processor.
 
-NO new code in Task 6.0 (per docs/TASK_6_0_PLAN.md §1.1, Fix #4 —
-defer injury query helpers to Task 6.4 Fighter Profile screen).
+Phase E5 (Fix 2 — per docs/DESIGN_REVIEW_E5.md §5): added the doctor
+recovery-time-reduction helper `get_doctor_recovery_bonus`. Called by
+`fight_engine._maybe_create_injury` at injury creation time to shorten
+the projected_return_date. The bonus is the SUM of (skill_level / 200)
+across all active doctors on the fighter's promo (max 15% with 3 top
+doctors — a 100-skill doctor = 0.5 reduction, capped at 3 doctors).
 
 CONVENTIONS compliance:
   §5  — One table-group per task. This module does NOT add tables;
@@ -23,8 +27,70 @@ CONVENTIONS compliance:
         delegation). The function itself publishes nothing on the
         event bus.
 
-Migration impact: NONE (code-only wrapper).
+Migration impact: NONE (code-only wrapper + Phase E5 helper).
 """
+
+
+# Phase E5 (per docs/DESIGN_REVIEW_E5.md §5 + docs/ECON_STAFF_PLAN.md
+# §4.1). Doctor recovery-time reduction constants:
+#   - Per-doctor reduction = (skill_level / 200) × 10% = up to 5%
+#     (a 100-skill doctor reduces recovery time by 5%).
+#   - Multiple doctors stack — 3 top doctors (300 combined skill)
+#     = 15% total reduction (the brief's stated max).
+#   - The 0.05 per-doctor cap is implicit: a single 100-skill doctor
+#     = 5%, and the 0.15 hard cap below prevents runaway stacking.
+# The brief formula is (skill_level / 200) × 10% — written out as
+# skill_level × (0.10 / 200) = skill_level / 2000 = 0.0005 per point.
+DOCTOR_RECOVERY_BONUS_PER_SKILL_POINT = 0.10 / 200.0   # 0.0005 = 0.05% per point
+DOCTOR_RECOVERY_BONUS_CAP = 0.15                       # max 15% with 3 top doctors
+
+
+def get_doctor_recovery_bonus(conn, promotion_id):
+    """Return the doctor-induced recovery-time reduction fraction.
+
+    Phase E5 — per docs/DESIGN_REVIEW_E5.md §5: for each active
+    doctor on the fighter's promo, reduce recovery time by
+    (doctor.skill_level / 200) × 10% = up to 5% per doctor. Multiple
+    doctors stack (max 15% total reduction with 3 top doctors).
+
+    Args:
+        conn: sqlite3 connection.
+        promotion_id: the fighter's current_promotion_id. If None or
+            the promo has no active doctors, returns 0.0 (no bonus).
+
+    Returns:
+        A float in [0.0, 0.15] — the fraction by which to reduce
+        recovery days. E.g. 0.05 = 5% reduction (a 100-day recovery
+        becomes 95 days). 0.0 means no active doctors on the promo.
+
+    Implementation notes:
+      - "Active" = staff_contracts row exists + parent contracts row
+        has status='active'. Mirrors the salary model in
+        finance.py::_process_event_finance (which uses the same
+        JOIN pattern to identify active paid staff).
+      - Coaches are EXCLUDED — they're gym-bound, not promo staff
+        (the WHERE role_type='doctor' filter handles this).
+      - The 0.15 cap is defensive — even with a corrupt DB that has
+        10 active 100-skill doctors on one promo, the bonus is
+        capped at 15% so the recovery timeline can't go to 0.
+    """
+    if not promotion_id:
+        return 0.0
+    row = conn.execute(
+        "SELECT COALESCE(SUM(s.skill_level), 0) "
+        "FROM staff s "
+        "JOIN staff_contracts sc ON sc.staff_id=s.staff_id "
+        "JOIN contracts c ON c.contract_id=sc.contract_id "
+        "WHERE s.role_type='doctor' "
+        "  AND s.promotion_id=? "
+        "  AND c.status='active'",
+        (promotion_id,),
+    ).fetchone()
+    total_skill = row[0] if row and row[0] is not None else 0
+    if total_skill <= 0:
+        return 0.0
+    bonus = total_skill * DOCTOR_RECOVERY_BONUS_PER_SKILL_POINT
+    return min(bonus, DOCTOR_RECOVERY_BONUS_CAP)
 
 
 def progress_injuries(conn):

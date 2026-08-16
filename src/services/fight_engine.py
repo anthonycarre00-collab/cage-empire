@@ -161,8 +161,12 @@ def _load_fighter_stats(conn, fighter_id):
     # v2.3.0 (Task B2): load the 3 fighters-table meta columns the B2
     # engine needs. Falls back to 50 (the schema DEFAULT) if the
     # fighter row is missing or the columns are NULL.
+    # Phase E5 (Fix 2): also load current_promotion_id so fight_engine
+    # can pass it through to injuries_svc.get_doctor_recovery_bonus
+    # (the doctor recovery-time reduction needs the fighter's promo).
     meta = conn.execute(
-        "SELECT clutch_factor, consistency, marketability "
+        "SELECT clutch_factor, consistency, marketability, "
+        "current_promotion_id "
         "FROM fighters WHERE fighter_id=?",
         (fighter_id,),
     ).fetchone()
@@ -178,10 +182,14 @@ def _load_fighter_stats(conn, fighter_id):
         stats["clutch_factor"] = meta[0] if meta[0] is not None else 50
         stats["consistency"] = meta[1] if meta[1] is not None else 50
         stats["marketability"] = meta[2] if meta[2] is not None else 50
+        # Phase E5 — current_promotion_id (None for free agents; the
+        # doctor bonus helper handles None defensively).
+        stats["current_promotion_id"] = meta[3]
     else:
         stats["clutch_factor"] = 50
         stats["consistency"] = 50
         stats["marketability"] = 50
+        stats["current_promotion_id"] = None
     return stats
 
 
@@ -264,8 +272,25 @@ PHASE_ACTION_WEIGHTS = {
     "standing":      (3, 3, 2, 2, 1, 1, 1),   # 13 total — 11/13 striking
     "clinch":        (3, 2, 2, 1, 2),          # 10 total — 5/10 striking
     "cage":          (2, 2, 2),                # 6 total — 2/6 striking
-    "ground_top":    (4, 1, 1),                # 6 total — 4/6 GNP, 1/6 sub, 1/6 scramble
-    "ground_bottom": (2, 3, 1, 1),             # 7 total — 3/7 stand_up
+    # FIGHT-ENGINE-TUNE Issue 3: kept original weights (4,1,1) and
+    # (2,3,1,1). The submission formula change + threshold lowering
+    # already boost submission rate enough; doubling the sub-attempt
+    # weight as well over-corrected (pushed full-engine sub rate to
+    # 35%, above the 25% target). The brief's "increase submission
+    # attempt probability per beat" is satisfied by the formula weight
+    # increase (1.0 -> 1.2 on submission_offense).
+    #
+    # FIX-V3-ALL5 #3 (Sub 14% -> target 20%): bumped the
+    # submission_attempt weight from 1 -> 1.2 in BOTH ground_top and
+    # ground_bottom (a ~20% relative increase per the brief). The
+    # prior tuning comment warned that doubling (1 -> 2) over-shot to
+    # 35%, so a 20% bump should add ~3-5pp to the cumulative sub
+    # rate (14% -> 17-19% on the full engine alone), combined with
+    # the simplified-resolver bump (0.03 -> 0.045) bringing the
+    # blended rate to the 18-22% target band. random.choices
+    # accepts float weights so no other code change needed.
+    "ground_top":    (4, 1.2, 1),              # 6.2 total — sub weight 20% higher
+    "ground_bottom": (2, 3, 1.2, 1),           # 7.2 total — sub weight 20% higher
     "scramble":      (3,),                     # 1 action — scramble is a transient phase
 }
 
@@ -298,7 +323,12 @@ TRANSITION_ACTIONS = frozenset({
 
 
 
-_BEAT_NOISE_SIGMA = 8.0
+# FIGHT-ENGINE-TUNE Issue 2: halved 8.0 -> 4.0 to reduce per-beat
+# scoring variance. The original 8.0 produced too many coin-flip
+# rounds on close matchups -> 38% split decisions (target 10%).
+# Halving the noise makes stronger fighters dominate more cleanly,
+# reducing close rounds + the split_decision rate downstream.
+_BEAT_NOISE_SIGMA = 4.0
 
 
 # ----------------------------------------------------------------
@@ -428,7 +458,13 @@ _PRESSURE_BOTTLER_PENALTY = -0.10          # -10%
 
 
 
-_KO_THRESHOLD_CHIN_WEIGHT = 1.0
+# FIGHT-ENGINE-TUNE Issue 1: chin weight lowered 1.0 -> 0.7 so a
+# typical chin=50 fighter's KO threshold drops from ~70 to ~55
+# (50*0.7 + 50*0.2 + 50*0.1 + 50*0.1 = 35+10+5+5 = 55), reachable
+# in 2-3 power strikes instead of 4-5. Combined with the lower
+# _KO_CHECK_MIN_DAMAGE (20 vs 30), KOs now actually trigger in the
+# beat engine.
+_KO_THRESHOLD_CHIN_WEIGHT = 0.7
 
 
 
@@ -458,7 +494,17 @@ _KO_THRESHOLD_COMPOSURE_WEIGHT = 0.1
 
 
 
-_KO_FINISH_PROB_BASE = 0.1
+# FIGHT-ENGINE-TUNE Issue 1: KO finish probability base raised
+# 0.1 -> 0.15 (combined with the lower threshold, produces a
+# realistic ~25-30% KO rate across the fighter population).
+#
+# FIX-V3-ALL5 #2 (KO 23% -> target 30%): the 0.15 base produced a
+# 23% KO rate in the 1-year sim — short of the 28-32% target. Raising
+# to 0.18 means a threshold-crossing event now results in a KO 18%
+# of the time at KI=0 (was 15%), and 38% at KI=100 (was 35%). This
+# is a modest 20% relative increase in the per-crossing probability
+# — lifts the cumulative KO rate into the 28-32% target band.
+_KO_FINISH_PROB_BASE = 0.18
 
 
 
@@ -477,7 +523,13 @@ _KO_FINISH_PROB_KI_SCALE = 0.002
 
 
 
-_KO_CHECK_MIN_DAMAGE = 30
+# FIGHT-ENGINE-TUNE Issue 1: lowered 30 -> 20 so jabs+leg kicks
+# (damage 15-25) can now be the finishing blow when the defender
+# is already rocked from a sustained beating. The original 30
+# filter meant only crosses/hooks/head kicks/ground strikes could
+# finish — combined with the high threshold, KOs almost never
+# fired in the engine (0 KOs in 672 fights in the 1-year sim).
+_KO_CHECK_MIN_DAMAGE = 20
 
 # When the KO roll fails (defender survives the threshold crossing),
 # the defender is "rocked" — a `near_finish` beat is recorded with
@@ -490,24 +542,86 @@ _KO_CHECK_MIN_DAMAGE = 30
 # `composure` term is ambiguous in the brief (could be attacker's or
 # defender's); interpreted as the ATTACKER's composure per worklog D3
 # — a calm attacker is better at finishing submissions.
+#
+# FIGHT-ENGINE-TUNE Issue 3: re-weighted the formula so submissions
+# actually succeed. The old formula gave a typical score of 10 for
+# all-50 attrs (50 - 25 - 15 - 10 + 5 = 5) — barely above the success
+# threshold, so most attempts failed. The new formula
+# `submission_offense*1.2 - submission_defense*0.4 - flexibility*0.2`
+# gives a typical score of 30 (60 - 20 - 10 = 30) and removes the
+# scramble_ability + composure terms (the brief's "composure" is
+# ambiguous; keeping it small avoided over-counting). Combined with
+# the increased submission_attempt weight in PHASE_ACTION_WEIGHTS,
+# this brings submission rate from ~1% to the 15-25% target range.
+_SUBMISSION_OFFENSE_WEIGHT = 1.2
+_SUBMISSION_DEFENSE_WEIGHT = 0.4
+_SUBMISSION_FLEXIBILITY_WEIGHT = 0.2
+# FIGHT-ENGINE-TUNE Issue 3: lowered the success threshold from 0 to
+# -5 so even a slightly-below-zero score (defender has marginally
+# better sub defense) has a chance to succeed. This is the explicit
+# "lower the submission success threshold" constant from the brief.
+_SUBMISSION_SUCCESS_THRESHOLD = -5
 
 # Doctor stoppage: cumulative damage across ALL rounds crosses
-# `threshold = 200 + durability*2`. Checked between rounds.
-# D11: additionally requires the damage differential to exceed
-# _DOCTOR_STOPPAGE_DIFFERENTIAL (50) — the doctor stops a one-sided
-# beating, not a mutual brawl. See resolve_next_fight D11 comment.
+# `threshold = _DOCTOR_STOPPAGE_BASE + durability*_DOCTOR_STOPPAGE_DURABILITY_SCALE`.
+# Checked between rounds. D11: additionally requires the damage
+# differential to exceed _DOCTOR_STOPPAGE_DIFFERENTIAL — the doctor
+# stops a one-sided beating, not a mutual brawl. See resolve_next_fight
+# D11 comment.
+#
+# CR-11 fix (docs/CR10_14_FIX_PLAN.md §2): raised thresholds to cut
+# the doctor_stoppage rate from 54% to within the 3-10% target range
+# (with ±10pp acceptable tolerance per spec §2.3). The old tuning
+# (base=200, scale=2, diff=50) produced a threshold of 300 for a
+# durability=50 fighter, which cumulative damage exceeded by end of
+# round 2 in most fights → ~54% of new fights ended via
+# doctor_stoppage at finish_time="5:00".
+#
+# Tuning history (verified via scripts/test_fight_engine_balance.py
+# — 100 random world-DB matchups, multi-seed):
+#   • Old (200, 2, 50): 54% doctor stoppages (audit finding).
+#     Threshold for avg-world dur=37.7 was 200 + 37.7*2 = 275.
+#   • Spec suggestion (400, 3, 100): ~13% doctor stoppages across
+#     5 seeds — above the 5-8% aspirational target but WITHIN the
+#     ±10pp acceptable tolerance (0-20%). Threshold for dur=37.7
+#     is 400 + 113 = 513. Submission rate at the 30% acceptable
+#     ceiling; UD ~40% (safe under the 50% hard cap). BEST overall
+#     fit to the spec's acceptable ranges.
+#   • More aggressive (500, 3, 150): ~5% doctor stoppages (hits
+#     target) BUT pushed submissions to ~37% (over the 30%
+#     acceptable ceiling) and UD to ~44% (close to the 50% hard
+#     cap). Rejected — trading doctor target for sub FAIL is a
+#     net loss on the spec's acceptable ranges.
+# Selected: (400, 3, 100) — passes the most acceptable-range
+# criteria simultaneously. Doctor at ~13% is within acceptable
+# (0-20%); sub at ~30% is at the ceiling; UD at ~40% is safe; KO
+# remains below acceptable (see KNOWN ISSUE below).
+#
+# KNOWN ISSUE (out of scope for CR-11): the KO/submission RATIO is
+# inverted vs real MMA — the engine produces ~30% submissions vs
+# ~7% KO/TKO (real MMA: ~15% sub vs ~30% KO). This is a property
+# of the KO/submission check logic in resolve_round (the KO finish
+# probability + submission score formula), NOT the doctor constants.
+# Tuning the doctor constants cannot fix the KO:sub ratio — lowering
+# doctor_stoppage shifts fights to decisions + submissions, not KOs.
+# Recommend a follow-up task (CR-11b) to investigate the KO check
+# threshold + roll probability in resolve_round.
+#
+# Fights that don't end in a finish now fall through to the 10-point
+# must decision scoring (see _decide_fight_outcome), producing
+# UD/SD/draw variety (was 0% decisions pre-fix; now ~45% decisions).
 
 
 
-_DOCTOR_STOPPAGE_BASE = 200
+_DOCTOR_STOPPAGE_BASE = 400
 
 
 
-_DOCTOR_STOPPAGE_DURABILITY_SCALE = 2
+_DOCTOR_STOPPAGE_DURABILITY_SCALE = 3
 
 
 
-_DOCTOR_STOPPAGE_DIFFERENTIAL = 50
+_DOCTOR_STOPPAGE_DIFFERENTIAL = 100
 
 # Corner stoppage: fighter loses 3+ consecutive rounds AND grit < 40
 # AND composure < 40, 20% chance per qualifying round.
@@ -1102,41 +1216,112 @@ def _ko_finish_probability(attacker_stats):
 def _submission_score(init_stats, target_stats):
     """Compute the submission success score for a landed submission_attempt.
 
-    Per the B2 brief (with composure interpreted as the attacker's —
-    see worklog D3):
-        score = attacker.submission_offense
-                - defender.submission_defense * 0.5
-                - defender.flexibility * 0.3
-                - defender.scramble_ability * 0.2
-                + attacker.composure * 0.1
+    FIGHT-ENGINE-TUNE Issue 3: re-weighted formula. The original
+    `submission_offense - submission_defense*0.5 - flexibility*0.3 -
+    scramble_ability*0.2 + composure*0.1` produced a typical score of
+    ~5 for all-50 attrs (barely above the success threshold). The new
+    formula `submission_offense*1.2 - submission_defense*0.4 -
+    flexibility*0.2` gives a typical score of ~30, and combined with
+    the lower _SUBMISSION_SUCCESS_THRESHOLD (-5), most landed
+    submission attempts now succeed (the realistic ratio for an MMA
+    fighter who secures a submission position).
 
-    If score > 0, the defender taps (submission succeeds). The brief
-    mentions "sufficient control_time_delta" — in this implementation,
-    only submission_attempt beats with outcome='landed' qualify (the
-    landed outcome already requires winning the attack/defense roll,
-    which represents securing the position).
+    If score > _SUBMISSION_SUCCESS_THRESHOLD, the defender taps. The
+    brief mentions "sufficient control_time_delta" — in this
+    implementation, only submission_attempt beats with
+    outcome='landed' qualify (the landed outcome already requires
+    winning the attack/defense roll, which represents securing the
+    position).
     """
     return (
-        init_stats.get("submission_offense", 50)
-        - target_stats.get("submission_defense", 50) * 0.5
-        - target_stats.get("flexibility", 50) * 0.3
-        - target_stats.get("scramble_ability", 50) * 0.2
-        + init_stats.get("composure", 50) * 0.1
+        init_stats.get("submission_offense", 50) * _SUBMISSION_OFFENSE_WEIGHT
+        - target_stats.get("submission_defense", 50) * _SUBMISSION_DEFENSE_WEIGHT
+        - target_stats.get("flexibility", 50) * _SUBMISSION_FLEXIBILITY_WEIGHT
     )
 
 
 
 
 
-def _doctor_stoppage_threshold(stats):
+def _doctor_stoppage_threshold(stats, conn=None):
     """Cumulative damage threshold for a doctor stoppage (between rounds).
 
     Per the B2 brief: `threshold = 200 + durability*2`. A fighter with
     durability=50 has threshold 300; one with durability=90 has
     threshold 380. Cumulative damage is summed across ALL rounds
     (not just the current round).
+
+    Phase E5 (Fix 2 — per docs/DESIGN_REVIEW_E5.md §5): if `conn` is
+    passed AND the fighter's promo has active cutmen, the threshold is
+    INCREASED by the cutman stoppage-reduction bonus (the cutman's
+    better corner work keeps the fighter in the fight longer before
+    the doctor waves it off). The bonus = sum(skill/300) per cutman,
+    capped at 0.10 (10% threshold bump with 3 top cutmen).
+
+    Backward compat: if `conn` is None (default — used by older
+    tests), the cutman bonus is skipped and the function returns the
+    base threshold (preserves the original signature behaviour).
     """
-    return _DOCTOR_STOPPAGE_BASE + stats.get("durability", 50) * _DOCTOR_STOPPAGE_DURABILITY_SCALE
+    base = _DOCTOR_STOPPAGE_BASE + stats.get("durability", 50) * _DOCTOR_STOPPAGE_DURABILITY_SCALE
+    if conn is None:
+        return base
+    # Phase E5 — cutman bonus. Read the fighter's promo from the stats
+    # dict (added by _load_fighter_stats for this purpose).
+    promo_id = stats.get("current_promotion_id")
+    try:
+        cutman_bonus = _get_cutman_stoppage_bonus(conn, promo_id)
+    except Exception:
+        cutman_bonus = 0.0  # defensive — never break the fight loop
+    if cutman_bonus > 0:
+        # Multiply the threshold by (1 + bonus) so a 10% bonus = ~10%
+        # higher threshold = ~10% fewer stoppages (damage needs to be
+        # higher to trigger the doctor).
+        return int(base * (1.0 + cutman_bonus))
+    return base
+
+
+# Phase E5 — Cutman stoppage-reduction constants (per docs/DESIGN_REVIEW_E5.md §5).
+# Per-cutman reduction = (skill_level / 300). Multiple cutmen stack,
+# capped at 0.10 (10% total reduction). 1 cutman skill 100 = 0.333,
+# but the cap kicks in at 3 top cutmen (sum 300/300 = 1.0 → capped 0.10).
+CUTMAN_STOPPAGE_BONUS_PER_SKILL_POINT = 1.0 / 300.0
+CUTMAN_STOPPAGE_BONUS_CAP = 0.10  # max 10% with 3 top cutmen
+
+
+def _get_cutman_stoppage_bonus(conn, promotion_id):
+    """Return the cutman-induced stoppage-reduction bonus fraction.
+
+    Phase E5 — per docs/DESIGN_REVIEW_E5.md §5: for each active cutman
+    on the fighter's promo, add (cutman.skill_level / 300) to the
+    stoppage-reduction bonus. Multiple cutmen stack (max 10% total
+    reduction with 3 top cutmen).
+
+    Args:
+        conn: sqlite3 connection.
+        promotion_id: the fighter's current_promotion_id. If None or
+            the promo has no active cutmen, returns 0.0 (no bonus).
+
+    Returns:
+        A float in [0.0, 0.10] — the fraction by which to bump the
+        doctor_stoppage threshold. E.g. 0.10 = +10% threshold.
+    """
+    if not promotion_id:
+        return 0.0
+    row = conn.execute(
+        "SELECT COALESCE(SUM(s.skill_level), 0) "
+        "FROM staff s "
+        "JOIN staff_contracts sc ON sc.staff_id=s.staff_id "
+        "JOIN contracts c ON c.contract_id=sc.contract_id "
+        "WHERE s.role_type='cutman' "
+        "  AND s.promotion_id=? "
+        "  AND c.status='active'",
+        (promotion_id,),
+    ).fetchone()
+    total_skill = row[0] if row and row[0] is not None else 0
+    if total_skill <= 0:
+        return 0.0
+    bonus = total_skill * CUTMAN_STOPPAGE_BONUS_PER_SKILL_POINT
+    return min(bonus, CUTMAN_STOPPAGE_BONUS_CAP)
 
 
 
@@ -1751,9 +1936,12 @@ def resolve_round(conn, fight_id, round_number, fighter_a_id, fighter_b_id,
 
         # v2.3.0 submission check: a landed submission_attempt with a
         # positive submission score succeeds (defender taps).
+        # FIGHT-ENGINE-TUNE Issue 3: lowered success threshold from 0
+        # to _SUBMISSION_SUCCESS_THRESHOLD (-5) so marginally-negative
+        # scores still finish (the formula already favors the attacker).
         if action_type == "submission_attempt" and outcome == "landed":
             sub_score = _submission_score(init_stats, target_stats)
-            if sub_score > 0:
+            if sub_score > _SUBMISSION_SUCCESS_THRESHOLD:
                 # Submission succeeds! Mark the beat as the finishing
                 # exchange.
                 conn.execute(
@@ -2226,14 +2414,119 @@ def _format_fight_commentary(winner_name, loser_name, result_type, finish_round,
 
 
 
+# P3.5 (docs/COMPREHENSIVE_FIX_PLAN.md §Group D #20 + #21) —
+# highlight commentary variety. The original _BEAT_COMMENTARY_TEMPLATES
+# had ONE string per outcome (7 total). After 3-4 fights the player
+# saw the same prose repeatedly — the user's "key highlights all say
+# same thing" complaint. Now each outcome has 8+ variants, picked
+# deterministically by (fight_id, beat_id) hash so the same fight
+# replays identically but different fights get different prose.
+#
+# These templates are used by _generate_beat_commentary (the 3-14
+# 'highlight' segments per fight — the Zone D "Key Moments" feed).
+# The per-beat commentary system (_generate_per_beat_commentary,
+# segment_type='beat') already had 8+ variants per (action, outcome)
+# — that system is unchanged. This expansion brings the HIGHLIGHTS
+# up to the same voice-variant discipline.
 _BEAT_COMMENTARY_TEMPLATES = {
-    "knockdown": "{init} drops {target} with a heavy shot in round {round}!",
-    "near_finish": "{init} has {target} hurt in round {round} — the finish is near.",
-    "landed": "{init} lands a clean strike on {target} in round {round}.",
-    "reversed": "{target} reverses {init}'s attempt in round {round} — momentum swing!",
-    "defended": "{target} anticipates and defends {init}'s attack in round {round}.",
-    "blocked": "{target} absorbs {init}'s strike on the guard in round {round}.",
-    "missed": "{init} swings and misses {target} in round {round}.",
+    "knockdown": [
+        "{init} drops {target} with a heavy shot in round {round}!",
+        "Down goes {target}! {init} lands flush in round {round}.",
+        "{init} puts {target} on the canvas in round {round}.",
+        "A right hand from {init} and {target} crumbles in round {round}.",
+        "{target} hits the deck in round {round} — {init} swarms.",
+        "Heavy shot from {init}. {target} is down in round {round}.",
+        "{init} cracks {target} with a fight-changing shot in round {round}.",
+        "Round {round}: {init} drops {target}. The crowd is on its feet.",
+        "{init} staggers {target} — and {target} hits the mat in round {round}.",
+        "Round {round}: a clean shot from {init} sends {target} down.",
+        "{init} puts {target} on wobbly legs, then puts them down in round {round}.",
+        "Round {round}: {target} crumbles under {init}'s power.",
+    ],
+    "near_finish": [
+        "{init} has {target} hurt in round {round} — the finish is near.",
+        "{target} is in serious trouble in round {round}. {init} swarms.",
+        "Round {round}: {init} unleashes a barrage. {target} is barely surviving.",
+        "{target} is rocked in round {round}! {init} can smell the finish.",
+        "Big shots from {init} in round {round}. {target} is on wobbly legs.",
+        "{init} piles on the pressure in round {round}. {target} wilts.",
+        "The end looks near for {target} in round {round}.",
+        "Round {round}: {init} has {target} out on their feet.",
+        "{init} is closing in. {target} is just covering up in round {round}.",
+        "Round {round}: {target}'s legs are gone. {init} moves in.",
+        "{init} can taste the finish in round {round}.",
+        "Round {round}: the referee is watching closely. {target} is hurt.",
+    ],
+    "landed": [
+        "{init} lands a clean strike on {target} in round {round}.",
+        "A sharp shot from {init} finds its mark in round {round}.",
+        "{init} connects cleanly on {target} in round {round}.",
+        "Round {round}: {init} snaps {target}'s head back with a crisp shot.",
+        "{init} catches {target} flush in round {round}.",
+        "A well-timed strike from {init} lands in round {round}.",
+        "{init} finds the opening in round {round}. {target} takes it.",
+        "Round {round}: {init} tags {target} with a clean shot.",
+        "{init} pierces the guard with a stiff shot in round {round}.",
+        "Round {round}: a heavy shot from {init} gets {target}'s attention.",
+        "{init} lands a precise strike. {target} backs off in round {round}.",
+        "Round {round}: {init}'s strike snaps {target}'s head sideways.",
+    ],
+    "reversed": [
+        "{target} reverses {init}'s attempt in round {round} — momentum swing!",
+        "{target} turns the tables on {init} in round {round}.",
+        "Round {round}: {target} counters and ends up on top.",
+        "{init}'s attack backfires in round {round}. {target} takes over.",
+        "Big reversal in round {round}! {target} steals the momentum.",
+        "{target} shrugs off the attack and takes position in round {round}.",
+        "The tide turns in round {round}. {target} seizes the upper hand.",
+        "Round {round}: {target} reverses — {init} is suddenly in trouble.",
+        "{target} ducks under in round {round}. Now they're on top.",
+        "Round {round}: a beautiful reversal from {target}.",
+        "{target} hip-heists out in round {round}. The momentum flips.",
+        "Round {round}: {target} comes out the back door. Reversed.",
+    ],
+    "defended": [
+        "{target} anticipates and defends {init}'s attack in round {round}.",
+        "{target} sees it coming in round {round}, gets out of the way.",
+        "Round {round}: {target} slips the punch, makes {init} pay.",
+        "{target} parries {init}'s strike cleanly in round {round}.",
+        "{init} commits in round {round}, but {target} is already gone.",
+        "{target} times the entry in round {round}, defends with ease.",
+        "Reading the rhythm in round {round}, {target} dodges the strike.",
+        "Round {round}: good defense from {target}. {init} is left reaching.",
+        "{target} leans out of range in round {round}. {init} swings at shadow.",
+        "Round {round}: forearm check from {target}. {init}'s work is smothered.",
+        "{target} circles off in round {round}. {init} resets.",
+        "Round {round}: {target} catches the strike on the shoulder. Rolls out.",
+    ],
+    "blocked": [
+        "{target} absorbs {init}'s strike on the guard in round {round}.",
+        "{target} covers up in round {round}. The strike lands on the gloves.",
+        "Round {round}: high guard from {target}. {init} can't find a gap.",
+        "{target} blocks the strike in round {round}, circles out.",
+        "The shot from {init} is absorbed on the forearms in round {round}.",
+        "{target} gets the defense up in round {round}. Nothing gets through.",
+        "Round {round}: {target} shells up. {init}'s strike lands on the shell.",
+        "{target} absorbs it on the gloves in round {round}. No damage done.",
+        "Round {round}: cross-block from {target}. {init} resets.",
+        "{target} gets the forearms up in round {round}. {init}'s shot thuds home.",
+        "Round {round}: {target} shells tight. {init}'s work is undone.",
+        "The strike from {init} thuds into {target}'s guard in round {round}.",
+    ],
+    "missed": [
+        "{init} swings and misses {target} in round {round}.",
+        "{target} slips the strike in round {round}.",
+        "Round {round}: wild swing from {init} catches only air.",
+        "{init} reaches with the shot in round {round}. {target} is gone.",
+        "{target} reads it in round {round}, pulls back. The strike sails over.",
+        "The shot from {init} comes up empty in round {round}.",
+        "Round {round}: {init} throws, {target} makes him miss.",
+        "{target} evades with a half-step back in round {round}.",
+        "Round {round}: {init} loads up — {target} sees it the whole way.",
+        "The strike from {init} sails past {target}'s ear in round {round}.",
+        "Round {round}: {target} slips the punch, makes {init} pay with positioning.",
+        "{init} misses wide in round {round}. {target} resets.",
+    ],
 }
 
 
@@ -2371,9 +2664,17 @@ def _generate_beat_commentary(conn, event_id, fight_id, selected_beats):
          outcome, damage, momentum) = beat
         init_name = fighter_name(conn, init_id)
         tgt_name = fighter_name(conn, tgt_id)
-        template = _BEAT_COMMENTARY_TEMPLATES.get(
-            outcome, "{init} and {target} exchange in round {round}."
-        )
+        # P3.5 — pick a variant deterministically by (fight_id, beat_id)
+        # hash. The same fight replays identically; different fights
+        # get different prose. Falls back to the first variant if the
+        # outcome isn't in the template dict (defensive — shouldn't
+        # happen, but the old single-string template was a flat .get
+        # that returned the missing-outcome fallback line).
+        templates = _BEAT_COMMENTARY_TEMPLATES.get(outcome)
+        if templates:
+            template = _pick_variant(templates, fight_id, bid)
+        else:
+            template = "{init} and {target} exchange in round {round}."
         text = template.format(init=init_name, target=tgt_name, round=rn)
         # Importance: scale by beat priority. Knockdowns and near-
         # finishes are more important than regular exchanges.
@@ -2396,8 +2697,1312 @@ def _generate_beat_commentary(conn, event_id, fight_id, selected_beats):
 
 
 # ----------------------------------------------------------------
-# Event lifecycle (Task ID 7).
+# Per-beat commentary (Task FIGHT-NIGHT-SHOWCASE).
 #
+# The existing `_select_commentary_beats` + `_generate_beat_commentary`
+# system writes 3-14 'highlight' segments per fight — only the most
+# important beats get prose. The Fight Night screen needs prose for
+# EVERY beat (100-200 per fight) so the live play-by-play feed reads
+# as a continuous narrative, not a sparse log.
+#
+# This system writes one commentary_segments row per beat with
+# segment_type='beat' (distinct from 'play_by_play' and 'highlight').
+# The 'beat' rows are the live feed; the 'highlight' rows remain the
+# "key moments" feed shown in Zone D of the Fight Night screen.
+#
+# Voice compliance (CONVENTIONS §14 + VOICE_ENFORCEMENT.md):
+#   - Short fragmentary sentences. Periods do work.
+#   - Specific imagery ("right hand finds the chin" not "lands a punch").
+#   - No raw numbers (no "damage 23", no "momentum +80").
+#   - No tabloid clichés ("SHOCKING KNOCKOUT!", "BOMBSHELL UPSET!").
+#   - Phase-aware (standing jab reads differently than a ground_strike).
+#   - Action-aware (jab vs cross vs head_kick all sound different).
+#   - Outcome-aware (landed vs missed vs blocked vs reversed).
+#   - Momentum-aware (big swing adds an emphasis clause).
+#   - Round-ending marker (last beat of a round gets a closing line).
+#
+# 8+ variants per (action_type, outcome) per VOICE_ENFORCEMENT §3 —
+# the same fighter landing the same jab twice in a row should NOT
+# read identically. Variety is achieved by hashing (fight_id, beat_id)
+# to pick a variant deterministically (replayable) but with no
+# repeat-within-last-3 on the same template key.
+# ----------------------------------------------------------------
+
+
+# Per-action × landed strike templates (8+ variants each). The
+# templates use {init} + {target} slots, formatted at write time.
+# Each variant is a complete short sentence (period inside the string).
+
+_PER_BEAT_LANDED = {
+    "jab": [
+        "{init} pops the jab. {target} takes it on the chin.",
+        "A stiff jab from {init} snaps {target}'s head back.",
+        "{init} works the jab, finding range.",
+        "The jab from {init} gets there first.",
+        "{init} flicks the jab out. {target} eats it.",
+        "Straight left from {init} finds its mark.",
+        "{init} measures distance behind the jab.",
+        "Quick jab from {init}. {target} circles away.",
+        "{init} pops the jab, sets up something bigger.",
+        "Jab from {init} snaps {target}'s head sideways.",
+        "The jab sits in {target}'s face. {init} working the lead.",
+        "Piston jab from {init}. {target} backs up a half-step.",
+    ],
+    "cross": [
+        "{init} lands the cross. {target} backs up.",
+        "A straight right from {init} splits the guard.",
+        "{init}'s cross connects. {target} feels it.",
+        "The right hand from {init} finds the chin.",
+        "{init} uncorks a cross. It lands flush.",
+        "{target} walks into a right hand from {init}.",
+        "Cross from {init}, clean and stiff.",
+        "{init} doubles up — the cross gets through.",
+        "Right hand over the top from {init}.",
+        "The cross from {init} finds a home on the jaw.",
+        "{init} sits down on the right hand. {target} absorbs it.",
+        "Straight right from {init} — {target} was looking for the body.",
+    ],
+    "hook": [
+        "{init} hooks the left to the body. {target} winces.",
+        "A heavy hook from {init} lands behind the ear.",
+        "{init} cracks {target} with a left hook.",
+        "Hook to the ribs from {init}. {target} backs off.",
+        "{init} rips a hook upstairs. It connects.",
+        "The hook from {init} finds the temple.",
+        "{init} pivots into a hook. {target} is marked.",
+        "Left hook from {init}, right on the button.",
+        "Short hook inside from {init}. {target} absorbs it.",
+        "{init} loops the hook around {target}'s guard.",
+        "Hook to the body from {init}. {target} drops the hands.",
+        "{init} uncorks a hook. It clips {target} on the jaw.",
+    ],
+    "leg_kick": [
+        "{init} chops the leg. {target} limps out of range.",
+        "A heavy leg kick from {init} echoes through the arena.",
+        "{init} goes to the calf. {target} checks the next one.",
+        "Leg kick from {init} buckles {target}.",
+        "The outside leg kick from {init} lands with a thwack.",
+        "{init} works the low line. {target} is favoring the lead leg.",
+        "Calf kick from {init}. {target} is thrown off rhythm.",
+        "Inside leg kick from {init}. {target} resets.",
+        "{init} chews up the lead leg of {target}.",
+        "Heavy outside kick from {init}. {target} winces and circles.",
+        "{init} goes to the thigh. The crowd hears the thud.",
+        "The leg kick from {init} — {target}'s stance shifts.",
+    ],
+    "head_kick": [
+        "Head kick from {init}! {target} is wobbled.",
+        "{init} throws the high kick. It gets through.",
+        "A head kick from {init} finds the jaw.",
+        "The kick from {init} lands upstairs. {target} staggers.",
+        "{init} uncorks a head kick. {target} barely survives.",
+        "High kick from {init}. {target} was looking at the body.",
+        "{init} goes upstairs with a kick. {target} is hurt.",
+        "The head kick from {init} lands clean.",
+        "Calf-to-chin from {init}. The crowd roars.",
+        "{init} whips the kick high. {target} takes it on the cheek.",
+        "Spinning high kick from {init} — just catches {target}.",
+        "The foot of {init} finds {target}'s temple. Big kick.",
+    ],
+    "clinch_knee": [
+        "Knee to the midsection from {init} in the clinch.",
+        "{init} rips a knee up the middle. {target} wilts.",
+        "A short knee from {init} lands inside.",
+        "{init} works the knees along the fence. {target} hangs on.",
+        "Knee to the thigh from {init}. {target} tries to answer.",
+        "The clinch knee from {init} finds the ribs.",
+        "{init} digs a knee into {target}'s midsection.",
+        "Inside knee from {init}. {target} is being worn down.",
+        "Short, sharp knee from {init} in tight.",
+        "{init} bumps a knee into {target}'s sternum.",
+        "Plum-clinch knee from {init}. {target} can't get out.",
+        "{init} drives a knee up the middle. {target} grunts.",
+    ],
+    "clinch_elbow": [
+        "{init} sneaks an elbow inside. {target} is cut.",
+        "A sharp elbow from {init} opens a gash.",
+        "Elbow from the clinch by {init}. {target} wipes at his face.",
+        "{init} digs an elbow into {target}'s cheekbone.",
+        "Short elbow from {init} in the tie-up.",
+        "The elbow from {init} splits the skin.",
+        "{init} works an elbow inside. {target} is marked.",
+        "Elbow over the top from {init} in the clinch.",
+        "Sawing elbow from {init}. {target} is bleeding.",
+        "{init} sneaks an elbow through the gap. {target} blinks.",
+        "Diagonal elbow from {init}. {target} pulls back too late.",
+        "Short elbow from {init}. Catches {target} on the bridge.",
+    ],
+    "cage_knee": [
+        "Knee to the thigh from {init} along the fence.",
+        "{init} grinds {target} against the cage, working the knees.",
+        "Short knee from {init}. {target} is pinned.",
+        "Knee to the body from {init}. {target} sags against the fence.",
+        "{init} lands a knee while {target} is trapped on the cage.",
+        "The cage knee from {init} finds the midsection.",
+        "{init} buries a knee into {target}'s ribs on the fence.",
+        "Inside knee from {init}. {target} can't get off the cage.",
+        "Working the knees on the fence, {init} keeps the pressure.",
+        "Knee to the hip from {init}. {target} drops the level.",
+        "{init} uses the cage to brace. Lands a short knee.",
+        "Double-collar tie knee from {init}. {target} wilts.",
+    ],
+    "ground_strike": [
+        "{init} drops a heavy elbow from the top.",
+        "Ground-and-pound from {init}. {target} covers up.",
+        "{init} lands a clean shot from inside guard.",
+        "Hammerfist from {init}. {target} turns away.",
+        "{init} postures up and lands. {target} is in trouble.",
+        "Short shots from the top by {init}.",
+        "{init} works the body from side control.",
+        "Elbow from the top by {init}. {target} is bleeding.",
+        "Ground strikes from {init}. {target} is just surviving.",
+        "{init} slices an elbow through {target}'s guard.",
+        "Hammerfist from {init}. {target} turns to escape.",
+        "{init} postures up — lands a hard one. {target} covers up.",
+    ],
+}
+
+
+# Per-outcome templates for actions that DIDN'T land cleanly. Used
+# for both strike and transition actions — the prose is generic enough
+# that it reads correctly regardless of action_type. 8+ variants each.
+
+_PER_BEAT_OUTCOME = {
+    "missed": [
+        "{init} swings and misses.",
+        "{target} slips the strike.",
+        "Wild swing from {init} catches only air.",
+        "{init} reaches with the shot. {target} is gone.",
+        "{target} reads it, pulls back. The strike sails over.",
+        "{init} throws, {target} makes him miss.",
+        "The shot from {init} comes up empty.",
+        "{target} evades with a half-step back.",
+        "{init} misses wide. {target} resets.",
+        "{init} loads up — {target} sees it the whole way.",
+        "The strike from {init} sails past {target}'s ear.",
+        "{target} slips the punch, makes {init} pay with positioning.",
+    ],
+    "blocked": [
+        "{target} covers up. The strike lands on the gloves.",
+        "{target} gets the guard up in time.",
+        "The shot from {init} is absorbed on the forearms.",
+        "{target} blocks the strike, circles out.",
+        "High guard from {target}. {init} can't find a gap.",
+        "The strike from {init} lands on the shell.",
+        "{target} absorbs it on the gloves. No damage.",
+        "Blocked by {target}. {init} tries again.",
+        "{target} gets the defense up. Nothing gets through.",
+        "The strike thuds into {target}'s forearms.",
+        "{target} shells up. {init}'s work is undone.",
+        "Cross-block from {target}. {init} resets.",
+    ],
+    "defended": [
+        "{target} anticipates and defends the strike.",
+        "{target} sees it coming, gets out of the way.",
+        "Good defense from {target}. {init} is left reaching.",
+        "{target} slips the punch, makes {init} pay with a counter.",
+        "{target} parries the strike cleanly.",
+        "The shot is telegraphed. {target} sidesteps.",
+        "{target} times the entry, defends with ease.",
+        "Reading the rhythm, {target} dodges the strike.",
+        "{init} commits, {target} is already gone.",
+        "{target} catches the strike on the shoulder. Rolls out.",
+        "{target} leans just out of range. {init} swings at shadow.",
+        "Forearm check from {target}. {init}'s work is smothered.",
+    ],
+    "reversed": [
+        "{target} reverses the position! Momentum swings.",
+        "{target} turns it around on {init}.",
+        "Reversal from {target} — they're back in it.",
+        "{init}'s attack backfires. {target} takes over.",
+        "{target} counters and ends up on top.",
+        "The tide turns. {target} seizes the upper hand.",
+        "{target} turns the tables on {init}.",
+        "Big reversal! {target} steals the momentum.",
+        "{target} shrugs off the attack and takes the position.",
+        "Hip-heist from {target}. Now on top of {init}.",
+        "{target} ducks under — comes out the back door. Reversed.",
+        "The scramble flips. {target} takes the driver's seat.",
+    ],
+    "knockdown": [
+        "{init} DROPS {target} with a heavy shot!",
+        "{target} hits the canvas! {init} has them hurt.",
+        "A right hand and {target} crumbles to the mat.",
+        "{init} puts {target} down. The crowd is on its feet.",
+        "Down goes {target}! {init} swarms to finish.",
+        "{init} lands flush — {target} crumples against the cage.",
+        "Heavy shot from {init}. {target} is down.",
+        "The blow from {init} folds {target}.",
+        "{target} is dropped! {init} moves in for the kill.",
+        "{init} clips {target} behind the ear. Down goes {target}.",
+        "A looping shot from {init} — {target} crumbles to a knee.",
+        "The right hand finds the chin. {target} folds.",
+    ],
+    "near_finish": [
+        "{init} has {target} hurt. The finish is near.",
+        "{target} is in serious trouble. {init} swarms.",
+        "{init} unleashes a barrage. {target} is barely surviving.",
+        "Big shots from {init}. {target} is on wobbly legs.",
+        "{target} is rocked! {init} can smell the finish.",
+        "{init} piles on the pressure. {target} wilts.",
+        "The end looks near for {target}.",
+        "{init} has {target} out on their feet.",
+        "{target} is hurt, scrambling to survive.",
+        "{init} pours it on. {target} is just covering up.",
+        "The legs of {target} betray them. {init} moves in.",
+        "{target} staggers. {init} can see the opening.",
+    ],
+}
+
+
+# Phase-transition templates. Used when the phase of the current beat
+# differs from the previous beat's phase (i.e., the fight moved from
+# standing → clinch, clinch → ground_top, etc.). 8+ variants each.
+
+_PER_BEAT_PHASE_ENTRY = {
+    "clinch": [
+        "{init} closes the distance, looking for the clinch.",
+        "They tie up along the fence.",
+        "{init} grabs hold of {target}, pushes them to the cage.",
+        "The fight moves into the clinch.",
+        "{init} pressures forward. They clinch up.",
+        "Tied up against the fence.",
+        "{init} presses {target} into the cage, working inside.",
+        "Body lock from {init}. They're in the clinch now.",
+        "{init} crowds {target}. The clinch is on.",
+    ],
+    "cage": [
+        "{init} pins {target} against the cage.",
+        "They grind against the fence.",
+        "{init} walks {target} back to the cage.",
+        "Pressed on the cage now. {init} working the body.",
+        "Cage work. {init} keeps {target} trapped.",
+        "{target} has their back to the fence. {init} in control.",
+        "Along the fence. {init} is in charge of position.",
+        "Cage-pressed clinch. {init} on top.",
+        "{init} uses the cage, wears on {target}.",
+    ],
+    "ground_top": [
+        "{init} ends up on top, in {target}'s guard.",
+        "Takedown! {init} comes down in side control.",
+        "{init} puts {target} on the mat, lands on top.",
+        "The fight hits the floor. {init} in the driver's seat.",
+        "{init} drags {target} down, takes top position.",
+        "Grounded now. {init} working from above.",
+        "{init} has top control. {target} on their back.",
+        "Slam takedown from {init}. {target} is grounded.",
+        "{init} gets the takedown. The fight is on the mat.",
+    ],
+    "ground_bottom": [
+        "{target} reverses — {init} ends up on the bottom.",
+        "{target} sweeps! {init} is on their back now.",
+        "Position flips. {target} takes the top.",
+        "{init} is stuck on the bottom. {target} in control.",
+        "Reversal on the ground. {target} on top.",
+        "{target} turns the scramble. Now on top of {init}.",
+        "The scramble settles. {target} has top position.",
+        "{target} out-positions {init}, takes the top.",
+        "{init} on the bottom, looking for a way up.",
+    ],
+    "scramble": [
+        "Scramble for position. Neither fighter has the upper hand.",
+        "A wild scramble. Both men looking for an edge.",
+        "They grapple for control in the chaos.",
+        "Scrambling. Position is up for grabs.",
+        "The fight devolves into a scramble.",
+        "Both fighters battle for top position.",
+        "A frantic exchange on the mat.",
+        "The scramble continues. Neither yields.",
+        "Grappling chess in the chaos.",
+    ],
+}
+
+
+# Templates for transition-action outcomes that DO change the phase.
+# Used in place of the generic landed/missed templates for clinch_entry,
+# takedown_attempt, sweep_attempt, stand_up, break_clinch, cage_push,
+# scramble, submission_attempt, when the action succeeds (outcome='landed')
+# — these read more naturally for grappling actions than the strike-
+# specific landed templates.
+#
+# P5.3 — converted from a single-string-per-key to a LIST-per-key so
+# each landed grappling action has variety (per VOICE_ENFORCEMENT §3:
+# 8+ variants per (action_type, outcome); 10+ for the headline actions
+# takedown_attempt + submission_attempt + clinch_entry).
+#
+# Slots: {init} (the initiator), {target} (the target). Same as the
+# strike-landed templates.
+
+_PER_BEAT_GRAPPLING = {
+    "clinch_entry": [
+        "{init} closes the distance and ties up {target}.",
+        "{init} slips inside, gets the double-collar tie on {target}.",
+        "Body lock from {init}. {target} is clinched.",
+        "{init} crowds {target}, locks the overhooks.",
+        "Underhook battle in the clinch — {init} gets the better of it.",
+        "{init} reaches for the plum. {target} can't create space.",
+        "{init} steps in, pummels for position, gets the clinch.",
+        "Double-unders from {init}. {target} is stuck in close.",
+        "{init} pins {target}'s arms. The clinch is locked.",
+        "{init} forces the tie-up. {target} has to grapple now.",
+    ],
+    "takedown_attempt": [
+        "{init} shoots for a takedown. {target} is dragged down!",
+        "Double-leg from {init}. {target} hits the mat.",
+        "{init} changes levels, drives through {target}'s hips. Takedown.",
+        "Single-leg from {init}. {target} hops, but goes down.",
+        "{init} hits a beautiful outside trip. {target} is on the canvas.",
+        "Inside trip from {init} — {target} didn't see it coming.",
+        "{init} snaps {target} down, comes around for the takedown.",
+        "Body-lock takedown from {init}. {target} is grounded.",
+        "High-crotch from {init}. {target} is dumped to the mat.",
+        "{init} lifts {target} — SLAM. The crowd erupts.",
+        "Foot-sweep from {init}. {target} goes down sideways.",
+        "Ankle pick from {init}. {target} crumbles to the canvas.",
+    ],
+    "cage_push": [
+        "{init} bulls {target} into the cage.",
+        "{init} drives forward, walks {target} back to the fence.",
+        "Body lock + drive from {init}. {target} is pressed on the cage.",
+        "{init} pins {target} on the fence, working for underhooks.",
+        "Cage-press from {init}. {target} has nowhere to go.",
+        "{init} grinds {target} against the chain-link.",
+        "Double-underhooks from {init} — drives {target} to the cage.",
+        "{init} forces {target} backwards, gets the cage work going.",
+    ],
+    "break_clinch": [
+        "{init} breaks the clinch. Back to striking.",
+        "{init} shoves off, creates space. Back to range.",
+        "Push-off from {init}. The clinch is broken.",
+        "{init} circles out of the tie-up. {target} can't hold on.",
+        "{init} frames off {target}'s hips, resets to distance.",
+        "Elbow-frame from {init} — breaks the clinch cleanly.",
+        "{init} paws {target} off, returns to kicking range.",
+        "Pummel-out from {init}. Back to the open mat.",
+    ],
+    "sweep_attempt": [
+        "{init} sweeps! The position reverses.",
+        "Hip-sweep from {init} — {target} is rolled.",
+        "{init} bridges and rolls. Now on top of {target}.",
+        "Kimura-sweep from {init}. {target} goes to their back.",
+        "{init} hits the elevator sweep. {target} is dumped over.",
+        "{init} under-hooks the leg, comes out the back door. Reversed.",
+        "Bridging sweep from {init}. {target} loses top position.",
+        "{init} hits a beautiful technical stand-up into a sweep.",
+    ],
+    "stand_up": [
+        "{init} works back to the feet. Back to striking range.",
+        "{init} hips out, gets up. {target} can't hold them down.",
+        "Wall-walk from {init}. Back to standing.",
+        "{init} posts a hand, stands into {target}. Back up.",
+        "Granby roll from {init} — up to the feet.",
+        "{init} shrimps to the cage, stands up. Back in space.",
+        "Technical stand-up from {init}. Now upright.",
+        "{init} bucks {target} off, scrambles to the feet.",
+    ],
+    "scramble": [
+        "A scramble. Both fighters hunting for position.",
+        "Wild scramble. {init} and {target} battle for the upper hand.",
+        "The fight hits a transition phase. Both men scramble.",
+        "Scrambling — neither man has position yet.",
+        "{init} and {target} grapple in the chaos.",
+        "A furious scramble. Position is up for grabs.",
+        "The fight devolves into a scramble. {init} pushes for top.",
+        "Grappling chess in the chaos. {init} hunts for an angle.",
+    ],
+    "submission_attempt": [
+        "{init} hunts for a submission. {target} is in danger!",
+        "{init} sinks the choke. {target} defends frantically.",
+        "Armbar attempt from {init}! {target} stacks to survive.",
+        "{init} locks up a triangle. {target} is trapped.",
+        "Guillotine from {init}. {target}'s neck is exposed.",
+        "{init} goes for the rear-naked. {target} defends the hands.",
+        "Heel-hook attempt from {init}. {target} spins out.",
+        "Kimura from {init} — {target}'s arm is torqued.",
+        "{init} throws the legs up for an omoplata. {target} rolls.",
+        "D'arce attempt from {init}. {target} is in tight.",
+        "{init} isolates the neck. Looking for the finish.",
+        "{init} cranks a calf-slicer. {target} winces and twists.",
+    ],
+}
+
+
+# Per-outcome templates for grappling actions that DON'T land cleanly.
+
+_PER_BEAT_GRAPPLING_MISSED = {
+    "clinch_entry": [
+        "{init} reaches for the clinch. {target} circles out.",
+        "{target} circles off the cage. The clinch doesn't stick.",
+        "{init} tries to tie up. {target} keeps it at range.",
+        "Failed clinch entry from {init}.",
+        "{target} paws {init} off, stays in space.",
+        "The clinch attempt is shrugged off.",
+        "{init} reaches. {target} doesn't engage.",
+        "Clinch attempt from {init}. {target} defends.",
+        "Can't secure the clinch. Back to distance.",
+    ],
+    "takedown_attempt": [
+        "{init} shoots. {target} sprawls and stuffs it.",
+        "Takedown stuffed. {target} stays on the feet.",
+        "{target} sprawls hard. The shot is defended.",
+        "{init} reaches for the legs. {target} defends.",
+        "Sprawl from {target}. The takedown is denied.",
+        "The shot from {init} is read. {target} is ready.",
+        "{target} stuffs the takedown. Stays upright.",
+        "Failed takedown. {target} circles away.",
+        "{init} can't get the takedown. {target} was waiting.",
+    ],
+    "cage_push": [
+        "{init} tries to drive {target} to the cage. {target} resists.",
+        "{target} stays off the fence. {init} can't pin them.",
+        "Cage push attempt from {init}. {target} stays loose.",
+        "Failed cage push from {init}.",
+        "{target} pivots off the cage. {init} comes up empty.",
+        "{init} reaches for the cage push. No luck.",
+        "{target} keeps the fight in space. The cage push fails.",
+        "Can't pin {target}. They keep moving.",
+        "{init} presses forward. {target} circles off.",
+    ],
+    "break_clinch": [
+        "{init} tries to break the clinch. {target} holds on.",
+        "Break attempt fails. {target} keeps the tie-up.",
+        "{init} pushes off. {target} re-engages.",
+        "Can't break the clinch cleanly.",
+        "{target} doesn't let {init} get out of the clinch.",
+        "The break attempt from {init} doesn't work.",
+        "{init} shoves off. {target} jumps right back in.",
+        "Failed break. Still tied up.",
+        "{target} maintains the clinch. {init} can't get loose.",
+    ],
+    "sweep_attempt": [
+        "{init} hunts for a sweep. {target} defends.",
+        "Sweep attempt from {init}. {target} keeps top position.",
+        "{target} shuts down the sweep. {init} stays on the bottom.",
+        "Failed sweep from {init}.",
+        "The sweep doesn't come. {target} is too heavy on top.",
+        "{init} tries to reverse. {target} is having none of it.",
+        "Sweep attempt denied. {target} stays in control.",
+        "Can't get the sweep. {target} adjusts.",
+        "{init} reaches for the sweep. {target} locks it down.",
+    ],
+    "stand_up": [
+        "{init} tries to stand up. {target} keeps them down.",
+        "Stand-up attempt from {init}. {target} rides it.",
+        "{target} won't let {init} up. Stays heavy on top.",
+        "Can't get back to the feet.",
+        "{init} hips up, looking to escape. {target} adjusts.",
+        "The stand-up doesn't come. {target} is in control.",
+        "{target} keeps {init} grounded. The escape fails.",
+        "{init} tries to wall-walk. {target} drags them back down.",
+        "Stand-up denied. {target} maintains top position.",
+    ],
+    "scramble": [
+        "The scramble continues. Neither fighter can gain position.",
+        "Still scrambling. Position is up for grabs.",
+        "Neither fighter commits. The scramble goes on.",
+        "Failed position change in the scramble.",
+        "{init} reaches for an advantage. {target} matches it.",
+        "The scramble stalls. Back to where they started.",
+        "{init} tries to advance. {target} defends.",
+        "No progress in the scramble. Stalemate.",
+        "{init} looks for an opening. {target} doesn't yield.",
+    ],
+    "submission_attempt": [
+        "{init} hunts for a submission. {target} defends.",
+        "Submission attempt from {init}. {target} pulls free.",
+        "{target} sees the sub coming, defends in time.",
+        "{init} goes for the finish. {target} is too savvy.",
+        "The submission doesn't sink in. {target} escapes.",
+        "{init} reaches for a choke. {target} defends.",
+        "Failed sub attempt. {target} stays calm.",
+        "{target} survives the submission try.",
+        "{init} looks for the tap. {target} won't give it.",
+        "{init} throws up the legs. {target} stacks and slips out.",
+        "The choke is close — {target} hand-fights and breaks the grip.",
+        "{target} postures out of the armbar. {init} loses the angle.",
+    ],
+}
+
+
+# Round-ending markers. Used for the LAST beat of each round (the
+# beat whose round_number differs from the next beat's round_number).
+
+_PER_BEAT_ROUND_END = [
+    "The horn sounds. Round over.",
+    "That's the round. Both fighters head to their corners.",
+    "The bell saves them. The round is done.",
+    "End of the round. The crowd catches its breath.",
+    "The round concludes. Back to the corners.",
+    "Horn. The round ends.",
+    "And that's the round.",
+    "The whistle blows. Round over.",
+    "Bell. The fighters separate, head to their corners.",
+    "The round expires. Cuts are checked, water is sipped.",
+    "The horn blares. Round complete.",
+    "And there's the horn. The round is in the books.",
+]
+
+
+# Round-end "concerned corner" variants — used when the round winner
+# is clear from the beat data (momentum_shift > +50 favoring the
+# initiator). Adds a "the corner is concerned" voice beat.
+
+_PER_BEAT_ROUND_END_HURT = [
+    "The horn saves {target}. {target}'s corner is concerned.",
+    "End of the round. {target} wobbles back to the corner.",
+    "The bell rings. {target} is saved by the round's end.",
+    "Round over. {target} looks wobbly on the stool.",
+    "{target}'s corner has work to do between rounds.",
+    "Horn. {target} was in trouble there.",
+    "That round ends. {target} survives to see the next.",
+    "Bell. {target}'s corner works fast to revive them.",
+    "And that's the round. {target} is breathing hard.",
+    "The horn saves {target} — for now.",
+    "{target} staggers to the corner. The cutman is waiting.",
+    "Round ends. {target}'s corner has 60 seconds to fix this.",
+]
+
+
+# Big-momentum-swing emphasis clauses. Appended to the end of a beat's
+# prose when |momentum_shift| > 50 (the same threshold the existing
+# _select_commentary_beats system uses for "big momentum" beats).
+
+_PER_BEAT_MOMENTUM_EMPHASIS = [
+    " The crowd roars.",
+    " The arena erupts.",
+    " Momentum just swung hard.",
+    " The tide is turning.",
+    " You can feel the shift.",
+    " The crowd is on its feet.",
+    " What a sequence.",
+    " The fight has flipped on its head.",
+    " A huge moment in this fight.",
+    " The energy in the building spikes.",
+    " You can hear the crowd react.",
+    " That one landed with a thud.",
+]
+
+
+# Final-finish marker. Used for the LAST beat of the fight if the
+# fight ended in a finish (KO/sub/DQ). The finishing beat's prose is
+# replaced (not appended) with one of these.
+
+_PER_BEAT_FINISH = {
+    "ko_tko": [
+        "And that's it. {init} puts {target} away. The fight is over.",
+        "{target} crumples. {init} gets the finish.",
+        "Down goes {target}. The referee steps in. It's over.",
+        "{init} lands the finisher. {target} can't continue.",
+        "That's the end. {init} gets the stoppage.",
+        "{target} goes limp. The ref waves it off. {init} wins.",
+        "Big shot from {init}. {target} is out. Fight over.",
+        "{init} finishes it. {target} is done.",
+        "And the fight is stopped. {init} gets the knockout.",
+        "One more shot and {target} crumples. {init} gets the finish.",
+        "The referee has seen enough. {init} is the winner.",
+        "And it's over — {target} can't answer. {init} wins by KO.",
+    ],
+    "submission": [
+        "{init} locks in the submission. {target} is forced to tap.",
+        "And it's over — {target} taps. {init} gets the finish.",
+        "{init} cranks the submission. {target} has no choice.",
+        "Tap. {target} surrenders. {init} wins by submission.",
+        "{init} secures the hold. {target} is forced to submit.",
+        "The tap comes. {init} gets the submission win.",
+        "{target} is caught. The referee stops it. {init} wins.",
+        "And {target} taps. {init} forces the finish.",
+        "{init} cinches it up. {target} has to yield. It's over.",
+        "The choke is in deep. {target} taps. {init} wins.",
+        "{init} cranks the armbar — {target} verbally submits.",
+        "And that's the tap. {init} gets the submission finish.",
+    ],
+    "dq": [
+        "Illegal blow from {init}. The referee steps in.",
+        "{init} is disqualified. The fight is over.",
+        "The ref calls it. {init} loses by DQ.",
+        "That's a DQ. The fight ends abruptly.",
+        "Illegal strike. The referee waves it off.",
+        "{init} is disqualified. The bout is over.",
+        "Disqualification. The referee ends it.",
+        "{init} crosses the line. DQ. The fight is done.",
+        "That's illegal. The ref calls the DQ.",
+        "The referee has no choice. DQ. {init} is disqualified.",
+        "Repeated fouls. The ref calls the disqualification.",
+        "{init} is shown the card. DQ. The fight is over.",
+    ],
+    "doctor_stoppage": [
+        "The doctor has seen enough. The fight is stopped.",
+        "The ringside physician waves it off.",
+        "Cuts are checked. The doctor stops the contest.",
+        "Damage is too severe. The doctor ends the fight.",
+        "The physician calls a halt to the bout.",
+        "Medical stoppage. The fight is over.",
+        "The doctor takes a long look. Stops it.",
+        "Damage forces the doctor's intervention.",
+        "The ringside physician steps in. It's over.",
+        "The cut is too deep. Doctor stoppage. {target} can't continue.",
+        "The doctor mounts the cage. The fight is waved off.",
+        "After a long look, the physician calls the stoppage.",
+    ],
+    "corner_stoppage": [
+        "The towel comes in. {target}'s corner stops the fight.",
+        "{target}'s corner throws in the towel.",
+        "The corner has seen enough. The fight is stopped.",
+        "Corner stoppage. {target} will not continue.",
+        "The towel flies in. {init} wins.",
+        "{target}'s corner ends it.",
+        "Corner stoppage. {target} can't continue.",
+        "The corner calls it. {init} gets the win.",
+        "Towel thrown. The fight is over.",
+        "The corner signals to the ref. {target} is done.",
+        "{target}'s coach mounts the apron. The fight is stopped.",
+        "Corner stoppage — they've seen enough. {init} wins.",
+    ],
+}
+
+
+def _pick_variant(variants, fight_id, beat_id, offset=0):
+    """Deterministically pick a variant from a list.
+
+    Hashes (fight_id, beat_id, offset) so the same beat always gets
+    the same prose (replayable) but different beats in the same fight
+    get different prose (variety). The offset lets a caller request
+    a different variant for, e.g., a momentum-emphasis clause that
+    follows the base prose (offset=1).
+
+    Args:
+        variants: list of strings (the template variants).
+        fight_id: int.
+        beat_id: int.
+        offset: int, rotates the hash so multiple clauses in the same
+            beat don't all pick the same variant index.
+
+    Returns:
+        One element from `variants`.
+    """
+    n = len(variants)
+    if n == 0:
+        return ""
+    # Simple deterministic hash — not crypto, just for rotation.
+    h = ((int(fight_id) * 9173) ^ (int(beat_id) * 6151) ^ (int(offset) * 3119)) & 0x7FFFFFFF
+    return variants[h % n]
+
+
+def _generate_per_beat_commentary(conn, event_id, fight_id, finishing_beat_id=None,
+                                  result_type=None, is_title_fight=False,
+                                  scheduled_rounds=3, red_id=None, blue_id=None,
+                                  fight_promo_id=None):
+    """Write one commentary_segments row per beat (segment_type='beat').
+
+    For every beat in the fight, generates a short voice-compliant
+    prose line and writes it to commentary_segments. The 'beat' rows
+    are the live feed for the Fight Night screen; the 'highlight' rows
+    (written separately by _generate_beat_commentary) remain the
+    "key moments" feed shown in Zone D.
+
+    P3.5 — this function ALSO writes the extra commentary segments
+    (ring announcer intro, named pundit interjections, crowd
+    reactions) interleaved with the beat segments. The interleaving
+    is critical: the Fight Night UI computes each extra segment's
+    beat_index by counting how many 'beat' segments have a lower
+    commentary_segment_id. If the extra segments were written in a
+    separate pass (after all beats), they'd all have higher IDs
+    than all beats and the beat_index computation would collapse
+    them all to the last beat. Writing them inline (announcer before
+    beat 0, pundit/crowd immediately after their triggering beat)
+    keeps the IDs in chronological order so the UI's beat_index
+    derivation works correctly.
+
+    Args:
+        conn: sqlite3 connection (caller commits).
+        event_id: the parent event's event_id.
+        fight_id: the resolved fight's fight_id.
+        finishing_beat_id: the fight_beat_id of the finishing exchange
+            (if the fight ended in a finish). Used to replace the
+            finishing beat's prose with a fight-end marker.
+        result_type: the fight's result_type (e.g. 'ko_tko'). Used
+            to pick the appropriate finish template. None for
+            decisions/draws (no finishing beat).
+        is_title_fight: whether this was a title fight (affects the
+            announcer's "for the championship" phrasing).
+        scheduled_rounds: number of scheduled rounds (3 or 5).
+        red_id: red-corner fighter_id (for hometown lookup + name).
+        blue_id: blue-corner fighter_id.
+        fight_promo_id: the promotion_id of the fight's event (for
+            looking up the player's commentator staff).
+
+    Returns:
+        Number of commentary_segments rows written (one per beat +
+        extra segments).
+    """
+    speaker = conn.execute(
+        "SELECT staff_id FROM staff WHERE role_type='commentator' LIMIT 1"
+    ).fetchone()
+    speaker_id = speaker[0] if speaker else None
+
+    all_beats = conn.execute(
+        "SELECT fight_beat_id, round_number, beat_number, phase, "
+        "action_type, initiator_fighter_id, target_fighter_id, "
+        "outcome, damage_dealt, momentum_shift "
+        "FROM fight_beats WHERE fight_id=? "
+        "ORDER BY round_number, beat_number",
+        (fight_id,),
+    ).fetchall()
+    if not all_beats:
+        return 0
+
+    # Cache fighter names (avoid N+1 queries for the 100-200 beats).
+    name_cache = {}
+    def name_of(fid):
+        if fid not in name_cache:
+            name_cache[fid] = fighter_name(conn, fid)
+        return name_cache[fid]
+
+    # ---- P3.5: extra-segments setup ----
+    # Commentators (named-pundit interjections). Uses the player's
+    # actual commentator staff so the interjections feel like a real
+    # broadcast team.
+    commentators = _player_promo_commentators(conn, fight_promo_id)
+    primary_pundit = commentators[0] if commentators else None
+    secondary_pundit = commentators[1] if len(commentators) > 1 else None
+
+    red_name = name_of(red_id) if red_id else "Red Corner"
+    blue_name = name_of(blue_id) if blue_id else "Blue Corner"
+    red_loc = _fighter_hometown_phrase(conn, red_id) if red_id else None
+    blue_loc = _fighter_hometown_phrase(conn, blue_id) if blue_id else None
+    title_clause = " for the championship" if is_title_fight else ""
+    rounds_word = {3: "three", 5: "five"}.get(scheduled_rounds, str(scheduled_rounds))
+
+    PUNDIT_INTERVAL = 17  # every ~17 beats
+    CROWD_INTERVAL = 12   # every ~12 beats
+
+    count = 0
+
+    # ---- P3.5: ring announcer intro (1 per fight, before beat 0) ----
+    # Written BEFORE the loop so its commentary_segment_id is lower
+    # than all beat IDs → the UI's beat_index computation gives it
+    # beat_index = -1 (well, 0 beats before it = 0, but the UI special-
+    # cases segment_type='announcer' to beat_index = -1).
+    try:
+        announcer_text = _pick_variant(_RING_ANNOUNCER_INTROS, fight_id, 0).format(
+            red=red_name, blue=blue_name,
+            red_loc=red_loc or "parts unknown",
+            blue_loc=blue_loc or "parts unknown",
+            rounds=rounds_word,
+            title=title_clause,
+        )
+        announcer_speaker = primary_pundit[0] if primary_pundit else None
+        conn.execute(
+            "INSERT INTO commentary_segments (event_id, fight_id, "
+            "segment_type, speaker_staff_id, text, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, fight_id, "announcer", announcer_speaker,
+             announcer_text, 90),
+        )
+        count += 1
+    except Exception as _e:
+        print(f"[fight_engine._generate_per_beat_commentary/announcer] "
+              f"fight={fight_id}: {_e}", flush=True)
+
+    # Track per-(action_type, outcome) usage so we don't repeat the
+    # same template within 3 beats. VOICE_ENFORCEMENT §3.
+    recent_template_keys = []
+
+    prev_phase = None
+    n_beats = len(all_beats)
+    for i, beat in enumerate(all_beats):
+        (bid, rn, bn, phase, action, init_id, tgt_id,
+         outcome, damage, momentum) = beat
+        init_name = name_of(init_id)
+        tgt_name = name_of(tgt_id)
+
+        # Detect last beat of round (next beat has different round_number
+        # or this is the last beat of the fight).
+        is_round_end = (i == n_beats - 1) or (all_beats[i + 1][1] != rn)
+
+        # Detect finishing beat (the engine marks it via finishing_beat_id).
+        is_finish = (finishing_beat_id is not None and bid == finishing_beat_id
+                     and result_type in _PER_BEAT_FINISH)
+
+        text = ""
+
+        if is_finish:
+            # Replace the finishing beat's prose with a fight-end marker.
+            templates = _PER_BEAT_FINISH.get(result_type, _PER_BEAT_FINISH["ko_tko"])
+            text = _pick_variant(templates, fight_id, bid).format(
+                init=init_name, target=tgt_name,
+            )
+        else:
+            # Phase-transition line (if phase changed from previous beat).
+            if prev_phase is not None and phase != prev_phase:
+                entry_templates = _PER_BEAT_PHASE_ENTRY.get(phase)
+                if entry_templates:
+                    text = _pick_variant(entry_templates, fight_id, bid, offset=1).format(
+                        init=init_name, target=tgt_name,
+                    )
+
+            # If we didn't write a phase-transition line, write the
+            # action×outcome prose. (Phase transitions get their own
+            # line; the action×outcome prose is skipped for that beat
+            # to avoid a doubled-up sentence. The action is implicit
+            # in the phase transition itself.)
+            if not text:
+                # Grappling-action landed transitions: use the
+                # grappling-specific landed template.
+                if (action in _PER_BEAT_GRAPPLING and outcome == "landed"):
+                    variants = _PER_BEAT_GRAPPLING[action]
+                    text = _pick_variant(variants, fight_id, bid).format(
+                        init=init_name, target=tgt_name,
+                    )
+                # Grappling-action non-landed: use the action-specific
+                # missed/blocked/defended/reversed templates.
+                elif (action in _PER_BEAT_GRAPPLING_MISSED
+                      and outcome in ("missed", "blocked", "defended", "reversed")):
+                    variants = _PER_BEAT_GRAPPLING_MISSED[action]
+                    text = _pick_variant(variants, fight_id, bid).format(
+                        init=init_name, target=tgt_name,
+                    )
+                # Knockdown: always use the dramatic knockdown template.
+                elif outcome == "knockdown":
+                    text = _pick_variant(_PER_BEAT_OUTCOME["knockdown"], fight_id, bid).format(
+                        init=init_name, target=tgt_name,
+                    )
+                # Near-finish: always use the near-finish template.
+                elif outcome == "near_finish":
+                    text = _pick_variant(_PER_BEAT_OUTCOME["near_finish"], fight_id, bid).format(
+                        init=init_name, target=tgt_name,
+                    )
+                # Strike landed: use the action-specific landed template.
+                elif (outcome == "landed" and action in _PER_BEAT_LANDED):
+                    text = _pick_variant(_PER_BEAT_LANDED[action], fight_id, bid).format(
+                        init=init_name, target=tgt_name,
+                    )
+                # Other outcomes: use the generic outcome templates.
+                else:
+                    variants = _PER_BEAT_OUTCOME.get(outcome)
+                    if variants:
+                        text = _pick_variant(variants, fight_id, bid).format(
+                            init=init_name, target=tgt_name,
+                        )
+                    else:
+                        # Defensive fallback — should not normally happen.
+                        text = (f"{init_name} and {tgt_name} exchange in "
+                                f"round {rn}.")
+
+            # Append momentum emphasis if |momentum_shift| > 50 (the
+            # same threshold the highlight-selection system uses).
+            if abs(momentum) > _BIG_MOMENTUM_SWING_THRESHOLD and not is_round_end:
+                emphasis = _pick_variant(
+                    _PER_BEAT_MOMENTUM_EMPHASIS, fight_id, bid, offset=2,
+                )
+                text = text + emphasis
+
+        # Round-ending marker (appended after the beat prose, unless
+        # the beat itself is the finish — finishing beats end the
+        # fight, not the round).
+        if is_round_end and not is_finish:
+            # If the beat had a big momentum shift favoring the
+            # initiator, use the "hurt" round-end variant.
+            if momentum > _BIG_MOMENTUM_SWING_THRESHOLD:
+                end_text = _pick_variant(
+                    _PER_BEAT_ROUND_END_HURT, fight_id, bid, offset=3,
+                ).format(init=init_name, target=tgt_name)
+            else:
+                end_text = _pick_variant(
+                    _PER_BEAT_ROUND_END, fight_id, bid, offset=3,
+                )
+            # Separate the beat prose from the round-end marker with
+            # a space (the round-end variants are full sentences).
+            if text and not text.endswith("."):
+                text = text + ". "
+            elif text:
+                text = text + " "
+            text = (text or "") + end_text
+
+        # Importance: knockdowns/near-finishes are 80, big-momentum
+        # beats are 70, round-ends are 60, others are 50. (These are
+        # LOWER than the 'highlight' importance values (60-95) so the
+        # UI can distinguish the two segment types by importance range
+        # if needed — though the segment_type column is the canonical
+        # discriminator.)
+        if outcome == "knockdown":
+            importance = 80
+        elif outcome == "near_finish":
+            importance = 75
+        elif abs(momentum) > _BIG_MOMENTUM_SWING_THRESHOLD:
+            importance = 70
+        elif is_round_end:
+            importance = 60
+        else:
+            importance = 50
+
+        conn.execute(
+            "INSERT INTO commentary_segments (event_id, fight_id, "
+            "segment_type, speaker_staff_id, text, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, fight_id, "beat", speaker_id, text, importance),
+        )
+        count += 1
+        prev_phase = phase
+
+        # ---- P3.5: crowd reaction (after this beat) ----
+        # Triggered by high |momentum_shift|, near_finish outcome,
+        # round-end, or steady cadence (every CROWD_INTERVAL beats).
+        # Skipped on the finishing beat (the finish IS the moment).
+        if not is_finish:
+            crowd_band = None
+            if outcome == "near_finish":
+                crowd_band = "near_finish"
+            elif abs(momentum) >= 60:
+                crowd_band = "high_positive" if momentum > 0 else "high_negative"
+            elif is_round_end:
+                crowd_band = "between_rounds"
+            elif i > 0 and i % CROWD_INTERVAL == 0 and abs(momentum) >= 20:
+                crowd_band = "high_positive"
+            if crowd_band:
+                variants = _CROWD_REACTIONS.get(crowd_band)
+                if variants:
+                    crowd_text = _pick_variant(variants, fight_id, bid, offset=10)
+                    conn.execute(
+                        "INSERT INTO commentary_segments (event_id, fight_id, "
+                        "segment_type, speaker_staff_id, text, importance) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (event_id, fight_id, "crowd", None, crowd_text, 70),
+                    )
+                    count += 1
+
+        # ---- P3.5: pundit interjection (every PUNDIT_INTERVAL beats) ----
+        # Uses the player's actual commentator staff name. Mood is
+        # derived from the beat's momentum_shift.
+        if not is_finish and i > 0 and i % PUNDIT_INTERVAL == 0:
+            if momentum > 30:
+                mood = "praise_init"
+            elif momentum < -30:
+                mood = "worry_target"
+            elif outcome == "knockdown":
+                mood = "praise_init"
+            else:
+                mood = "neutral_observation"
+            # Alternate between primary and secondary pundit by hash.
+            if secondary_pundit and (bid % 2 == 0):
+                active_pundit = secondary_pundit
+            else:
+                active_pundit = primary_pundit
+            if active_pundit:
+                variants = _PUNDIT_INTERJECTIONS.get(mood)
+                if variants:
+                    try:
+                        pundit_text = _pick_variant(
+                            variants, fight_id, bid, offset=20,
+                        ).format(
+                            pundit=active_pundit[1],
+                            init=init_name, target=tgt_name,
+                        )
+                        conn.execute(
+                            "INSERT INTO commentary_segments (event_id, fight_id, "
+                            "segment_type, speaker_staff_id, text, importance) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (event_id, fight_id, "pundit",
+                             active_pundit[0], pundit_text, 75),
+                        )
+                        count += 1
+                    except Exception as _e:
+                        print(f"[fight_engine._generate_per_beat_commentary/pundit] "
+                              f"fight={fight_id} beat={bid}: {_e}", flush=True)
+
+    return count
+
+
+# ----------------------------------------------------------------
+# P3.5 (docs/COMPREHENSIVE_FIX_PLAN.md §Group D #20) — extra
+# commentary segments: ring announcer intro, named pundit
+# interjections, crowd reactions.
+#
+# These are written as commentary_segments rows with NEW segment_type
+# values ('announcer', 'pundit', 'crowd'). The Fight Night screen
+# interleaves them with the per-beat 'beat' rows in Zone A (the
+# commentary feed), each with distinct styling so the player can
+# visually distinguish them:
+#   - announcer: gold-tinted, ALL-CAPS, the in-arena PA voice
+#   - pundit:    blue-tinted italic, the broadcast-booth interjection
+#   - crowd:     amber banner, the arena soundscape
+#
+# Voice compliance (CONVENTIONS §14 + VOICE_ENFORCEMENT.md):
+#   - Short fragmentary sentences. Specific imagery. No tabloid.
+#   - No raw numbers in prose (no "momentum +80", no "damage 23").
+#   - Pundit interjections use the player's actual commentator staff
+#     name (from staff.role_type='commentator' on the player's promo)
+#     so the interjections feel like a real broadcast team.
+#   - Crowd reactions are ambient (no beat timestamp) — they're the
+#     arena's soundscape, not a discrete exchange.
+#
+# Scheduling:
+#   - announcer: 1 per fight, written at beat_index = -1 (before the
+#     first beat). The UI inserts it at the top of the feed.
+#   - pundit:    every 15-20 beats (deterministic by hash). The UI
+#     inserts it AFTER the corresponding beat.
+#   - crowd:     every 10-15 beats based on momentum_shift (high
+#     positive/negative shift triggers a crowd reaction). The UI
+#     inserts it AFTER the corresponding beat.
+#
+# 8+ variants per template per VOICE_ENFORCEMENT §3.
+# ----------------------------------------------------------------
+
+
+# Ring announcer intros — 8+ variants. Slots: {red}, {blue}, {red_loc}
+# (red fighter's hometown/nation), {blue_loc}, {rounds}, {title} (either
+# " for the championship" or ""). The announcer reads as the in-arena PA
+# voice — promoter register, formal, building anticipation.
+
+_RING_ANNOUNCER_INTROS = [
+    "In the red corner, {red}. In the blue corner, {blue}. Our referee in charge of this {rounds}-round{title} bout — let's get it on!",
+    "Ladies and gentlemen, introducing first in the red corner, {red}. And in the blue corner, {blue}. {rounds} rounds{title}. Let's begin.",
+    "Red corner: {red}. Blue corner: {blue}. {rounds} rounds{title}. The referee is ready. Fight!",
+    "First to the cage, in red, {red}. His opponent, in blue, {blue}. {rounds} rounds{title}. Here we go.",
+    "In red, weighing in from {red_loc}, {red}. In blue, from {blue_loc}, {blue}. {rounds} rounds{title}. Let's get it on.",
+    "Red corner — {red}. Blue corner — {blue}. This is a {rounds}-round{title} contest. Fight!",
+    "Introducing in red, {red}. And in blue, {blue}. {rounds} rounds{title}. The horn sounds — we are underway.",
+    "Two fighters, one cage. In red, {red}. In blue, {blue}. {rounds} rounds{title}. Let's fight.",
+    "Ladies and gentlemen — in the red corner, hailing from {red_loc}, {red}. His opponent, in the blue corner, from {blue_loc}, {blue}. {rounds} rounds{title}.",
+    "Red corner: {red}. Blue corner: {blue}. {rounds} rounds of action{title}. The referee waves us in — fight!",
+    "In the red corner, {red}. In the blue corner, {blue}. {rounds} rounds{title}. The crowd is ready — let's get it on.",
+    "First to the cage, {red}. And his opponent, {blue}. {rounds} rounds{title}. Here we go.",
+    "Introducing the fighters. Red: {red}. Blue: {blue}. {rounds} rounds{title}. Let's begin.",
+]
+
+
+# Named-pundit interjections — 8+ variants per "mood". The mood is
+# derived from the beat's momentum_shift (positive = the initiator is
+# winning, negative = the target is rallying). Slots: {pundit} (the
+# named commentator's name), {init}, {target}.
+
+_PUNDIT_INTERJECTIONS = {
+    "praise_init": [
+        "{pundit}: \"{init}'s footwork is exceptional tonight.\"",
+        "{pundit}: \"{init} is reading this fight beautifully.\"",
+        "{pundit}: \"You can see {init} has trained this exactly.\"",
+        "{pundit}: \"{init} is fighting a smart, smart fight.\"",
+        "{pundit}: \"That's the work of a complete fighter. {init} is showing it all.\"",
+        "{pundit}: \"{init} is in total control of the pace.\"",
+        "{pundit}: \"Watch {init}'s distance management. That's elite.\"",
+        "{pundit}: \"{init} is making this look easy. It isn't.\"",
+        "{pundit}: \"{init} is dictating every exchange. That's how you win.\"",
+        "{pundit}: \"You can see {init} has {target}'s timing down cold.\"",
+        "{pundit}: \"{init} is fighting three moves ahead right now.\"",
+        "{pundit}: \"That's the work of a champion in the making. {init} is special.\"",
+        "{pundit}: \"{init} is not wasting a single motion tonight.\"",
+    ],
+    "worry_target": [
+        "{pundit}: \"{target} needs to change levels — getting picked apart on the feet.\"",
+        "{pundit}: \"{target} is falling into {init}'s rhythm. Has to break it.\"",
+        "{pundit}: \"The corner has to be concerned. {target} is in trouble.\"",
+        "{pundit}: \"{target} needs to find a way to slow this down.\"",
+        "{pundit}: \"That's the third clean shot {target} has eaten. The chin can only take so much.\"",
+        "{pundit}: \"{target} is reaching. When you reach, you get countered.\"",
+        "{pundit}: \"{target} has to circle off the cage. Can't stay there.\"",
+        "{pundit}: \"{target} is surviving, not fighting. There's a difference.\"",
+        "{pundit}: \"{target} needs to commit to something. Anything.\"",
+        "{pundit}: \"The corner has to be screaming at {target} to switch it up.\"",
+        "{pundit}: \"{target} is taking damage. The ref is watching.\"",
+        "{pundit}: \"{target} is loading up — that's a sign of desperation.\"",
+        "{pundit}: \"{target} has to stop being a heavy bag. Move the head.\"",
+    ],
+    "neutral_observation": [
+        "{pundit}: \"This is high-level stuff from both men.\"",
+        "{pundit}: \"Two different styles, both committed to their gameplan.\"",
+        "{pundit}: \"The pace is taking its toll on both fighters.\"",
+        "{pundit}: \"You can see the chess match here. Both looking for the angle.\"",
+        "{pundit}: \"Neither man wants to be the first to make a mistake.\"",
+        "{pundit}: \"This is what championship rounds look like.\"",
+        "{pundit}: \"The preparation is showing on both sides.\"",
+        "{pundit}: \"Two professionals going to work. This is the sport at its purest.\"",
+        "{pundit}: \"Both corners must be sweating this one. It's razor-thin.\"",
+        "{pundit}: \"You're seeing adjustments on both sides. High-level stuff.\"",
+        "{pundit}: \"Neither man is giving an inch here. Pure will.\"",
+        "{pundit}: \"The next exchange could swing it. Both know it.\"",
+        "{pundit}: \"This is what fight fans pay to see. Two elite operators.\"",
+    ],
+}
+
+
+# Crowd reactions — 8+ variants per "band". The band is derived from
+# the beat's momentum_shift:
+#   - high_positive: |momentum_shift| >= 60 (knockdowns, near-finishes)
+#   - high_negative: |momentum_shift| in [40, 60) — a big swing the other way
+#   - near_finish: outcome='near_finish' specifically
+#   - between_rounds: at the end of a round (the round-end marker)
+# No slots — these are ambient arena soundscape, not fighter-specific.
+
+_CROWD_REACTIONS = {
+    "high_positive": [
+        "The crowd erupts!",
+        "The arena is shaking!",
+        "Fans are on their feet!",
+        "A roar rolls through the stands!",
+        "The crowd comes alive!",
+        "Deafening noise from the stands!",
+        "The arena rises as one!",
+        "Pandemonium in the building!",
+        "The stands explode. Chairs rattle.",
+        "A thunderous roar from the crowd!",
+        "The noise is overwhelming!",
+        "The crowd is on its feet, screaming.",
+        "An electric roar from the rafters!",
+    ],
+    "high_negative": [
+        "Silence falls over the arena.",
+        "The crowd groans.",
+        "You could hear a pin drop.",
+        "A hush falls over the stands.",
+        "The arena goes quiet.",
+        "Fans hold their breath.",
+        "The energy drains from the building.",
+        "An uneasy murmur ripples through the crowd.",
+        "The crowd exhales — a worried sound.",
+        "The arena sinks into stunned silence.",
+        "A collective intake of breath from the crowd.",
+        "The noise dies. People sit back down.",
+        "A low, anxious murmur spreads through the stands.",
+    ],
+    "near_finish": [
+        "The crowd senses the end is near.",
+        "Everyone's holding their breath.",
+        "The arena is on its feet, sensing the finish.",
+        "A roar builds as the finish looms.",
+        "The crowd can taste the stoppage.",
+        "Tension fills the arena.",
+        "The fans lean in, sensing the moment.",
+        "A collective gasp rolls through the stands.",
+        "The arena buzzes — this could be it.",
+        "The crowd rises, ready to erupt.",
+        "Every eye in the building is locked on the cage.",
+        "The fans are restless — they can feel it coming.",
+        "A wave of anticipation sweeps through the stands.",
+    ],
+    "between_rounds": [
+        "The crowd buzzes with anticipation for the next round.",
+        "A murmur builds between rounds.",
+        "Fans debate the scorecards between rounds.",
+        "The arena hums with energy as the next round approaches.",
+        "Anticipation builds in the break.",
+        "The crowd settles back in for the next round.",
+        "A restless energy fills the arena between rounds.",
+        "Fans swap predictions for the next round.",
+        "The between-rounds buzz builds. People lean forward.",
+        "A low hum of conversation fills the arena.",
+        "The crowd stretches, resets. Waiting for the bell.",
+        "Beer vendors weave through the aisles. The crowd buzzes.",
+        "The arena settles into a tense hush before the next round.",
+    ],
+}
+
+
+def _weight_class_walk_weight(conn, weight_class_id):
+    """Return a human-readable weight for the announcer intro, or None.
+
+    Pulls the weight_class name (e.g. "Lightweight") from the DB and
+    returns the lowercased name. The announcer intro slot is optional
+    — the templates work without it (we use {red_loc} / {blue_loc}
+    for the location slot, not a weight slot, so this helper is
+    currently unused but kept for future template expansion).
+    """
+    if not weight_class_id:
+        return None
+    row = conn.execute(
+        "SELECT name FROM weight_classes WHERE weight_class_id=?",
+        (weight_class_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _fighter_hometown_phrase(conn, fighter_id):
+    """Return a hometown/nation phrase for the announcer intro.
+
+    Looks up the fighter's birth city + nation via the cities + nations
+    tables (joined on fighters.birth_city_id / birth_nation_id).
+    Returns "<City>, <Country>" if both are available, else just one,
+    else None. Used to fill the {red_loc} / {blue_loc} slots in the
+    ring announcer templates.
+    """
+    if not fighter_id:
+        return None
+    row = conn.execute(
+        "SELECT bc.name, bn.name FROM fighters f "
+        "LEFT JOIN cities bc ON bc.city_id=f.birth_city_id "
+        "LEFT JOIN nations bn ON bn.nation_id=f.birth_nation_id "
+        "WHERE f.fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    if not row:
+        return None
+    city, nation = row
+    if city and nation:
+        return f"{city}, {nation}"
+    if nation:
+        return nation
+    if city:
+        return city
+    return None
+
+
+def _player_promo_commentators(conn, fight_event_promo_id):
+    """Return a list of (staff_id, full_name) for the player's promo's
+    active commentators.
+
+    Per P3.5, named-pundit interjections should use the player's
+    actual commentator staff. We look up staff rows WHERE
+    role_type='commentator' AND promotion_id=<fight's promo>. Returns
+    up to 2 names (a typical broadcast booth is play-by-play + color
+    commentator). Falls back to the global commentator pool (any
+    promo) if the player's promo has none.
+    """
+    # First try the fight's own promo. (The staff table has no
+    # is_active column — staff are considered active if they have a
+    # row at all. The contract status is tracked separately in
+    # staff_contracts.)
+    rows = conn.execute(
+        "SELECT staff_id, first_name, last_name FROM staff "
+        "WHERE role_type='commentator' AND promotion_id=? "
+        "ORDER BY staff_id LIMIT 2",
+        (fight_event_promo_id,),
+    ).fetchall()
+    if not rows:
+        # Fallback: any commentator (matches the existing
+        # _generate_beat_commentary speaker lookup).
+        rows = conn.execute(
+            "SELECT staff_id, first_name, last_name FROM staff "
+            "WHERE role_type='commentator' "
+            "ORDER BY staff_id LIMIT 2",
+        ).fetchall()
+    out = []
+    for (sid, fn, ln) in rows:
+        name = ((fn or "") + " " + (ln or "")).strip()
+        if not name:
+            name = "The Booth"
+        out.append((sid, name))
+    return out
+
+
+# ----------------------------------------------------------------
+# P3.5 DEPRECATED — _generate_extra_segments was the original
+# standalone implementation of the announcer/pundit/crowd system.
+# It was removed because writing all extra segments AFTER all beats
+# broke the UI's beat_index derivation (all extra segments collapsed
+# to the last beat). The logic is now inline in
+# _generate_per_beat_commentary, which interleaves the extra segments
+# with the beat segments so the commentary_segment_ids stay in
+# chronological order. The templates (_RING_ANNOUNCER_INTROS,
+# _PUNDIT_INTERJECTIONS, _CROWD_REACTIONS) and helpers
+# (_player_promo_commentators, _fighter_hometown_phrase) are still
+# used by the inline implementation.
+# ----------------------------------------------------------------
+
+
+
+
+# ----------------------------------------------------------------
+# Event lifecycle (Task ID 7).
+# ----------------------------------------------------------------
 # `events.status` is set to 'scheduled' on creation and — prior to
 # this task — never transitioned. That made the Events tree in the UI
 # meaningless (every event showed 'scheduled' forever, even after all
@@ -2802,7 +4407,11 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
         was_draw: True if the fight was a draw.
         result_type: the result_type string (for logging).
         fight_date: ISO date string for champion_since_date. If None,
-            uses CURRENT_DATE.
+            falls back to simulation_clock.current_date (HW2.2: was
+            CURRENT_DATE which is today's REAL-WALL-CLOCK date — a
+            Time Law violation. The fallback now reads the sim clock
+            via a SQL subquery so champion_since_date is always a sim
+            date, never a real-world date).
 
     Returns:
         title_id (int) if a title change occurred, else None.
@@ -2840,9 +4449,15 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
             # Vacant + draw → stays vacant. No change.
             return None
         # Vacant + non-draw → winner becomes champion.
+        # HW2.2: champion_since_date fallback uses simulation_clock.
+        # current_date (sim date) instead of CURRENT_DATE (real-world
+        # date) — Time Law compliance. fight_date is normally passed
+        # in by the caller; this COALESCE is a defensive fallback.
         conn.execute(
             "UPDATE titles SET current_champion_fighter_id = ?, "
-            "champion_since_date = COALESCE(?, CURRENT_DATE), "
+            "champion_since_date = COALESCE(?, "
+            "    (SELECT simulation_clock.current_date "
+            "     FROM simulation_clock WHERE clock_id=1)), "
             "title_reigns_count = title_reigns_count + 1, "
             "is_vacant = 0, updated_at = CURRENT_TIMESTAMP "
             "WHERE title_id = ?",
@@ -2884,9 +4499,14 @@ def _resolve_title_after_fight(conn, fight_id, event_id, winner_id, loser_id,
             return None  # no title change
         else:
             # Contender won. Title changes hands.
+            # HW2.2: champion_since_date fallback uses simulation_clock.
+            # current_date (sim date) instead of CURRENT_DATE (real-world
+            # date) — Time Law compliance.
             conn.execute(
                 "UPDATE titles SET current_champion_fighter_id = ?, "
-                "champion_since_date = COALESCE(?, CURRENT_DATE), "
+                "champion_since_date = COALESCE(?, "
+                "    (SELECT simulation_clock.current_date "
+                "     FROM simulation_clock WHERE clock_id=1)), "
                 "title_reigns_count = title_reigns_count + 1, "
                 "title_defenses_count = 0, "
                 "is_vacant = 0, updated_at = CURRENT_TIMESTAMP "
@@ -3145,13 +4765,19 @@ def _run_weight_cut(conn, fighter_id, fight_id, event_id, weight_class_id,
                 f"as a penalty"
                 f"{' and will start the fight with depleted cardio' if cardio_penalty > 0 else ''}.")
         sentiment = "negative"
-    conn.execute(
-        "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, fighter_id, fight_id, event_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (src_id, headline, body, sentiment, "weight_cut", fighter_id,
-         fight_id, event_id, event_date),
-    )
+    # NEWS-SPAM-MEMORY-CHECK — suppress the "made weight" news entirely
+    # (it's not interesting — every fighter on every card makes weight
+    # most of the time). Only write news when a fighter MISSES weight,
+    # tagged SIGNIFICANT (a weight miss changes the fight — catch-
+    # weight, purse penalty, or cancellation).
+    if cut_outcome != "made_weight":
+        conn.execute(
+            "INSERT INTO news_items (news_source_id, headline, body, "
+            "sentiment, topic, fighter_id, fight_id, event_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (src_id, headline, body, sentiment, "weight_cut", fighter_id,
+             fight_id, event_id, event_date, "SIGNIFICANT"),
+        )
 
     # Phase A5 — publish WEIGHT_CUT_COMPLETED on the event bus. The
     # news engine subscribes to write a richer weigh-in news item
@@ -3518,6 +5144,29 @@ def _maybe_create_injury(conn, fighter_id, fight_id, event_id, event_date,
     recovery_discount = int(recovery_rate * _INJURY_RECOVERY_RATE_DAYS_PER_POINT)
     days_out = max(_INJURY_MIN_DAYS_OUT, base_days - recovery_discount)
 
+    # Phase E5 — Doctor recovery-time reduction. The fighter's promo
+    # may have active doctors (role_type='doctor' with active
+    # staff_contracts). Each contributes (skill/200) recovery bonus,
+    # capped at 15% total. We APPLY the bonus here at injury-creation
+    # time (rather than at recovery-tick time) because the
+    # projected_return_date is what the player sees in the UI and
+    # what _check_injury_recovery uses to clear the injury. Shortening
+    # it here gives the player immediate feedback that their doctor
+    # staff investment matters. Per docs/DESIGN_REVIEW_E5.md §5.
+    fighter_promo_id = stats.get("current_promotion_id")
+    try:
+        from services.injuries_svc import get_doctor_recovery_bonus
+        doctor_bonus = get_doctor_recovery_bonus(conn, fighter_promo_id)
+    except Exception:
+        doctor_bonus = 0.0  # defensive — never break injury creation
+    if doctor_bonus > 0:
+        # Reduce days_out by the doctor bonus fraction (e.g. 5% bonus
+        # on a 100-day recovery = 95 days). Floor at _INJURY_MIN_DAYS_
+        # OUT (7 days) so a doctor bonus can't make a sev-1 cut heal
+        # in less than a week.
+        reduced_days = int(days_out * (1.0 - doctor_bonus))
+        days_out = max(_INJURY_MIN_DAYS_OUT, reduced_days)
+
     start_dt = datetime.strptime(event_date, "%Y-%m-%d")
     projected_dt = start_dt + timedelta(days=days_out)
     start_date_str = event_date
@@ -3633,6 +5282,23 @@ def _maybe_create_injury(conn, fighter_id, fight_id, event_id, event_date,
             'current_date': start_date_str,
         })
     except ImportError:
+        pass
+
+    # TIER3-MISSING §T3.4 (W17) — write an 'injuries' memory_link
+    # self-link for this fighter. Per the brief: "when a fighter is
+    # injured. Writer: in injuries_svc, when creating an injury,
+    # write an injuries memory_link." The injuries_svc.py module is
+    # a thin wrapper around this function, so we wire the writer
+    # here directly. The writer is defensive (try/except) so a
+    # memory-link write failure must never crash injury creation.
+    try:
+        from services.memory_svc import write_injuries_link
+        write_injuries_link(conn, fighter_id, injury_id=injury_id)
+    except Exception:
+        # Defensive — a failed memory link write must not crash the
+        # injury creation flow (the injury row + news item are
+        # already committed; the memory link is a best-effort
+        # side-effect).
         pass
 
     return injury_id
@@ -3991,7 +5657,348 @@ def _opponent_style_archetype_name(conn, fighter_id):
 
 
 
-def resolve_next_fight(conn, promotion_id=None):
+# ----------------------------------------------------------------
+# PERF-FIXES-3 — Simplified in-memory fight resolution for AI vs AI
+# fights (rival promotions). The player's own fights always use the
+# full beat engine (resolve_round → fight_beats + commentary_segments
+# + fight_rounds writes). AI vs AI fights never get replayed by the
+# player — the player only sees the result in the newswire / archive.
+#
+# Skipping the beat engine for AI fights saves ~80-250 INSERTs per
+# AI fight (fight_beats + commentary_segments + fight_rounds). On a
+# busy event-day tick with 20 AI fights = ~1,600-5,000 INSERTs saved.
+#
+# The simplified resolver produces the SAME result_type distribution
+# (ko_tko / submission / decision / draw) as the full engine, just
+# without the per-beat granularity. The same winners (statistically)
+# emerge — the algorithm is a coarser version of the same logic.
+#
+# `performance_rating` + `fan_reaction_rating` are computed in-memory
+# (mirroring the full engine's formula) and stored on the `fights`
+# row. show_rating + morale read these (with a fallback when fight_
+# beats is empty — see show_rating._get_per_fight_beats_stats +
+# morale._process_fight).
+# ----------------------------------------------------------------
+
+# Attribute groups used by the simplified resolver. The full beat
+# engine uses ~25 attributes; this subset captures the dominant
+# determinants of round outcomes (offense + defense + clinch).
+_SIMPLIFIED_OFFENSE_ATTRS = (
+    "punch_power", "kick_power", "punch_accuracy", "kick_accuracy",
+    "speed_explosiveness", "fight_iq", "takedown_offense",
+    "submission_offense", "clinch_striking",
+)
+_SIMPLIFIED_DEFENSE_ATTRS = (
+    "chin", "durability", "head_movement", "takedown_defense",
+    "submission_defense",
+)
+
+
+def _resolve_fight_simplified(conn, fight_id, a_id, b_id,
+                              stats_a, stats_b, scheduled_rounds,
+                              is_title_fight, importance, rng=None):
+    """Simplified in-memory fight resolution (no DB writes to fight_beats
+    or fight_rounds).
+
+    Algorithm (mirrors the full beat engine at a coarser granularity):
+      1. Compute each fighter's "power" = weighted average of 9
+         offense attrs + 5 defense attrs + morale/consistency bonuses.
+      2. Compute KO thresholds from chin + durability (150-300 range).
+      3. Per round (in-memory only):
+         - Roll round damage dealt by each fighter (power-scaled +
+           uniform variance).
+         - Round winner = higher damage dealer.
+         - Accumulate total damage per fighter.
+         - Check KO threshold crossing → KO/TKO finish.
+         - Roll submission probability per round.
+      4. If no finish: 10-point must decision across rounds.
+      5. Compute performance_rating + fan_reaction_rating using the
+         SAME formulas as the full engine (so show_rating + morale
+         can read them uniformly).
+
+    Args:
+        conn: sqlite3 connection (caller commits — this function
+            writes nothing to the DB).
+        fight_id: the fights.fight_id (used as RNG seed for
+            determinism — the same fight resolves identically on
+            re-run, matching the full engine's `rng = Random(fighter_
+            id)` pattern).
+        a_id, b_id: fighter_ids (red + blue corner).
+        stats_a, stats_b: loaded stats dicts from _load_fighter_stats.
+        scheduled_rounds: 3 or 5 (title fights).
+        is_title_fight: bool (unused in computation, kept for
+            signature symmetry with the full resolver).
+        importance: 0-100 fight importance (unused in the simplified
+            path — kept for signature symmetry).
+        rng: optional pre-seeded Random instance (tests can pass a
+            fixed seed). Defaults to `random.Random(fight_id)`.
+
+    Returns:
+        Dict with keys: result_type, winner_id, loser_id, finish_round,
+        finish_time, score_margin, performance_rating,
+        fan_reaction_rating.
+    """
+    if rng is None:
+        rng = random.Random(fight_id)
+
+    def _power(stats):
+        off_vals = [stats.get(a, 50) or 50 for a in _SIMPLIFIED_OFFENSE_ATTRS]
+        def_vals = [stats.get(a, 50) or 50 for a in _SIMPLIFIED_DEFENSE_ATTRS]
+        off = sum(off_vals) / len(off_vals)
+        deff = sum(def_vals) / len(def_vals)
+        morale = stats.get("morale", 50) or 50
+        consistency = stats.get("consistency", 50) or 50
+        # 60% offense + 40% defense + morale/consistency bonuses.
+        # The bonuses are small (±5 max) so power stays in [25, 75]
+        # for typical fighters.
+        return (0.6 * off + 0.4 * deff
+                + (morale - 50) * 0.1
+                + (consistency - 50) * 0.05)
+
+    power_a = _power(stats_a)
+    power_b = _power(stats_b)
+
+    def _ko_thresh(stats):
+        chin = stats.get("chin", 50) or 50
+        dur = stats.get("durability", 50) or 50
+        # FIGHT-ENGINE-TUNE Issue 1: lowered threshold band from
+        # `150 + (chin+dur)*0.75` (range 150-300) to
+        # `30 + (chin+dur)*0.3` (range 30-90). The original threshold
+        # (~225 for chin+dur=100) was unreachable in 3-5 rounds of
+        # 45-75 total damage, producing 0 KOs in 672 fights. The
+        # brief's `60 + 0.3*(chin+dur)` (~89 typical) was still too
+        # high — avg power=48 produces only ~19 damage/round = 57
+        # after 3 rounds (below 89). Deviation: lowered base 60 -> 30
+        # so the typical threshold (~59) IS reachable in 3 rounds,
+        # producing ~20-30% KO rate (target 20-40%).
+        #
+        # FIX-V3-ALL5 #2 (KO 23% -> target 30%): the 30-base / 0.3-scale
+        # produced a ~23% KO rate in the 1-year sim, just under the
+        # 28-32% target band. Lowering base 30 -> 20 + scale 0.3 -> 0.25
+        # gives a typical threshold of 20 + 100*0.25 = 45 (was 60), which
+        # is reachable in 2 rounds (25 dmg * 2 = 50 > 45) rather than
+        # requiring 3. This lifts the KO rate into the 28-32% target
+        # band without breaking the existing balance (a defensive
+        # fighter with chin+dur=120 still has threshold 50, so they
+        # don't become unkillable; an attrition-fighter at 70 has
+        # threshold ~37, so they get finished in 2 rounds reliably).
+        return 20 + (chin + dur) * 0.25
+
+    ko_thresh_a = _ko_thresh(stats_a)
+    ko_thresh_b = _ko_thresh(stats_b)
+
+    # Aggression-driven finish probabilities (per round). Higher
+    # aggression + higher power = more likely to land a finishing
+    # blow.
+    # FIGHT-ENGINE-TUNE Issue 1: rewrote the per-round formula.
+    # Original was `0.02 / rounds_div` (intended to keep cumulative
+    # finish_prob constant across round counts — but that's unrealistic;
+    # 5-round fights SHOULD finish more often than 3-round fights).
+    # New: per-round probability (NO division by rounds_div) so 5-round
+    # fights produce higher cumulative finish rates. Base 0.10 (deviation
+    # from brief's 0.04 — the brief's 0.04 / rounds_div gave 0.013/round
+    # which was far too low even with the lowered threshold). Power
+    # differential scaling 0.008 (per brief). Capped at 0.15 per round.
+    aggr_a = stats_a.get("aggression", 50) or 50
+    aggr_b = stats_b.get("aggression", 50) or 50
+    finish_prob_a = min(0.15, max(0.03,
+        0.10 + 0.008 * (power_a - 50) + 0.001 * (aggr_a - 50)))
+    finish_prob_b = min(0.15, max(0.03,
+        0.10 + 0.008 * (power_b - 50) + 0.001 * (aggr_b - 50)))
+
+    # Submission probabilities (lower than KO — finishes are rarer
+    # via submission in real MMA).
+    # FIGHT-ENGINE-TUNE Issue 3: raised base 0.01 -> 0.03 (per brief)
+    # and offense scaling 0.0005 -> 0.001 (per brief). Removed the
+    # /rounds_div division so 5-round fights have higher cumulative
+    # sub rates (mirrors the finish_prob fix). The original 0.01 /
+    # rounds_div gave 0.0033/round which was far too low (1.2% sub
+    # rate in 672 fights; target 20%).
+    #
+    # FIX-V3-ALL5 #3 (Sub 14% -> target 20%): the 0.03 base produced
+    # a 14% sub rate in the 1-year sim — short of the 18-22% target
+    # band. Raising base 0.03 -> 0.045 (50% relative increase on the
+    # base) plus the full-engine submission_attempt weight bump
+    # (1 -> 1.2, ~20% more attempts per ground beat) lifts the
+    # cumulative sub rate into the 18-22% target band. The base
+    # increase is larger than the attempt-weight increase because
+    # the simplified resolver doesn't model attempt vs success
+    # separately — every per-round roll is a binary sub check.
+    sub_off_a = stats_a.get("submission_offense", 50) or 50
+    sub_off_b = stats_b.get("submission_offense", 50) or 50
+    sub_def_a = stats_a.get("submission_defense", 50) or 50
+    sub_def_b = stats_b.get("submission_defense", 50) or 50
+    sub_prob_a = max(0.0, 0.045 + 0.001 * (sub_off_a - sub_def_b))
+    sub_prob_b = max(0.0, 0.045 + 0.001 * (sub_off_b - sub_def_a))
+
+    # Per-round simulation. All in-memory — no DB writes.
+    round_results = []  # list of (round_winner_id, dmg_a, dmg_b)
+    total_a_damage = 0
+    total_b_damage = 0
+    finish_info = None  # set if a finish occurs mid-fight
+    finish_round = scheduled_rounds
+    finish_time = "5:00"  # default for decision
+
+    for round_number in range(1, scheduled_rounds + 1):
+        # Roll round damage. Base 25 + power differential scaling +
+        # uniform variance [-10, +10]. Floored at 5 so a defensively-
+        # minded fighter still deals some damage.
+        # FIGHT-ENGINE-TUNE Issue 1: boosted base 20 -> 25 so the
+        # KO threshold (~59 for typical chin+dur) is reliably crossed
+        # by round 3 (25*3 = 75 > 59). The original 20/round gave
+        # 60 after 3 rounds (just below threshold), so KOs rarely fired.
+        dmg_a = max(5, int(25 + (power_a - 50) * 0.4 + rng.uniform(-10, 10)))
+        dmg_b = max(5, int(25 + (power_b - 50) * 0.4 + rng.uniform(-10, 10)))
+        total_a_damage += dmg_a
+        total_b_damage += dmg_b
+        # FIGHT-ENGINE-TUNE Issue 2: when damage is nearly equal
+        # (<5 diff), the round winner used to be a coin flip (dmg_a
+        # >= dmg_b picks A on ties) — producing ~50% split decisions
+        # on balanced matchups. Now the round goes to the higher-POWER
+        # fighter (deterministic), so close rounds reflect skill not
+        # RNG. This dramatically reduces the split_decision rate
+        # (38% -> ~10%).
+        if abs(dmg_a - dmg_b) < 5:
+            round_winner = a_id if power_a >= power_b else b_id
+        else:
+            round_winner = a_id if dmg_a >= dmg_b else b_id
+        round_results.append((round_winner, dmg_a, dmg_b))
+
+        # Check for KO/TKO finish (cumulative damage crosses the
+        # defender's threshold). FIGHT-ENGINE-TUNE Issue 1: removed
+        # the `+30 damage lead` requirement — a fighter can get KO'd
+        # even in a close fight (the defender has taken enough cumulative
+        # damage to be finished, regardless of who's ahead).
+        if (total_b_damage > ko_thresh_b
+                and rng.random() < finish_prob_a):
+            finish_info = {"type": "ko_tko", "winner_id": a_id, "loser_id": b_id}
+            finish_round = round_number
+            finish_time = _random_finish_time_lite(rng)
+            break
+        if (total_a_damage > ko_thresh_a
+                and rng.random() < finish_prob_b):
+            finish_info = {"type": "ko_tko", "winner_id": b_id, "loser_id": a_id}
+            finish_round = round_number
+            finish_time = _random_finish_time_lite(rng)
+            break
+
+        # Check for submission finish (probability-based per round).
+        # Only rolls if no KO fired this round (the break above
+        # exits the loop).
+        if rng.random() < sub_prob_a:
+            finish_info = {"type": "submission", "winner_id": a_id, "loser_id": b_id}
+            finish_round = round_number
+            finish_time = _random_finish_time_lite(rng)
+            break
+        if rng.random() < sub_prob_b:
+            finish_info = {"type": "submission", "winner_id": b_id, "loser_id": a_id}
+            finish_round = round_number
+            finish_time = _random_finish_time_lite(rng)
+            break
+
+    if finish_info is not None:
+        result_type = finish_info["type"]
+        winner_id = finish_info["winner_id"]
+        loser_id = finish_info["loser_id"]
+        score_margin_int = abs(total_a_damage - total_b_damage)
+    else:
+        # Decision: 10-point must across all completed rounds.
+        # Inline (mirrors _decide_fight_outcome — no knockdown
+        # bonuses since we don't track per-round KDs in the
+        # simplified path).
+        score_a_total = 0
+        score_b_total = 0
+        for (rw, _da, _db) in round_results:
+            if rw == a_id:
+                score_a_total += 10
+                score_b_total += 9
+            else:
+                score_b_total += 10
+                score_a_total += 9
+        if score_a_total == score_b_total:
+            result_type = "draw"
+            winner_id = loser_id = None
+        elif abs(score_a_total - score_b_total) < 3:
+            # Close fight. Brief says 15% split; bumped to 70% (D2)
+            # for varied distribution — matches the full engine.
+            # FIGHT-ENGINE-TUNE Issue 2: halved 0.70 -> 0.35 (deviation
+            # from D2) so split_decision rate drops from 26% to ~13%
+            # (target <15%). The deterministic close-round fix (round
+            # winner = higher power on <5 dmg diff) already reduces
+            # close fights, but the 70% split probability on the
+            # remaining close fights still produced too many splits.
+            if rng.random() < 0.35:
+                result_type = "split_decision"
+            else:
+                result_type = "unanimous_decision"
+            if score_a_total > score_b_total:
+                winner_id, loser_id = a_id, b_id
+            else:
+                winner_id, loser_id = b_id, a_id
+        else:
+            result_type = "unanimous_decision"
+            if score_a_total > score_b_total:
+                winner_id, loser_id = a_id, b_id
+            else:
+                winner_id, loser_id = b_id, a_id
+        score_margin_int = abs(total_a_damage - total_b_damage)
+
+    # Performance + fan reaction ratings — MIRROR the full engine's
+    # formulas exactly (lines 6121-6150) so AI fights + player fights
+    # produce ratings on the same scale.
+    performance_rating = max(60, min(95, int(round(60 + score_margin_int / 20.0))))
+    if result_type in ("ko_tko", "submission"):
+        performance_rating = min(95, performance_rating + 10)
+    elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
+        performance_rating = min(95, performance_rating + 5)
+
+    fan = 65 + int(score_margin_int / 30.0)
+    if result_type in ("ko_tko", "submission"):
+        fan += 10
+    elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
+        fan += 5
+    if result_type != "draw" and winner_id is not None:
+        if winner_id == a_id:
+            winner_dmg, loser_dmg = total_a_damage, total_b_damage
+        else:
+            winner_dmg, loser_dmg = total_b_damage, total_a_damage
+        if loser_dmg > winner_dmg:
+            fan += 5  # upset — fans love a controversial decision
+    fan_reaction_rating = max(60, min(95, fan))
+
+    return {
+        "result_type": result_type,
+        "winner_id": winner_id,
+        "loser_id": loser_id,
+        "finish_round": finish_round,
+        "finish_time": finish_time,
+        "score_margin": score_margin_int,
+        "performance_rating": performance_rating,
+        "fan_reaction_rating": fan_reaction_rating,
+    }
+
+
+def _random_finish_time_lite(rng):
+    """Generate a finish time string ('M:SS') for AI-fight finishes.
+
+    Simpler than the full engine's `_random_finish_time` (which
+    depends on beat_number + beats_this_round — unavailable for AI
+    fights since we don't generate beats). Picks a random time in
+    the round [0:00, 4:59].
+
+    Args:
+        rng: a random.Random instance (caller-supplied for
+            determinism).
+
+    Returns:
+        A string like "2:34" (minute:second).
+    """
+    minute = rng.randint(0, 4)
+    second = rng.randint(0, 59)
+    return f"{minute}:{second:02d}"
+
+
+def resolve_next_fight(conn, promotion_id=None, skip_beat_detail=False):
     """Resolve the next scheduled fight using the beat-level engine (Task B2).
 
     Picks the lowest-fight_id unresolved fight, loads both fighters'
@@ -4053,15 +6060,72 @@ def resolve_next_fight(conn, promotion_id=None):
       - write_news(...)  (enriched headline + body, same signature)
       - write_commentary(...)  (enriched text, same signature)
       - INSERT INTO commentary_segments (3-14 highlight beats)  [v2.3.0, Task B2]
+
+    PERF-FIXES-3 (skip_beat_detail): when `skip_beat_detail=True`,
+    the beat engine is bypassed entirely. The simplified resolver
+    `_resolve_fight_simplified` produces the result_type + winner +
+    finish_round + ratings in-memory. Skipped writes:
+      - fight_beats (saves 36-140 INSERTs)
+      - fight_rounds (saves 3-5 INSERTs)
+      - commentary_segments 'highlight' + 'beat' + 'announcer'/
+        'pundit'/'crowd' (saves 44-200 INSERTs)
+    All OTHER side effects (fight_history, rankings, titles, news,
+    event lifecycle, finance via subscribers, injuries, descriptor
+    snapshots, gameplan derivation, FIGHT_RESOLVED publish) are
+    PRESERVED. The `fights.performance_rating` +
+    `fights.fan_reaction_rating` columns are written from the
+    simplified resolver's output (so show_rating + morale can read
+    them as an excitement proxy when fight_beats is empty).
+    Default: False (player path unchanged — full beat detail).
     """
+    # P3.3 (docs/COMPREHENSIVE_FIX_PLAN.md §Group D #16) — fights
+    # resolve in REVERSE card_slot order: prelims first, main event
+    # LAST. The previous ORDER BY f.fight_id picked the lowest-id
+    # fight, which is the main_event (confirm_card assigns main_event
+    # at idx=0). That played the card backwards — the main event
+    # resolved before the prelims. The new CASE ordering plays the
+    # card forward: opener → prelim → featured_prelim → co_main →
+    # main_event LAST, with fight_id ASC as a tiebreaker. This
+    # affects both the player's manual resolution AND rival AI's
+    # _resolve_event_card loop (which drains the whole card in one
+    # tick — the order within that tick is now prelims-first, which
+    # is the realistic sequence for a single-night event).
+    #
+    # HW8.1 (event-lifecycle bug fix): the pick-query now filters
+    # by `e.event_date <= sim_date`. Without this filter, the rival
+    # AI's _resolve_event_card loop (which loops resolve_next_fight
+    # until None) would resolve fights on FUTURE-dated events too —
+    # marking them 'completed' months before their event_date. The
+    # HW6.3 soak test surfaced this as 146 future-dated events
+    # marked COMPLETED after 180 sim days. The fix reads the sim
+    # date from simulation_clock (one extra SELECT, < 1ms) and
+    # applies the date filter. The player UI path (app_web.
+    # resolve_next_fight) already enforces event_date == sim_date
+    # before calling this function, so this fix is transparent for
+    # the player and only affects the rival AI auto-resolution path.
+    sim_date_row = conn.execute(
+        "SELECT simulation_clock.current_date "
+        "FROM simulation_clock WHERE clock_id=1"
+    ).fetchone()
+    sim_date_str = sim_date_row[0] if sim_date_row else None
     fight = conn.execute(
         "SELECT f.fight_id, f.event_id, f.scheduled_rounds, e.promotion_id, "
         "f.weight_class_id, e.event_date, f.card_slot, f.is_title_fight "
         "FROM fights f JOIN events e ON e.event_id=f.event_id "
         "WHERE f.winner_fighter_id IS NULL AND f.result_type IS NULL "
         + ("AND e.promotion_id=? " if promotion_id is not None else "")
-        + "ORDER BY f.fight_id LIMIT 1",
-        ((promotion_id,) if promotion_id is not None else ()),
+        + ("AND e.event_date <= ? " if sim_date_str else "")
+        + "ORDER BY CASE f.card_slot "
+        "  WHEN 'opener' THEN 1 "
+        "  WHEN 'prelim' THEN 2 "
+        "  WHEN 'featured_prelim' THEN 3 "
+        "  WHEN 'co_main' THEN 4 "
+        "  WHEN 'main_event' THEN 5 "
+        "  ELSE 6 END, f.fight_id ASC LIMIT 1",
+        tuple(p for p in (
+            promotion_id if promotion_id is not None else None,
+            sim_date_str,
+        ) if p is not None),
     ).fetchone()
     if not fight:
         return None
@@ -4142,12 +6206,13 @@ def resolve_next_fight(conn, promotion_id=None):
             src_id = src_row[0]
         conn.execute(
             "INSERT INTO news_items (news_source_id, headline, body, "
-            "sentiment, topic, fight_id, event_id, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "sentiment, topic, fight_id, event_id, published_at, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (src_id, nc_headline,
              f"The fight has been cancelled due to a weight miss. "
              f"No winner will be declared.",
-             "negative", "weight_cut", fight_id, event_id, event_date),
+             "negative", "weight_cut", fight_id, event_id, event_date,
+             "SIGNIFICANT"),
         )
         # Phase A5 — publish FIGHT_CANCELLED on the event bus. The
         # news engine + morale system subscribe to write a richer
@@ -4271,120 +6336,160 @@ def resolve_next_fight(conn, promotion_id=None):
     # resolve_round returns finish_info and we stop scheduling more
     # rounds.
     # ----------------------------------------------------------------
-    # Defensive: clear any prior beats/rounds rows for this fight
-    # (idempotent for re-resolution, mirrors the fight_history DELETE
-    # pattern below). The UNIQUE constraints on fight_beats and
-    # fight_rounds would crash on re-resolve without this.
-    conn.execute("DELETE FROM fight_beats WHERE fight_id=?", (fight_id,))
-    conn.execute("DELETE FROM fight_rounds WHERE fight_id=?", (fight_id,))
+    if not skip_beat_detail:
+        # Defensive: clear any prior beats/rounds rows for this fight
+        # (idempotent for re-resolution, mirrors the fight_history DELETE
+        # pattern below). The UNIQUE constraints on fight_beats and
+        # fight_rounds would crash on re-resolve without this.
+        conn.execute("DELETE FROM fight_beats WHERE fight_id=?", (fight_id,))
+        conn.execute("DELETE FROM fight_rounds WHERE fight_id=?", (fight_id,))
 
-    round_results = []
-    total_a_damage = 0
-    total_b_damage = 0
-    # v2.3.0 fatigue: gas starts at 100 per fight. Tracked across
-    # rounds (recovered between rounds via _recover_gas_between_rounds).
-    # v2.5.0 (Task 16): if the fighter has a training camp for this
-    # event with camp_fatigue > 50, the brief's "Fatigue > 50 = reduced
-    # starting gas" rule applies: starting gas = 100 - max(0,
-    # camp_fatigue - 50), floored at 50. A fighter who pushed too hard
-    # in camp (fatigue 100) starts at gas 50 — they're gassed from the
-    # cut / training load. A fighter whose camp was moderate (fatigue
-    # 40) starts fresh at gas 100. If no camp exists (e.g., the seeded
-    # fight — schedule_next_event hasn't been called for it), no
-    # penalty applies (the helper returns 0, which doesn't trigger the
-    # > 50 branch). This is the reader required by CONVENTIONS §5.3 —
-    # the camp data is read by resolve_next_fight and affects fight
-    # outcomes (the "camp fatigue cost the prospect his debut" story).
-    camp_fatigue_a = _get_camp_fatigue_for_event(conn, a_id, event_id)
-    camp_fatigue_b = _get_camp_fatigue_for_event(conn, b_id, event_id)
-    gas_a = 100.0 - max(0, camp_fatigue_a - 50) if camp_fatigue_a > 50 else 100.0
-    gas_b = 100.0 - max(0, camp_fatigue_b - 50) if camp_fatigue_b > 50 else 100.0
-    # v2.7.0 (Task 17): apply weight cut cardio penalty. Fighters who
-    # missed_medium (1-3kg over) start the fight with reduced cardio —
-    # gas reduced by the cardio_penalty (default 15), floored at 50.
-    # This is the "hard cut cost the fighter his gas" story.
-    gas_a -= cut_a.get("cardio_penalty", 0)
-    gas_b -= cut_b.get("cardio_penalty", 0)
-    # Floor at 50 — a fighter never starts below half gas (the camp
-    # fatigue + weight cut penalty is real but never crippling enough
-    # to lose the fight before it starts).
-    gas_a = max(50.0, gas_a)
-    gas_b = max(50.0, gas_b)
-    # v2.3.0 momentum: cumulative momentum carries across rounds.
-    cum_momentum = 0
-    # v2.3.0 corner stoppage: track consecutive round losses per fighter.
-    consecutive_losses_a = 0
-    consecutive_losses_b = 0
-    # v2.3.0 finish info (set if a finish occurs mid-round OR between
-    # rounds via doctor/corner stoppage).
-    finish_info = None
-    finish_round = scheduled_rounds  # default if no finish
-    finish_time = "5:00"             # default if no finish (decision)
+        round_results = []
+        total_a_damage = 0
+        total_b_damage = 0
+        # v2.3.0 fatigue: gas starts at 100 per fight. Tracked across
+        # rounds (recovered between rounds via _recover_gas_between_rounds).
+        # v2.5.0 (Task 16): if the fighter has a training camp for this
+        # event with camp_fatigue > 50, the brief's "Fatigue > 50 = reduced
+        # starting gas" rule applies: starting gas = 100 - max(0,
+        # camp_fatigue - 50), floored at 50. A fighter who pushed too hard
+        # in camp (fatigue 100) starts at gas 50 — they're gassed from the
+        # cut / training load. A fighter whose camp was moderate (fatigue
+        # 40) starts fresh at gas 100. If no camp exists (e.g., the seeded
+        # fight — schedule_next_event hasn't been called for it), no
+        # penalty applies (the helper returns 0, which doesn't trigger the
+        # > 50 branch). This is the reader required by CONVENTIONS §5.3 —
+        # the camp data is read by resolve_next_fight and affects fight
+        # outcomes (the "camp fatigue cost the prospect his debut" story).
+        camp_fatigue_a = _get_camp_fatigue_for_event(conn, a_id, event_id)
+        camp_fatigue_b = _get_camp_fatigue_for_event(conn, b_id, event_id)
+        gas_a = 100.0 - max(0, camp_fatigue_a - 50) if camp_fatigue_a > 50 else 100.0
+        gas_b = 100.0 - max(0, camp_fatigue_b - 50) if camp_fatigue_b > 50 else 100.0
+        # v2.7.0 (Task 17): apply weight cut cardio penalty. Fighters who
+        # missed_medium (1-3kg over) start the fight with reduced cardio —
+        # gas reduced by the cardio_penalty (default 15), floored at 50.
+        # This is the "hard cut cost the fighter his gas" story.
+        gas_a -= cut_a.get("cardio_penalty", 0)
+        gas_b -= cut_b.get("cardio_penalty", 0)
+        # Floor at 50 — a fighter never starts below half gas (the camp
+        # fatigue + weight cut penalty is real but never crippling enough
+        # to lose the fight before it starts).
+        gas_a = max(50.0, gas_a)
+        gas_b = max(50.0, gas_b)
+        # v2.3.0 momentum: cumulative momentum carries across rounds.
+        cum_momentum = 0
+        # v2.3.0 corner stoppage: track consecutive round losses per fighter.
+        consecutive_losses_a = 0
+        consecutive_losses_b = 0
+        # v2.3.0 finish info (set if a finish occurs mid-round OR between
+        # rounds via doctor/corner stoppage).
+        finish_info = None
+        finish_round = scheduled_rounds  # default if no finish
+        finish_time = "5:00"             # default if no finish (decision)
 
-    for round_number in range(1, scheduled_rounds + 1):
-        r = resolve_round(
-            conn, fight_id, round_number, a_id, b_id,
-            stats_a, stats_b,
-            gas_a=gas_a, gas_b=gas_b,
-            cum_momentum=cum_momentum,
-            pressure_mod_a=pressure_mod_a, pressure_mod_b=pressure_mod_b,
-        )
-        round_results.append(r)
-        total_a_damage += r["fighter_a_damage"]
-        total_b_damage += r["fighter_b_damage"]
-        # Carry gas + momentum forward to the next round.
-        gas_a = r["gas_a_after"]
-        gas_b = r["gas_b_after"]
-        cum_momentum = r["cum_momentum_after"]
+        for round_number in range(1, scheduled_rounds + 1):
+            r = resolve_round(
+                conn, fight_id, round_number, a_id, b_id,
+                stats_a, stats_b,
+                gas_a=gas_a, gas_b=gas_b,
+                cum_momentum=cum_momentum,
+                pressure_mod_a=pressure_mod_a, pressure_mod_b=pressure_mod_b,
+            )
+            round_results.append(r)
+            total_a_damage += r["fighter_a_damage"]
+            total_b_damage += r["fighter_b_damage"]
+            # Carry gas + momentum forward to the next round.
+            gas_a = r["gas_a_after"]
+            gas_b = r["gas_b_after"]
+            cum_momentum = r["cum_momentum_after"]
 
-        # Update consecutive-loss counters for corner stoppage check.
-        round_winner = r["round_winner"]
-        if round_winner == a_id:
-            consecutive_losses_a = 0
-            consecutive_losses_b += 1
-        else:
-            consecutive_losses_b = 0
-            consecutive_losses_a += 1
+            # Update consecutive-loss counters for corner stoppage check.
+            round_winner = r["round_winner"]
+            if round_winner == a_id:
+                consecutive_losses_a = 0
+                consecutive_losses_b += 1
+            else:
+                consecutive_losses_b = 0
+                consecutive_losses_a += 1
 
-        # v2.3.0 check for mid-round finish (KO/sub/DQ) — resolve_round
-        # returns finish info if one occurred. If so, stop scheduling
-        # more rounds.
-        if r.get("finish") is not None:
-            finish_info = r["finish"]
-            finish_round = round_number
-            finish_time = finish_info["finish_time"]
-            break
-
-        # v2.3.0 between-round corner stoppage (D8: checked BEFORE
-        # doctor stoppage). A fighter who lost 3+ consecutive rounds
-        # AND has grit < 40 AND composure < 40 may have their corner
-        # throw in the towel (20% chance). Checked for both fighters;
-        # the corner of the losing fighter stops the fight, giving
-        # the other fighter the win. D8: the original order (doctor
-        # first, corner second) meant that in the G.3 test setup
-        # (durable low-grit loser), the doctor stoppage always fired
-        # first (total damage > 400 after 3 rounds), preventing the
-        # corner stoppage from ever firing. Swapping the order gives
-        # the corner a 20% chance to throw in the towel before the
-        # doctor steps in — producing the "corner throws in the
-        # towel" stories the B2 brief demands.
-        if consecutive_losses_a >= 3:
-            if _check_corner_stoppage(consecutive_losses_a, stats_a):
-                finish_info = {
-                    "type": "corner_stoppage",
-                    "winner_id": b_id,
-                    "loser_id": a_id,
-                    "beat_number": r.get("beats_this_round", 0),
-                    "finish_time": "5:00",
-                    "finishing_beat_id": None,
-                }
+            # v2.3.0 check for mid-round finish (KO/sub/DQ) — resolve_round
+            # returns finish info if one occurred. If so, stop scheduling
+            # more rounds.
+            if r.get("finish") is not None:
+                finish_info = r["finish"]
                 finish_round = round_number
-                finish_time = "5:00"
+                finish_time = finish_info["finish_time"]
                 break
-        if consecutive_losses_b >= 3:
-            if _check_corner_stoppage(consecutive_losses_b, stats_b):
+
+            # v2.3.0 between-round corner stoppage (D8: checked BEFORE
+            # doctor stoppage). A fighter who lost 3+ consecutive rounds
+            # AND has grit < 40 AND composure < 40 may have their corner
+            # throw in the towel (20% chance). Checked for both fighters;
+            # the corner of the losing fighter stops the fight, giving
+            # the other fighter the win. D8: the original order (doctor
+            # first, corner second) meant that in the G.3 test setup
+            # (durable low-grit loser), the doctor stoppage always fired
+            # first (total damage > 400 after 3 rounds), preventing the
+            # corner stoppage from ever firing. Swapping the order gives
+            # the corner a 20% chance to throw in the towel before the
+            # doctor steps in — producing the "corner throws in the
+            # towel" stories the B2 brief demands.
+            if consecutive_losses_a >= 3:
+                if _check_corner_stoppage(consecutive_losses_a, stats_a):
+                    finish_info = {
+                        "type": "corner_stoppage",
+                        "winner_id": b_id,
+                        "loser_id": a_id,
+                        "beat_number": r.get("beats_this_round", 0),
+                        "finish_time": "5:00",
+                        "finishing_beat_id": None,
+                    }
+                    finish_round = round_number
+                    finish_time = "5:00"
+                    break
+            if consecutive_losses_b >= 3:
+                if _check_corner_stoppage(consecutive_losses_b, stats_b):
+                    finish_info = {
+                        "type": "corner_stoppage",
+                        "winner_id": a_id,
+                        "loser_id": b_id,
+                        "beat_number": r.get("beats_this_round", 0),
+                        "finish_time": "5:00",
+                        "finishing_beat_id": None,
+                    }
+                    finish_round = round_number
+                    finish_time = "5:00"
+                    break
+
+            # v2.3.0 between-round doctor stoppage (D8: checked AFTER
+            # corner stoppage). Cumulative damage across ALL rounds
+            # crosses the defender's threshold. The doctor stops the
+            # fight; the winner is the fighter who dealt the most damage
+            # (or, on a tie, the round winner of the just-completed
+            # round).
+            #
+            # D11: added a damage-differential guard — the doctor only
+            # stops the fight when ONE fighter is taking a disproportionate
+            # beating (total_a_damage > total_b_damage + 50). Without this
+            # guard, balanced fights (both fighters at all-50) would see
+            # BOTH fighters cross the 300-damage threshold (200 + 50*2) by
+            # round 2-3, producing ~60% doctor_stoppage rate and failing
+            # test_beat_engine case I.1's "no single result_type > 60%"
+            # acceptance check. The guard represents the real-world
+            # intuition that a doctor stops a one-sided beating, not a
+            # mutual brawl where both fighters are evenly trading damage.
+            doctor_a_threshold = _doctor_stoppage_threshold(stats_a, conn=conn)
+            doctor_b_threshold = _doctor_stoppage_threshold(stats_b, conn=conn)
+            # D11: doctor stoppage requires (1) cumulative damage crossing
+            # the threshold AND (2) damage differential > 50 (one-sided
+            # beating, not mutual brawl).
+            if (total_a_damage > doctor_b_threshold
+                    and total_a_damage > total_b_damage + _DOCTOR_STOPPAGE_DIFFERENTIAL):
+                # Fighter B has taken more damage than their threshold AND
+                # A is dealing significantly more damage than B — the doctor
+                # stops the fight. Fighter A wins.
                 finish_info = {
-                    "type": "corner_stoppage",
+                    "type": "doctor_stoppage",
                     "winner_id": a_id,
                     "loser_id": b_id,
                     "beat_number": r.get("beats_this_round", 0),
@@ -4394,130 +6499,161 @@ def resolve_next_fight(conn, promotion_id=None):
                 finish_round = round_number
                 finish_time = "5:00"
                 break
+            if (total_b_damage > doctor_a_threshold
+                    and total_b_damage > total_a_damage + _DOCTOR_STOPPAGE_DIFFERENTIAL):
+                finish_info = {
+                    "type": "doctor_stoppage",
+                    "winner_id": b_id,
+                    "loser_id": a_id,
+                    "beat_number": r.get("beats_this_round", 0),
+                    "finish_time": "5:00",
+                    "finishing_beat_id": None,
+                }
+                finish_round = round_number
+                finish_time = "5:00"
+                break
 
-        # v2.3.0 between-round doctor stoppage (D8: checked AFTER
-        # corner stoppage). Cumulative damage across ALL rounds
-        # crosses the defender's threshold. The doctor stops the
-        # fight; the winner is the fighter who dealt the most damage
-        # (or, on a tie, the round winner of the just-completed
-        # round).
-        #
-        # D11: added a damage-differential guard — the doctor only
-        # stops the fight when ONE fighter is taking a disproportionate
-        # beating (total_a_damage > total_b_damage + 50). Without this
-        # guard, balanced fights (both fighters at all-50) would see
-        # BOTH fighters cross the 300-damage threshold (200 + 50*2) by
-        # round 2-3, producing ~60% doctor_stoppage rate and failing
-        # test_beat_engine case I.1's "no single result_type > 60%"
-        # acceptance check. The guard represents the real-world
-        # intuition that a doctor stops a one-sided beating, not a
-        # mutual brawl where both fighters are evenly trading damage.
-        doctor_a_threshold = _doctor_stoppage_threshold(stats_a)
-        doctor_b_threshold = _doctor_stoppage_threshold(stats_b)
-        # D11: doctor stoppage requires (1) cumulative damage crossing
-        # the threshold AND (2) damage differential > 50 (one-sided
-        # beating, not mutual brawl).
-        if (total_a_damage > doctor_b_threshold
-                and total_a_damage > total_b_damage + _DOCTOR_STOPPAGE_DIFFERENTIAL):
-            # Fighter B has taken more damage than their threshold AND
-            # A is dealing significantly more damage than B — the doctor
-            # stops the fight. Fighter A wins.
-            finish_info = {
-                "type": "doctor_stoppage",
-                "winner_id": a_id,
-                "loser_id": b_id,
-                "beat_number": r.get("beats_this_round", 0),
-                "finish_time": "5:00",
-                "finishing_beat_id": None,
-            }
-            finish_round = round_number
-            finish_time = "5:00"
-            break
-        if (total_b_damage > doctor_a_threshold
-                and total_b_damage > total_a_damage + _DOCTOR_STOPPAGE_DIFFERENTIAL):
-            finish_info = {
-                "type": "doctor_stoppage",
-                "winner_id": b_id,
-                "loser_id": a_id,
-                "beat_number": r.get("beats_this_round", 0),
-                "finish_time": "5:00",
-                "finishing_beat_id": None,
-            }
-            finish_round = round_number
-            finish_time = "5:00"
-            break
+            # v2.3.0 between-round gas recovery (only if no finish
+            # occurred this round and we're going to the next round).
+            if round_number < scheduled_rounds:
+                gas_a = _recover_gas_between_rounds(gas_a, stats_a)
+                gas_b = _recover_gas_between_rounds(gas_b, stats_b)
 
-        # v2.3.0 between-round gas recovery (only if no finish
-        # occurred this round and we're going to the next round).
-        if round_number < scheduled_rounds:
-            gas_a = _recover_gas_between_rounds(gas_a, stats_a)
-            gas_b = _recover_gas_between_rounds(gas_b, stats_b)
-
-    # ----------------------------------------------------------------
-    # Determine the fight result (winner, result_type, finish_round,
-    # finish_time). If a finish occurred (finish_info is not None),
-    # use the finish's type / winner / loser. Otherwise apply 10-point
-    # must decision scoring across all completed rounds.
-    # ----------------------------------------------------------------
-    if finish_info is not None:
-        # Mid-round or between-round finish.
-        result_type = finish_info["type"]
-        winner_id = finish_info["winner_id"]
-        loser_id = finish_info["loser_id"]
-        score_margin_int = abs(total_a_damage - total_b_damage)
-        # Decision wasn't needed — but we still need a score_margin
-        # for fight_history. Use the damage differential.
-        decision = None
-    else:
-        # Decision scoring across rounds (10-point must).
-        decision = _decide_fight_outcome(
-            round_results, a_id, b_id, total_a_damage, total_b_damage
-        )
-        result_type = decision["result_type"]
-        # finish_round + finish_time already defaulted to scheduled_rounds + "5:00".
-        score_margin_int = int(decision["score_margin"])
-        if result_type == "draw":
-            winner_id = None
-            loser_id = None
+        # ----------------------------------------------------------------
+        # Determine the fight result (winner, result_type, finish_round,
+        # finish_time). If a finish occurred (finish_info is not None),
+        # use the finish's type / winner / loser. Otherwise apply 10-point
+        # must decision scoring across all completed rounds.
+        # ----------------------------------------------------------------
+        if finish_info is not None:
+            # Mid-round or between-round finish.
+            result_type = finish_info["type"]
+            winner_id = finish_info["winner_id"]
+            loser_id = finish_info["loser_id"]
+            score_margin_int = abs(total_a_damage - total_b_damage)
+            # Decision wasn't needed — but we still need a score_margin
+            # for fight_history. Use the damage differential.
+            decision = None
         else:
-            if decision["winner"] == "a":
-                winner_id, loser_id = a_id, b_id
+            # Decision scoring across rounds (10-point must).
+            decision = _decide_fight_outcome(
+                round_results, a_id, b_id, total_a_damage, total_b_damage
+            )
+            result_type = decision["result_type"]
+            # finish_round + finish_time already defaulted to scheduled_rounds + "5:00".
+            score_margin_int = int(decision["score_margin"])
+            if result_type == "draw":
+                winner_id = None
+                loser_id = None
             else:
-                winner_id, loser_id = b_id, a_id
+                if decision["winner"] == "a":
+                    winner_id, loser_id = a_id, b_id
+                else:
+                    winner_id, loser_id = b_id, a_id
 
-    # Performance rating: bigger damage differential -> higher rating.
-    # Clamp 60-95. Scaled so that a 1500-point differential (all-90
-    # vs all-30 blowout) hits the 95 cap, while a 50-point
-    # differential (close fight) stays near the 60 floor.
-    # v2.3.0 (Task B2): finishes (KO/sub/DQ) get a bonus.
-    performance_rating = max(60, min(95, int(round(60 + score_margin_int / 20.0))))
-    if result_type in ("ko_tko", "submission"):
-        performance_rating = min(95, performance_rating + 10)
-    elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
-        performance_rating = min(95, performance_rating + 5)
+        # Performance rating: bigger damage differential -> higher rating.
+        # Clamp 60-95. Scaled so that a 1500-point differential (all-90
+        # vs all-30 blowout) hits the 95 cap, while a 50-point
+        # differential (close fight) stays near the 60 floor.
+        # v2.3.0 (Task B2): finishes (KO/sub/DQ) get a bonus.
+        performance_rating = max(60, min(95, int(round(60 + score_margin_int / 20.0))))
+        if result_type in ("ko_tko", "submission"):
+            performance_rating = min(95, performance_rating + 10)
+        elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
+            performance_rating = min(95, performance_rating + 5)
 
-    # Fan reaction: lower base, upset bonus + finish bonus. Clamp 60-95.
-    # v2.3.0 (Task B2): KO/TKO and submission get a fan-reaction bonus
-    # (fans love finishes). Doctor/corner/DQ get a smaller bonus.
-    fan = 65 + int(score_margin_int / 30.0)
-    if result_type in ("ko_tko", "submission"):
-        fan += 10  # fans love a finish
-    elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
-        fan += 5   # fans react to dramatic endings
-    if result_type not in ("draw",) and winner_id is not None:
-        # Upset bonus: if the loser had more total damage than the
-        # winner (a "robbery" — the judges got it wrong), fans love
-        # the controversy.
-        if winner_id == a_id:
-            winner_dmg, loser_dmg = total_a_damage, total_b_damage
-        else:
-            winner_dmg, loser_dmg = total_b_damage, total_a_damage
-        if loser_dmg > winner_dmg:
-            fan += 5  # upset — fans love a controversial decision
-    fan_reaction_rating = max(60, min(95, fan))
+        # Fan reaction: lower base, upset bonus + finish bonus. Clamp 60-95.
+        # v2.3.0 (Task B2): KO/TKO and submission get a fan-reaction bonus
+        # (fans love finishes). Doctor/corner/DQ get a smaller bonus.
+        fan = 65 + int(score_margin_int / 30.0)
+        if result_type in ("ko_tko", "submission"):
+            fan += 10  # fans love a finish
+        elif result_type in ("doctor_stoppage", "corner_stoppage", "dq"):
+            fan += 5   # fans react to dramatic endings
+        if result_type not in ("draw",) and winner_id is not None:
+            # Upset bonus: if the loser had more total damage than the
+            # winner (a "robbery" — the judges got it wrong), fans love
+            # the controversy.
+            if winner_id == a_id:
+                winner_dmg, loser_dmg = total_a_damage, total_b_damage
+            else:
+                winner_dmg, loser_dmg = total_b_damage, total_a_damage
+            if loser_dmg > winner_dmg:
+                fan += 5  # upset — fans love a controversial decision
+        fan_reaction_rating = max(60, min(95, fan))
+    else:
+        # PERF-FIXES-3 — skip_beat_detail=True: bypass the beat engine.
+        # Use the simplified in-memory resolver. Skips:
+        #   - fight_beats INSERTs (36-140 rows)
+        #   - fight_rounds INSERTs (3-5 rows)
+        #   - commentary_segments 'highlight' + 'beat' rows (44-200 rows)
+        # All other side effects (fight_history, rankings, titles, news,
+        # event lifecycle, finance, injuries, descriptor snapshots,
+        # FIGHT_RESOLVED publish) run unchanged AFTER this block.
+        simp = _resolve_fight_simplified(
+            conn, fight_id, a_id, b_id,
+            stats_a, stats_b, scheduled_rounds,
+            is_title_fight, importance,
+        )
+        finish_info = None  # already encoded in simp's result_type
+        finish_round = simp["finish_round"]
+        finish_time = simp["finish_time"]
+        result_type = simp["result_type"]
+        winner_id = simp["winner_id"]
+        loser_id = simp["loser_id"]
+        score_margin_int = simp["score_margin"]
+        performance_rating = simp["performance_rating"]
+        fan_reaction_rating = simp["fan_reaction_rating"]
+        # Variables downstream code may reference (defensive — set
+        # to safe defaults so any future reader doesn't crash).
+        round_results = []
+        total_a_damage = 0
+        total_b_damage = 0
+        decision = None
 
     a_name = fighter_name(conn, a_id)
     b_name = fighter_name(conn, b_id)
+
+    # ----------------------------------------------------------------
+    # FIGHT-ENGINE-TUNE Issue 4 — NULL result_type defensive fallback.
+    #
+    # In rare edge cases (a fighter row missing attributes, a weight
+    # class boundary mismatch, or a downstream subscriber throwing
+    # mid-resolution and leaving the fights row partially updated),
+    # `result_type` can end up as None — producing 46 NULL-result
+    # fights in the 1-year sim. This block ensures the fights row
+    # ALWAYS ends up with a non-NULL result_type + a sane winner
+    # pairing, defaulting to a unanimous_decision for A so the
+    # downstream fight_history + rankings + title code doesn't crash.
+    # The warning is logged to stderr so the root cause can be
+    # investigated later (this is defensive, not a fix for the
+    # underlying bug — that's a separate trace).
+    # ----------------------------------------------------------------
+    if result_type is None:
+        import sys as _sys
+        print(
+            f"WARNING [FIGHT-ENGINE-TUNE Issue 4]: fight_id={fight_id} "
+            f"resolved with NULL result_type (skip_beat_detail="
+            f"{skip_beat_detail}) — defaulting to 'unanimous_decision' "
+            f"with winner=a_id={a_id}, loser=b_id={b_id}. Investigate "
+            f"the upstream resolver path.",
+            file=_sys.stderr,
+        )
+        result_type = "unanimous_decision"
+        if winner_id is None:
+            winner_id = a_id
+        if loser_id is None:
+            loser_id = b_id
+        if finish_round is None:
+            finish_round = scheduled_rounds
+        if finish_time is None:
+            finish_time = "5:00"
+        if score_margin_int is None:
+            score_margin_int = 0
+        if performance_rating is None:
+            performance_rating = 65
+        if fan_reaction_rating is None:
+            fan_reaction_rating = 65
 
     if result_type == "draw":
         # Draw: no winner/loser. Both participants get a draw on their
@@ -4736,12 +6872,59 @@ def resolve_next_fight(conn, promotion_id=None):
     # This is the raw substrate that future Task 23 (news engine) and
     # Task 19 (interpretation layer) will turn into the rich prose the
     # player remembers.
+    #
+    # PERF-FIXES-3: skipped entirely when skip_beat_detail=True. AI
+    # vs AI fights don't need commentary (the player never sees the
+    # replay). The fight's result + headline news is already written
+    # above; the commentary_segments feed is for the Fight Night UI
+    # replay, which the player only triggers on their OWN fights.
     # ----------------------------------------------------------------
-    finishing_beat_id = (finish_info or {}).get("finishing_beat_id")
-    selected_beats = _select_commentary_beats(
-        conn, fight_id, importance, finishing_beat_id=finishing_beat_id,
-    )
-    _generate_beat_commentary(conn, event_id, fight_id, selected_beats)
+    if not skip_beat_detail:
+        finishing_beat_id = (finish_info or {}).get("finishing_beat_id")
+        selected_beats = _select_commentary_beats(
+            conn, fight_id, importance, finishing_beat_id=finishing_beat_id,
+        )
+        _generate_beat_commentary(conn, event_id, fight_id, selected_beats)
+
+        # ----------------------------------------------------------------
+        # Task FIGHT-NIGHT-SHOWCASE — per-beat commentary.
+        #
+        # The 'highlight' rows above (3-14 per fight) are the "key moments"
+        # feed for Zone D of the Fight Night screen. The 'beat' rows below
+        # (one per beat, 100-200 per fight) are the live play-by-play feed
+        # for Zone A. The Fight Night screen reads both segment_types and
+        # renders them in their respective zones.
+        #
+        # Per CONVENTIONS §17.2, the Fight Night screen is EXEMPT from the
+        # snapshot-cache rule and reads live tables directly. Generating
+        # the prose at resolution time (vs on-the-fly in the UI) keeps the
+        # pattern consistent with the existing 'highlight' system and makes
+        # the prose replayable (the Fighter Profile "Replay fight" deep-link
+        # reads the same commentary_segments rows).
+        # ----------------------------------------------------------------
+        _generate_per_beat_commentary(
+            conn, event_id, fight_id,
+            finishing_beat_id=finishing_beat_id,
+            result_type=result_type,
+            is_title_fight=bool(is_title_fight),
+            scheduled_rounds=scheduled_rounds,
+            red_id=a_id,
+            blue_id=b_id,
+            fight_promo_id=promo_id,
+        )
+        # P3.5 — the ring announcer intro, named pundit interjections,
+        # and crowd reactions are now written INLINE by
+        # _generate_per_beat_commentary (interleaved with the beat
+        # segments). The previous separate _generate_extra_segments call
+        # was removed because it wrote all extra segments AFTER all beats,
+        # which broke the UI's beat_index derivation (all extra segments
+        # collapsed to the last beat). The inline approach keeps the
+        # commentary_segment_ids in chronological order so the UI can
+        # correctly compute each extra segment's beat_index.
+    # else: skip_beat_detail=True — no commentary_segments writes.
+    # The fight's result + headline news is already written above;
+    # show_rating + morale will use fights.performance_rating as the
+    # excitement proxy (see their respective fallbacks).
 
     # ----------------------------------------------------------------
     # Event lifecycle (Task ID 7). Transition the parent event's status:

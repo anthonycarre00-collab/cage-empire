@@ -92,9 +92,25 @@ def _resolve_seeded_fight(conn, seed=42):
 
     Resets the bus, registers social subscribers, resolves the fight,
     commits. Returns the fight_id.
+
+    HW8.1: advance the sim clock to the seeded event's date before
+    resolving — the engine now filters by event_date <= sim_date.
     """
     reset_bus()
     social.register_subscribers()
+    # HW8.1 — advance clock to the seeded event's date (2026-08-15).
+    seeded = conn.execute(
+        "SELECT event_date FROM events "
+        "WHERE status='scheduled' "
+        "ORDER BY event_id ASC LIMIT 1"
+    ).fetchone()
+    if seeded and seeded[0]:
+        conn.execute(
+            "UPDATE simulation_clock SET current_date=? "
+            "WHERE clock_id=1",
+            (seeded[0],),
+        )
+        conn.commit()
     random.seed(seed)
     fid = app.resolve_next_fight(conn)
     conn.commit()
@@ -344,6 +360,20 @@ def case_e_tick_advanced_triggers():
     conn.execute("PRAGMA foreign_keys = ON;")
     reset_bus()
     social.register_subscribers()
+
+    # HW5.4 — set the sim_clock to 2026-08-15 BEFORE publishing
+    # TICK_ADVANCED. In real gameplay, run_tick advances the clock
+    # FIRST, then publishes the event — so the event's current_date
+    # always matches the sim_clock. The previous test was publishing
+    # a TICK_ADVANCED with current_date=2026-08-15 while the sim_clock
+    # was still at the seeded 2026-07-20, which violates the HW5.4
+    # "post_date <= sim_date" invariant (the writer would clamp
+    # post_date down to 2026-07-20, breaking the date assertion).
+    conn.execute(
+        "UPDATE simulation_clock SET current_date='2026-08-15' "
+        "WHERE clock_id=1"
+    )
+    conn.commit()
 
     # Publish a TICK_ADVANCED event directly. The seeded DB has 5
     # signed fighters, and _check_social_activity samples up to
@@ -728,6 +758,20 @@ def case_x_title_changed_triggers():
     bus.subscribe(Events.TITLE_CHANGED,
                   lambda c, e: title_events.append(e),
                   name="test_capture")
+    # HW8.1 — advance clock to the seeded event's date so
+    # resolve_next_fight can pick its fights.
+    seeded = conn.execute(
+        "SELECT event_date FROM events "
+        "WHERE status='scheduled' "
+        "ORDER BY event_id ASC LIMIT 1"
+    ).fetchone()
+    if seeded and seeded[0]:
+        conn.execute(
+            "UPDATE simulation_clock SET current_date=? "
+            "WHERE clock_id=1",
+            (seeded[0],),
+        )
+        conn.commit()
     random.seed(42)
     app.resolve_next_fight(conn)
     conn.commit()
@@ -834,6 +878,15 @@ def case_a7_social_cooldown():
 
     # Direct call to generate_post — should NOT be throttled.
     # Post twice on the same day; both should succeed.
+    # HW5.4 — set the sim_clock to 2026-08-15 first so the writer's
+    # post_date <= sim_date clamp doesn't reject the explicit
+    # post_date=2026-08-15 (in real gameplay, run_tick would have
+    # advanced the clock to 2026-08-15 before any post is generated).
+    conn.execute(
+        "UPDATE simulation_clock SET current_date='2026-08-15' "
+        "WHERE clock_id=1"
+    )
+    conn.commit()
     pid1 = social.generate_post(
         conn, 1, "hype", post_date="2026-08-15", rng=random.Random(1),
     )
@@ -849,8 +902,13 @@ def case_a7_social_cooldown():
     # A TICK_ADVANCED on 2026-08-16 (1 day later) should skip fighter 1
     # (within the 7-day cooldown). Force fighter 1 to be the only
     # candidate by deactivating the others.
+    # HW5.4 — advance the sim_clock to 2026-08-16 to match the event.
     conn.execute(
         "UPDATE fighters SET is_active=0 WHERE fighter_id IN (2,3,4,5)"
+    )
+    conn.execute(
+        "UPDATE simulation_clock SET current_date='2026-08-16' "
+        "WHERE clock_id=1"
     )
     conn.commit()
     bus = get_bus()
@@ -870,6 +928,12 @@ def case_a7_social_cooldown():
 
     # A TICK_ADVANCED 8 days later (2026-08-23) should allow fighter 1
     # to post again (cooldown expired).
+    # HW5.4 — advance the sim_clock to 2026-08-23 to match the event.
+    conn.execute(
+        "UPDATE simulation_clock SET current_date='2026-08-23' "
+        "WHERE clock_id=1"
+    )
+    conn.commit()
     bus.publish(conn, {
         "type": Events.TICK_ADVANCED,
         "current_date": "2026-08-23",

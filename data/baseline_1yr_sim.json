@@ -1,0 +1,992 @@
+{
+  "top_fighters": [
+    {
+      "fighter_id": 1356,
+      "name": "Ryosuke Murakami",
+      "elo": 1211.3867131211655,
+      "wins": 47,
+      "losses": 4,
+      "potential": 89
+    },
+    {
+      "fighter_id": 2184,
+      "name": "Albert Campbell",
+      "elo": 1209.2620345639468,
+      "wins": 39,
+      "losses": 2,
+      "potential": 99
+    },
+    {
+      "fighter_id": 2859,
+      "name": "Nathan Nelson",
+      "elo": 1186.55011773828,
+      "wins": 28,
+      "losses": 3,
+      "potential": 90
+    },
+    {
+      "fighter_id": 395,
+      "name": "Jose Xavier",
+      "elo": 1178.9264643849365,
+      "wins": 31,
+      "losses": 3,
+      "potential": 81
+    },
+    {
+      "fighter_id": 3406,
+      "name": "Lea Fournier",
+      "elo": 1174.176534392512,
+      "wins": 27,
+      "losses": 1,
+      "potential": 84
+    },
+    {
+      "fighter_id": 2369,
+      "name": "Tiago Vieira",
+      "elo": 1173.2882394069195,
+      "wins": 46,
+      "losses": 4,
+      "potential": 92
+    },
+    {
+      "fighter_id": 3258,
+      "name": "Hugo Francois",
+      "elo": 1166.9116424705314,
+      "wins": 54,
+      "losses": 6,
+      "potential": 83
+    },
+    {
+      "fighter_id": 1599,
+      "name": "Riku Takahashi",
+      "elo": 1159.9034280090657,
+      "wins": 33,
+      "losses": 2,
+      "potential": 89
+    },
+    {
+      "fighter_id": 3327,
+      "name": "Julie Robert",
+      "elo": 1158.3646485675058,
+      "wins": 38,
+      "losses": 6,
+      "potential": 93
+    },
+    {
+      "fighter_id": 52,
+      "name": "Robert Lewis",
+      "elo": 1154.5209187558098,
+      "wins": 34,
+      "losses": 3,
+      "potential": 99
+    },
+    {
+      "fighter_id": 2520,
+      "name": "Isabel Garrido",
+      "elo": 1151.5289911383074,
+      "wins": 27,
+      "losses": 3,
+      "potential": 81
+    },
+    {
+      "fighter_id": 2373,
+      "name": "Mariana Esteves",
+      "elo": 1147.3833990133128,
+      "wins": 31,
+      "losses": 3,
+      "potential": 85
+    },
+    {
+      "fighter_id": 2351,
+      "name": "Glauber Mendes",
+      "elo": 1141.923539296304,
+      "wins": 24,
+      "losses": 1,
+      "potential": 91
+    },
+    {
+      "fighter_id": 1161,
+      "name": "Christopher Sanders",
+      "elo": 1141.1797484272597,
+      "wins": 28,
+      "losses": 4,
+      "potential": 85
+    },
+    {
+      "fighter_id": 1310,
+      "name": "Jorge Ortega",
+      "elo": 1139.9804857672657,
+      "wins": 38,
+      "losses": 5,
+      "potential": 88
+    },
+    {
+      "fighter_id": 1608,
+      "name": "Victoria Smirnov",
+      "elo": 1132.9419822038383,
+      "wins": 33,
+      "losses": 2,
+      "potential": 97
+    },
+    {
+      "fighter_id": 112,
+      "name": "Ethan Turner",
+      "elo": 1127.8302539490055,
+      "wins": 32,
+      "losses": 3,
+      "potential": 84
+    },
+    {
+      "fighter_id": 1731,
+      "name": "Haruto Kobayashi",
+      "elo": 1127.2921971871547,
+      "wins": 22,
+      "losses": 6,
+      "potential": 89
+    },
+    {
+      "fighter_id": 2061,
+      "name": "Bruce Evans",
+      "elo": 1125.660417788134,
+      "wins": 42,
+      "losses": 11,
+      "potential": 88
+    },
+    {
+      "fighter_id": 1092,
+      "name": "Andreas Nilsson",
+      "elo": 1123.8070768517748,
+      "wins": 31,
+      "losses": 2,
+      "potential": 96
+    }
+  ],
+  "champions": [
+    {
+      "title_id": 1,
+      "promo": "Alpha Combat Federation",
+      "wc": "Welterweight",
+      "champ": "Kene Musa",
+      "since": "2026-05-21"
+    },
+    {
+      "title_id": 2,
+      "promo": "Alpha Combat Federation",
+      "wc": "Lightweight",
+      "champ": "Jose Xavier",
+      "since": "2026-01-20"
+    },
+    {
+      "title_id": 3,
+      "promo": "Alpha Combat Federation",
+      "wc": "Featherweight",
+      "champ": "Natalia Nowicki",
+      "since": "2026-03-06"
+    },
+    {
+      "title_id": 4,
+      "promo": "Alpha Combat Federation",
+      "wc": "Middleweight",
+      "champ": "Ethan Turner",
+      "since": "2026-01-19"
+    },
+    {
+      "title_id": 6,
+      "promo": "Alpha Combat Federation",
+      "wc": "Heavyweight",
+      "champ": "Eric Thomas",
+      "since": "2025-11-23"
+    },
+    {
+      "title_id": 7,
+      "promo": "Alpha Combat Federation",
+      "wc": "Light Heavyweight",
+      "champ": "Tiago Rezende",
+      "since": "2026-02-10"
+    },
+    {
+      "title_id": 8,
+      "promo": "Alpha Combat Federation",
+      "wc": "Bantamweight",
+      "champ": "Katherine Richardson",
+      "since": "2025-11-25"
+    },
+    {
+      "title_id": 9,
+      "promo": "Alpha Combat Federation",
+      "wc": "Strawweight",
+      "champ": "Joan Young",
+      "since": "2026-03-09"
+    },
+    {
+      "title_id": 82,
+      "promo": "Alpha Combat Federation",
+      "wc": "Featherweight",
+      "champ": "Sade Onuoha",
+      "since": "2025-12-15"
+    },
+    {
+      "title_id": 92,
+      "promo": "Alpha Combat Federation",
+      "wc": "Bantamweight",
+      "champ": "Christopher Rodriguez",
+      "since": "2025-08-04"
+    },
+    {
+      "title_id": 102,
+      "promo": "Alpha Combat Federation",
+      "wc": "Flyweight",
+      "champ": "Robert Lewis",
+      "since": "2026-04-10"
+    },
+    {
+      "title_id": 70,
+      "promo": "Australian Outback Fights",
+      "wc": "Middleweight",
+      "champ": "Henry Walker",
+      "since": "2025-12-12"
+    },
+    {
+      "title_id": 71,
+      "promo": "Australian Outback Fights",
+      "wc": "Light Heavyweight",
+      "champ": "Paulo Moraes",
+      "since": "2025-09-25"
+    },
+    {
+      "title_id": 72,
+      "promo": "Australian Outback Fights",
+      "wc": "Lightweight",
+      "champ": "Harold Lewis",
+      "since": "2026-06-05"
+    },
+    {
+      "title_id": 74,
+      "promo": "Australian Outback Fights",
+      "wc": "Welterweight",
+      "champ": "Benjamin Cox",
+      "since": "2025-11-13"
+    },
+    {
+      "title_id": 90,
+      "promo": "Australian Outback Fights",
+      "wc": "Featherweight",
+      "champ": "William Ramos",
+      "since": "2025-12-30"
+    },
+    {
+      "title_id": 100,
+      "promo": "Australian Outback Fights",
+      "wc": "Bantamweight",
+      "champ": "Tadashi Kimura",
+      "since": "2025-12-17"
+    },
+    {
+      "title_id": 117,
+      "promo": "Australian Outback Fights",
+      "wc": "Heavyweight",
+      "champ": "Roger Morales",
+      "since": "2025-11-19"
+    },
+    {
+      "title_id": 119,
+      "promo": "Australian Outback Fights",
+      "wc": "Strawweight",
+      "champ": "Barbara Adamczyk",
+      "since": "2025-12-25"
+    },
+    {
+      "title_id": 61,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Middleweight",
+      "champ": "George Bailey",
+      "since": "2026-04-23"
+    },
+    {
+      "title_id": 62,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Lightweight",
+      "champ": "Alexander Phillips",
+      "since": "2025-10-28"
+    },
+    {
+      "title_id": 64,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Strawweight",
+      "champ": "Debra Turner",
+      "since": "2026-02-04"
+    },
+    {
+      "title_id": 89,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Featherweight",
+      "champ": "Willie Castillo",
+      "since": "2025-08-25"
+    },
+    {
+      "title_id": 99,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Bantamweight",
+      "champ": "Jonathan Morgan",
+      "since": "2025-07-05"
+    },
+    {
+      "title_id": 114,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Heavyweight",
+      "champ": "Albert Thomas",
+      "since": "2025-11-18"
+    },
+    {
+      "title_id": 116,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Flyweight",
+      "champ": "Christine Evans",
+      "since": "2025-09-16"
+    },
+    {
+      "title_id": 118,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Welterweight",
+      "champ": "Walter Miller",
+      "since": "2026-05-31"
+    },
+    {
+      "title_id": 121,
+      "promo": "Eastern Bloc Combat",
+      "wc": "Atomweight",
+      "champ": "Michelle Sanchez",
+      "since": "2026-03-09"
+    },
+    {
+      "title_id": 28,
+      "promo": "European Fight Network",
+      "wc": "Light Heavyweight",
+      "champ": "Roger Hill",
+      "since": "2026-03-12"
+    },
+    {
+      "title_id": 29,
+      "promo": "European Fight Network",
+      "wc": "Lightweight",
+      "champ": "Albert Diaz",
+      "since": "2025-07-04"
+    },
+    {
+      "title_id": 30,
+      "promo": "European Fight Network",
+      "wc": "Bantamweight",
+      "champ": "Amy Hughes",
+      "since": "2026-04-24"
+    },
+    {
+      "title_id": 31,
+      "promo": "European Fight Network",
+      "wc": "Middleweight",
+      "champ": "Igor Mikhailov",
+      "since": "2025-09-08"
+    },
+    {
+      "title_id": 33,
+      "promo": "European Fight Network",
+      "wc": "Flyweight",
+      "champ": "Ruth Reed",
+      "since": "2025-08-27"
+    },
+    {
+      "title_id": 34,
+      "promo": "European Fight Network",
+      "wc": "Welterweight",
+      "champ": "Matthew Watson",
+      "since": "2025-06-29"
+    },
+    {
+      "title_id": 35,
+      "promo": "European Fight Network",
+      "wc": "Heavyweight",
+      "champ": "Jonathan Cardoso",
+      "since": "2025-07-31"
+    },
+    {
+      "title_id": 36,
+      "promo": "European Fight Network",
+      "wc": "Strawweight",
+      "champ": "Kathleen Allen",
+      "since": "2025-11-14"
+    },
+    {
+      "title_id": 85,
+      "promo": "European Fight Network",
+      "wc": "Featherweight",
+      "champ": "Jeffrey Patel",
+      "since": "2026-06-14"
+    },
+    {
+      "title_id": 95,
+      "promo": "European Fight Network",
+      "wc": "Bantamweight",
+      "champ": "John Rogers",
+      "since": "2026-01-23"
+    },
+    {
+      "title_id": 105,
+      "promo": "European Fight Network",
+      "wc": "Flyweight",
+      "champ": "Robert Anderson",
+      "since": "2025-08-24"
+    },
+    {
+      "title_id": 46,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Middleweight",
+      "champ": "Semyon Vasiliev",
+      "since": "2025-08-04"
+    },
+    {
+      "title_id": 49,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Welterweight",
+      "champ": "Jacob Nguyen",
+      "since": "2025-08-24"
+    },
+    {
+      "title_id": 50,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Flyweight",
+      "champ": "Sandra Jimenez",
+      "since": "2025-09-14"
+    },
+    {
+      "title_id": 52,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Lightweight",
+      "champ": "Gerald King",
+      "since": "2026-02-01"
+    },
+    {
+      "title_id": 87,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Featherweight",
+      "champ": "Sean White",
+      "since": "2026-05-13"
+    },
+    {
+      "title_id": 97,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Bantamweight",
+      "champ": "John Foster",
+      "since": "2025-11-11"
+    },
+    {
+      "title_id": 107,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Flyweight",
+      "champ": "Gerald Ortiz",
+      "since": "2025-09-02"
+    },
+    {
+      "title_id": 113,
+      "promo": "Mexican Boxing & Brawl",
+      "wc": "Light Heavyweight",
+      "champ": "Ronald Bennett",
+      "since": "2026-01-03"
+    },
+    {
+      "title_id": 54,
+      "promo": "Nordic Fight Nights",
+      "wc": "Middleweight",
+      "champ": "Jose Zanetti",
+      "since": "2025-07-09"
+    },
+    {
+      "title_id": 59,
+      "promo": "Nordic Fight Nights",
+      "wc": "Lightweight",
+      "champ": "Charles Turner",
+      "since": "2025-11-01"
+    },
+    {
+      "title_id": 88,
+      "promo": "Nordic Fight Nights",
+      "wc": "Featherweight",
+      "champ": "Eric Ruiz",
+      "since": "2025-10-02"
+    },
+    {
+      "title_id": 98,
+      "promo": "Nordic Fight Nights",
+      "wc": "Bantamweight",
+      "champ": "Leandro Serra",
+      "since": "2026-01-20"
+    },
+    {
+      "title_id": 108,
+      "promo": "Nordic Fight Nights",
+      "wc": "Flyweight",
+      "champ": "Dylan Morgan",
+      "since": "2025-09-16"
+    },
+    {
+      "title_id": 112,
+      "promo": "Nordic Fight Nights",
+      "wc": "Welterweight",
+      "champ": "Brandon Ward",
+      "since": "2026-06-07"
+    },
+    {
+      "title_id": 115,
+      "promo": "Nordic Fight Nights",
+      "wc": "Heavyweight",
+      "champ": "Kyle Robinson",
+      "since": "2026-03-26"
+    },
+    {
+      "title_id": 19,
+      "promo": "Pacific Rim Championship",
+      "wc": "Middleweight",
+      "champ": "Gilberto Figueiredo",
+      "since": "2026-04-24"
+    },
+    {
+      "title_id": 20,
+      "promo": "Pacific Rim Championship",
+      "wc": "Heavyweight",
+      "champ": "Willie Ruiz",
+      "since": "2025-11-20"
+    },
+    {
+      "title_id": 21,
+      "promo": "Pacific Rim Championship",
+      "wc": "Lightweight",
+      "champ": "Benjamin Ramos",
+      "since": "2026-05-04"
+    },
+    {
+      "title_id": 23,
+      "promo": "Pacific Rim Championship",
+      "wc": "Flyweight",
+      "champ": "Cynthia Garcia",
+      "since": "2026-04-05"
+    },
+    {
+      "title_id": 24,
+      "promo": "Pacific Rim Championship",
+      "wc": "Welterweight",
+      "champ": "Kirill Tarasov",
+      "since": "2025-12-13"
+    },
+    {
+      "title_id": 25,
+      "promo": "Pacific Rim Championship",
+      "wc": "Light Heavyweight",
+      "champ": "Gary Ramirez",
+      "since": "2026-05-27"
+    },
+    {
+      "title_id": 26,
+      "promo": "Pacific Rim Championship",
+      "wc": "Bantamweight",
+      "champ": "Christine Anderson",
+      "since": "2026-03-19"
+    },
+    {
+      "title_id": 27,
+      "promo": "Pacific Rim Championship",
+      "wc": "Strawweight",
+      "champ": "Carolyn Jimenez",
+      "since": "2026-01-16"
+    },
+    {
+      "title_id": 84,
+      "promo": "Pacific Rim Championship",
+      "wc": "Featherweight",
+      "champ": "Patrick Gutierrez",
+      "since": "2026-05-23"
+    },
+    {
+      "title_id": 94,
+      "promo": "Pacific Rim Championship",
+      "wc": "Bantamweight",
+      "champ": "Nathan Patel",
+      "since": "2026-01-12"
+    },
+    {
+      "title_id": 104,
+      "promo": "Pacific Rim Championship",
+      "wc": "Flyweight",
+      "champ": "Donald Ross",
+      "since": "2026-05-27"
+    },
+    {
+      "title_id": 10,
+      "promo": "Rival Fight League",
+      "wc": "Lightweight",
+      "champ": "Benjamin Edwards",
+      "since": "2026-01-31"
+    },
+    {
+      "title_id": 11,
+      "promo": "Rival Fight League",
+      "wc": "Middleweight",
+      "champ": "Jacob Gonzalez",
+      "since": "2025-12-22"
+    },
+    {
+      "title_id": 12,
+      "promo": "Rival Fight League",
+      "wc": "Heavyweight",
+      "champ": "Ronald Bailey",
+      "since": "2026-01-13"
+    },
+    {
+      "title_id": 14,
+      "promo": "Rival Fight League",
+      "wc": "Welterweight",
+      "champ": "Timothy Cruz",
+      "since": "2026-04-24"
+    },
+    {
+      "title_id": 83,
+      "promo": "Rival Fight League",
+      "wc": "Featherweight",
+      "champ": "Jonathan Martin",
+      "since": "2025-12-13"
+    },
+    {
+      "title_id": 93,
+      "promo": "Rival Fight League",
+      "wc": "Bantamweight",
+      "champ": "Alejandro Gil",
+      "since": "2026-02-17"
+    },
+    {
+      "title_id": 103,
+      "promo": "Rival Fight League",
+      "wc": "Flyweight",
+      "champ": "Timothy Perez",
+      "since": "2025-09-22"
+    },
+    {
+      "title_id": 120,
+      "promo": "Rival Fight League",
+      "wc": "Light Heavyweight",
+      "champ": "Jin-soo Roh",
+      "since": "2026-04-09"
+    },
+    {
+      "title_id": 38,
+      "promo": "South American Warriors",
+      "wc": "Middleweight",
+      "champ": "Dmitry Kuznetsov",
+      "since": "2025-11-10"
+    },
+    {
+      "title_id": 40,
+      "promo": "South American Warriors",
+      "wc": "Welterweight",
+      "champ": "Lukasz Grabowski",
+      "since": "2025-08-12"
+    },
+    {
+      "title_id": 43,
+      "promo": "South American Warriors",
+      "wc": "Lightweight",
+      "champ": "Goro Ito",
+      "since": "2025-10-09"
+    },
+    {
+      "title_id": 86,
+      "promo": "South American Warriors",
+      "wc": "Featherweight",
+      "champ": "Willie Baker",
+      "since": "2026-03-10"
+    },
+    {
+      "title_id": 96,
+      "promo": "South American Warriors",
+      "wc": "Bantamweight",
+      "champ": "Douglas Evans",
+      "since": "2025-10-11"
+    }
+  ],
+  "promotions": [
+    {
+      "pid": 1,
+      "name": "Alpha Combat Federation",
+      "tier": "major",
+      "cash": 1968269335.0,
+      "state": "HEALTHY",
+      "roster": 70
+    },
+    {
+      "pid": 2,
+      "name": "Rival Fight League",
+      "tier": "mid",
+      "cash": 164096398.0,
+      "state": "HEALTHY",
+      "roster": 50
+    },
+    {
+      "pid": 3,
+      "name": "Pacific Rim Championship",
+      "tier": "mid",
+      "cash": 199835051.0,
+      "state": "HEALTHY",
+      "roster": 50
+    },
+    {
+      "pid": 4,
+      "name": "European Fight Network",
+      "tier": "mid",
+      "cash": 114815531.0,
+      "state": "HEALTHY",
+      "roster": 53
+    },
+    {
+      "pid": 5,
+      "name": "South American Warriors",
+      "tier": "small",
+      "cash": 16416206.0,
+      "state": "HEALTHY",
+      "roster": 31
+    },
+    {
+      "pid": 6,
+      "name": "Mexican Boxing & Brawl",
+      "tier": "small",
+      "cash": 68277762.0,
+      "state": "HEALTHY",
+      "roster": 30
+    },
+    {
+      "pid": 7,
+      "name": "Nordic Fight Nights",
+      "tier": "small",
+      "cash": 7060210.0,
+      "state": "HEALTHY",
+      "roster": 31
+    },
+    {
+      "pid": 8,
+      "name": "Eastern Bloc Combat",
+      "tier": "small",
+      "cash": 82518599.0,
+      "state": "HEALTHY",
+      "roster": 30
+    },
+    {
+      "pid": 9,
+      "name": "Australian Outback Fights",
+      "tier": "small",
+      "cash": 58100637.0,
+      "state": "HEALTHY",
+      "roster": 30
+    },
+    {
+      "pid": 10,
+      "name": "French Savate Championship",
+      "tier": "small",
+      "cash": 26686188.0,
+      "state": "HEALTHY",
+      "roster": 0
+    }
+  ],
+  "counts": {
+    "fighters": 6450,
+    "active": 4450,
+    "retired": 2000,
+    "events": 1884,
+    "fights": 1799,
+    "titles": 121,
+    "champions": 78,
+    "rivalries": 343,
+    "news": 1884,
+    "staff": 405,
+    "finance_txns": 19440,
+    "free_agents": 4075,
+    "fight_history": 79823,
+    "rankings": 4000,
+    "memory_links": 0,
+    "regen_lineage": 0,
+    "injuries": 390
+  },
+  "sim_date": "2026-07-20",
+  "tick_counter": 0,
+  "rivalries": [
+    {
+      "rid": 94,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Nicholas Reed",
+      "b": "Kenneth Reed"
+    },
+    {
+      "rid": 95,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Nicholas Reed",
+      "b": "Carl Brown"
+    },
+    {
+      "rid": 96,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Nicholas Reed",
+      "b": "David Brown"
+    },
+    {
+      "rid": 97,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Bryan Nguyen",
+      "b": "Pierre Blanc"
+    },
+    {
+      "rid": 98,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Joe Lee",
+      "b": "Walter Mitchell"
+    },
+    {
+      "rid": 99,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Adam Morris",
+      "b": "Scott Green"
+    },
+    {
+      "rid": 100,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Bogdan Smirnov",
+      "b": "Lawrence Young"
+    },
+    {
+      "rid": 101,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Billy Stewart",
+      "b": "Edward Garcia"
+    },
+    {
+      "rid": 102,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Daiki Ito",
+      "b": "Wagner Martins"
+    },
+    {
+      "rid": 103,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Harold Lewis",
+      "b": "Gregory Collins"
+    },
+    {
+      "rid": 104,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Stephen Lopez",
+      "b": "Fernando Aguilar"
+    },
+    {
+      "rid": 105,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "James Stewart",
+      "b": "Koki Nakajima"
+    },
+    {
+      "rid": 106,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Veerle Janssen",
+      "b": "Martha Taylor"
+    },
+    {
+      "rid": 107,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Albert Bennett",
+      "b": "Peter Cooper"
+    },
+    {
+      "rid": 108,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Jonathan Cardoso",
+      "b": "Henry Jimenez"
+    },
+    {
+      "rid": 109,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Jonas Kr\u00fcger",
+      "b": "Donald Hall"
+    },
+    {
+      "rid": 110,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Sven Peters",
+      "b": "Erick Esteves"
+    },
+    {
+      "rid": 111,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Jonathan Bennett",
+      "b": "Akio Aoki"
+    },
+    {
+      "rid": 112,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "George Young",
+      "b": "Hiroto Ito"
+    },
+    {
+      "rid": 113,
+      "type": "bad_blood",
+      "heat": 70,
+      "active": 1,
+      "a": "Gerald Brown",
+      "b": "Dennis Rogers"
+    }
+  ],
+  "age_dist": {
+    "18-24": 1108,
+    "25-29": 1212,
+    "30-34": 1183,
+    "35-39": 674,
+    "40+": 273
+  },
+  "potential_dist": {
+    "Above(60-69)": 773,
+    "Average(50-59)": 2029,
+    "Below(40-49)": 929,
+    "Contender(70-79)": 163,
+    "Elite(80+)": 267,
+    "Low(<40)": 289
+  }
+}

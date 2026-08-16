@@ -1,0 +1,482 @@
+/* ============================================================
+   CAGE EMPIRE — The Rankings Screen Styles
+   ============================================================
+   Voice/design (per INFO-SCREENS-BATCH-1 §3):
+     - Section header: "THE RANKINGS" (gold accent) + subtitle
+       "the divisional picture".
+     - Filter bar: gold-bordered card with WC dropdown (grouped
+       by Men's / Women's optgroups) + gender toggle.
+     - Champion strip: gold-bordered card with crown + name +
+       reign length + defense count + reigns count.
+     - Rankings table: rank # with ▲▼→ change indicator, name
+       (clickable gold link), title chip if champion, record
+       (mono), streak (mono, color-coded W/L), momentum phrase
+       (italic, color by momentum tier), last fight date.
+     - Top 3 ranks get gold accent on the rank number.
+     - Voice empty state: "No rankings data for this division
+       yet."
+   ============================================================ */
+
+.ce-rankings {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ce-rankings .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   FILTER BAR
+   ============================================================ */
+.ce-rankings__filter-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.ce-rankings__filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+}
+.ce-rankings__filter-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-rankings__select {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ce-rankings__select:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-tint);
+}
+
+.ce-rankings__gender-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.ce-rankings__gender-btn {
+  padding: 8px 14px;
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  border: none;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ce-rankings__gender-btn:hover:not(.ce-rankings__gender-btn--active) {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+}
+.ce-rankings__gender-btn--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+
+/* P4.4 — promo scope toggle (My Promotion | All Promotions).
+   Mirrors the gender-toggle visual style but uses the crimson accent
+   to signal it changes the data pool, not just the filter. */
+.ce-rankings__promo-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.ce-rankings__promo-btn {
+  padding: 8px 14px;
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  border: none;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ce-rankings__promo-btn:hover:not(.ce-rankings__promo-btn--active) {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+}
+.ce-rankings__promo-btn--active {
+  background: var(--crimson);
+  color: #fff;
+}
+
+/* P4.4 — "CONTRACTED TO" column + player-promo highlight. */
+.ce-rankings__th--contracted {
+  text-align: left;
+  width: 180px;
+}
+.ce-rankings__contracted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ce-rankings__contracted--player {
+  color: var(--gold);
+  font-weight: 700;
+}
+.ce-rankings__name--player-promo {
+  color: var(--gold);
+}
+.ce-rankings__table--wide {
+  /* The extra CONTRACTED TO column needs more horizontal room. */
+  width: 100%;
+  table-layout: auto;
+}
+
+.ce-rankings__filter-info {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.ce-rankings__wc-name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gold);
+}
+.ce-rankings__promo-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================
+   CHAMPION STRIP
+   ============================================================ */
+.ce-rankings__champion {
+  background: linear-gradient(90deg,
+    var(--gold-tint-strong) 0%,
+    var(--bg-card) 60%);
+  border: 1px solid var(--gold);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ce-rankings__champ-crown {
+  font-size: 36px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 8px rgba(224, 169, 87, 0.3));
+}
+.ce-rankings__champ-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-rankings__champ-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-rankings__champ-name {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.ce-rankings__champ-name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-rankings__champ-nick {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  margin-left: 6px;
+}
+.ce-rankings__champ-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ce-rankings__champ-reign {
+  color: var(--gold);
+  font-weight: 600;
+}
+.ce-rankings__sep {
+  color: var(--text-tertiary);
+}
+
+/* ============================================================
+   RANKINGS TABLE
+   ============================================================ */
+.ce-rankings__table-wrap {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ce-rankings__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.ce-rankings__th {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card-elevated);
+}
+.ce-rankings__th--rank    { width: 80px; }
+.ce-rankings__th--record  { width: 100px; }
+.ce-rankings__th--streak  { width: 90px; }
+.ce-rankings__th--last    { width: 110px; }
+
+.ce-rankings__row {
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 0.15s;
+}
+.ce-rankings__row:last-child {
+  border-bottom: none;
+}
+.ce-rankings__row:hover {
+  background: var(--bg-card-elevated);
+}
+.ce-rankings__row--champ {
+  background: var(--gold-tint);
+}
+.ce-rankings__row--champ:hover {
+  background: var(--gold-tint-strong);
+}
+
+.ce-rankings__rank {
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+.ce-rankings__rank-num {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 36px;
+}
+.ce-rankings__rank--top .ce-rankings__rank-num {
+  color: var(--gold);
+  font-size: 22px;
+}
+.ce-rankings__rank--elite .ce-rankings__rank-num {
+  color: var(--gold-bright);
+}
+.ce-rankings__rank--contender .ce-rankings__rank-num {
+  color: var(--text-primary);
+}
+
+.ce-rankings__change {
+  font-size: 14px;
+  font-weight: 700;
+  width: 16px;
+  text-align: center;
+}
+.ce-rankings__change--up   { color: var(--green); }
+.ce-rankings__change--down { color: var(--crimson); }
+.ce-rankings__change--flat { color: var(--text-tertiary); }
+.ce-rankings__change--new  { color: var(--gold); }
+
+.ce-rankings__name-cell {
+  padding: 12px;
+  vertical-align: middle;
+}
+.ce-rankings__name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ce-rankings__name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--gold);
+  transition: color 0.15s;
+}
+.ce-rankings__name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-rankings__nick {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.ce-rankings__title-chip {
+  font-size: 9px;
+  padding: 1px 6px;
+}
+.ce-rankings__phase {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.ce-rankings__record {
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+.ce-rankings__streak-cell {
+  padding: 12px;
+  vertical-align: middle;
+}
+.ce-rankings__streak {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  display: inline-block;
+}
+.ce-rankings__streak--win {
+  background: var(--green-tint);
+  color: var(--green);
+  border: 1px solid var(--green);
+}
+.ce-rankings__streak--loss {
+  background: var(--crimson-tint);
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+}
+.ce-rankings__streak--none {
+  color: var(--text-tertiary);
+}
+
+.ce-rankings__momentum {
+  padding: 12px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.ce-rankings__last {
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+/* ============================================================
+   EMPTY STATE — voice-phrased
+   ============================================================ */
+.ce-rankings__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-rankings__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-rankings__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-rankings {
+    padding: 16px 12px 60px;
+  }
+  .ce-rankings__filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .ce-rankings__filter-group {
+    min-width: 0;
+    width: 100%;
+  }
+  .ce-rankings__filter-info {
+    margin-left: 0;
+    align-items: flex-start;
+  }
+  .ce-rankings__table-wrap {
+    overflow-x: auto;
+  }
+  .ce-rankings__table {
+    min-width: 640px;
+  }
+  .ce-rankings__champion {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

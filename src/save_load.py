@@ -254,6 +254,15 @@ def _query_save_metadata(conn):
     also queried from schema_meta (per the brief's metadata JSON
     example).
 
+    HW5.2 (W25 — world-integrity metadata): the metadata JSON now
+    includes the full world-integrity surface — simulation_date,
+    schema_version, fighter_count, active_fighter_count, event_count,
+    fight_count, title_count, champion_count, rivalry_count,
+    finance_transaction_count, memory_count, last_tick_date,
+    world_health_status. The previous keys (sim_date, promotion_name,
+    current_cash, fighter_count, event_count, schema_version) are
+    preserved for backward compat with list_saves / test_save_load.
+
     Defensive — each query is wrapped in try/except so a missing
     table (e.g., a partial DB) doesn't crash the save. This is
     important because save_game may be called on a DB that's mid-
@@ -263,30 +272,63 @@ def _query_save_metadata(conn):
         conn: sqlite3 connection.
 
     Returns:
-        Dict with keys: sim_date, promotion_name, current_cash,
-        fighter_count, event_count, schema_version. Missing values
-        default to None / 0 / "unknown".
+        Dict with keys: sim_date (alias of simulation_date),
+        promotion_name, current_cash, fighter_count, event_count,
+        schema_version (all preserved for backward compat) PLUS
+        simulation_date, active_fighter_count, fight_count,
+        title_count, champion_count, rivalry_count,
+        finance_transaction_count, memory_count, last_tick_date,
+        world_health_status (HW5.2 world-integrity metadata).
+        Missing values default to None / 0 / "unknown".
     """
     meta = {
+        # Backward-compat fields (preserved for list_saves).
         "sim_date": None,
         "promotion_name": "Unknown",
         "current_cash": 0,
         "fighter_count": 0,
         "event_count": 0,
         "schema_version": "unknown",
+        # HW5.2 — world-integrity metadata (W25).
+        "simulation_date": None,
+        "active_fighter_count": 0,
+        "fight_count": 0,
+        "title_count": 0,
+        "champion_count": 0,
+        "rivalry_count": 0,
+        "finance_transaction_count": 0,
+        "memory_count": 0,
+        "last_tick_date": None,
+        "world_health_status": "UNKNOWN",
     }
 
     # sim_date — simulation_clock.current_date (qualified per
     # Task 14.7 to avoid the bare-current_date SQLite quirk).
+    # Also used as simulation_date (HW5.2 alias).
     try:
         row = conn.execute(
-            "SELECT simulation_clock.current_date "
+            "SELECT simulation_clock.current_date, "
+            "       simulation_clock.updated_at "
             "FROM simulation_clock WHERE clock_id=1"
         ).fetchone()
         if row and row[0]:
             meta["sim_date"] = row[0]
+            meta["simulation_date"] = row[0]
+        if row and row[1]:
+            meta["last_tick_date"] = row[1]
     except sqlite3.Error:
-        pass
+        # Older schemas may not have updated_at column — fall back
+        # to a 1-column SELECT.
+        try:
+            row = conn.execute(
+                "SELECT simulation_clock.current_date "
+                "FROM simulation_clock WHERE clock_id=1"
+            ).fetchone()
+            if row and row[0]:
+                meta["sim_date"] = row[0]
+                meta["simulation_date"] = row[0]
+        except sqlite3.Error:
+            pass
 
     # promotion_name + current_cash for the player's promotion.
     try:
@@ -309,11 +351,76 @@ def _query_save_metadata(conn):
     except sqlite3.Error:
         pass
 
+    # active_fighter_count — fighters where is_active=1 AND is_retired=0.
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM fighters "
+            "WHERE is_active=1 AND is_retired=0"
+        ).fetchone()
+        if row:
+            meta["active_fighter_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
     # event_count.
     try:
         row = conn.execute("SELECT COUNT(*) FROM events").fetchone()
         if row:
             meta["event_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
+    # fight_count (HW5.2).
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM fights").fetchone()
+        if row:
+            meta["fight_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
+    # title_count + champion_count (HW5.2).
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM titles").fetchone()
+        if row:
+            meta["title_count"] = row[0]
+    except sqlite3.Error:
+        pass
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM titles "
+            "WHERE is_vacant=0 AND current_champion_fighter_id IS NOT NULL"
+        ).fetchone()
+        if row:
+            meta["champion_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
+    # rivalry_count (HW5.2).
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM rivalries").fetchone()
+        if row:
+            meta["rivalry_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
+    # finance_transaction_count (HW5.2).
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM finance_transactions"
+        ).fetchone()
+        if row:
+            meta["finance_transaction_count"] = row[0]
+    except sqlite3.Error:
+        pass
+
+    # memory_count (HW5.2) — fighter_memory_links (the canonical
+    # memory-storage table; HW3 backfilled this from fight_history).
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM fighter_memory_links"
+        ).fetchone()
+        if row:
+            meta["memory_count"] = row[0]
     except sqlite3.Error:
         pass
 
@@ -329,6 +436,26 @@ def _query_save_metadata(conn):
     except sqlite3.Error:
         pass
 
+    # world_health_status (HW5.2 / W27) — read the latest
+    # simulation_tick_health row's health_status. If no row exists
+    # or the table doesn't exist, default to "UNKNOWN" (a fresh DB
+    # hasn't run any ticks yet — health is indeterminate, not
+    # BROKEN). If we DID find a tick_date, also use it as
+    # last_tick_date (more accurate than simulation_clock.updated_at
+    # for "when was the last tick in sim-time?").
+    try:
+        row = conn.execute(
+            "SELECT health_status, tick_date FROM simulation_tick_health "
+            "ORDER BY tick_id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            if row[0]:
+                meta["world_health_status"] = row[0]
+            if row[1]:
+                meta["last_tick_date"] = row[1]
+    except sqlite3.Error:
+        pass
+
     return meta
 
 
@@ -338,18 +465,41 @@ def _write_metadata(save_name, conn):
     The JSON file lives at data/saves/{save_name}.json (alongside
     the .db file). Per the brief's metadata JSON format example.
 
+    HW5.2 (W25 — world-integrity metadata): in addition to the
+    legacy .json (preserved for backward compat with list_saves +
+    test_save_load), we ALSO write a {save_name}.meta.json sidecar
+    containing the full world-integrity surface (simulation_date,
+    schema_version, fighter_count, active_fighter_count, event_count,
+    fight_count, title_count, champion_count, rivalry_count,
+    finance_transaction_count, memory_count, last_tick_date,
+    world_health_status). Both files contain the same payload — the
+    .meta.json is the canonical HW5.2 source of truth for world-
+    integrity metadata; the .json is the legacy compatibility shim.
+
     Args:
         save_name: sanitized save name (used for the filename).
         conn: sqlite3 connection (for querying sim state).
+
+    Returns:
+        The metadata dict that was written.
     """
-    meta_path = SAVES_DIR / f"{save_name}.json"
     metadata = {
         "save_name": save_name,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
     metadata.update(_query_save_metadata(conn))
+
+    # Legacy .json (preserved for backward compat with list_saves +
+    # test_save_load case B).
+    meta_path = SAVES_DIR / f"{save_name}.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=4, default=str)
+
+    # HW5.2 — .meta.json sidecar (canonical world-integrity metadata).
+    meta_integrity_path = SAVES_DIR / f"{save_name}.meta.json"
+    with open(meta_integrity_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=4, default=str)
+
     return metadata
 
 
@@ -382,6 +532,14 @@ def _prune_autosaves():
         if old_json_path.exists():
             try:
                 old_json_path.unlink()
+            except OSError:
+                pass
+        # HW5.2 — also delete the matching .meta.json sidecar.
+        old_meta_path = old_db_path.parent / (
+            old_db_path.stem + ".meta.json")
+        if old_meta_path.exists():
+            try:
+                old_meta_path.unlink()
             except OSError:
                 pass
 
@@ -443,16 +601,319 @@ def save_game(conn, save_name=None):
         # even if commit failed). Worst case, the save is stale.
         pass
 
+    # HW5.2 (W25 — save system hardening) — checkpoint the WAL into
+    # the main DB file BEFORE the copy. The Api opens its connection
+    # in WAL mode (PRAGMA journal_mode = WAL), which means committed
+    # writes go to a -wal sidecar file FIRST, then get checkpointed
+    # into the main file lazily. Without an explicit checkpoint here,
+    # shutil.copy2 would only copy the MAIN file (which may be missing
+    # the latest commits), and the save file would be silently stale.
+    #
+    # Per the HW5.2 spec: "add PRAGMA wal_checkpoint(FULL) before
+    # copying the DB file". We use TRUNCATE (a superset of FULL — it
+    # checkpoints everything AND zeroes the -wal file so the next
+    # save starts clean), which strictly satisfies the spec's
+    # requirement. The separate -wal/-shm sidecar deletion below is
+    # belt-and-braces in case TRUNCATE was a no-op (e.g., another
+    # connection held a read lock).
+    #
+    # Best-effort: if the checkpoint fails (e.g., another connection
+    # holds a read lock), we still attempt the copy — the save may be
+    # slightly stale but is still loadable. The test_save_load suite
+    # uses plain sqlite3 connections (no WAL), so PRAGMA wal_checkpoint
+    # is a no-op there (returns immediately).
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except sqlite3.Error:
+        pass
+
+    # v3.36.0 (TIER3-MISSING §T3.3 / W42) — set world_version on the
+    # schema_meta row BEFORE the file copy. The world_version is a
+    # provenance tag that uniquely identifies this save's world state
+    # (e.g. "sim_2026-08-27_tick14"). It's used by future audit /
+    # debugging tools to trace which save a DB was loaded from.
+    # Format: "sim_{sim_date}_tick{tick_id}" — the sim_date from
+    # simulation_clock + the latest tick_id from simulation_tick_health
+    # (or "tick0" if no ticks have run yet).
+    #
+    # Uses UPDATE (not INSERT OR REPLACE) so the existing
+    # schema_version + seed_version columns are preserved. The
+    # schema_meta row always exists by the time save_game is called —
+    # _build_fresh creates it on fresh builds and _migrate_existing
+    # creates it on migrate builds. A failed world_version UPDATE is
+    # non-fatal: the save proceeds without the provenance tag.
+    try:
+        sim_date_row = conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        sim_date = sim_date_row[0] if sim_date_row else "unknown"
+        try:
+            tick_row = conn.execute(
+                "SELECT MAX(tick_id) FROM simulation_tick_health"
+            ).fetchone()
+            tick_id = tick_row[0] if tick_row and tick_row[0] else 0
+        except sqlite3.Error:
+            # simulation_tick_health table may be missing on a very
+            # old save — fall back to tick0.
+            tick_id = 0
+        world_version = f"sim_{sim_date}_tick{tick_id}"
+        conn.execute(
+            "UPDATE schema_meta SET world_version=? "
+            "WHERE schema_name='cage_empire'",
+            (world_version,),
+        )
+    except sqlite3.Error:
+        # Defensive — a failed world_version update must not crash
+        # save_game. The save proceeds without the provenance tag.
+        pass
+
+    # Commit the world_version UPDATE before the file copy so the
+    # save file has the provenance tag (mirrors the commit-then-
+    # checkpoint-then-copy pattern above).
+    try:
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
     save_db_path = SAVES_DIR / f"{save_name}.db"
 
     # Copy the DB file (per the brief: shutil.copy2, NOT database
     # dumps). shutil.copy2 preserves file metadata (mtime, mode).
     shutil.copy2(DB_PATH, save_db_path)
 
+    # P5.2 — also remove any stale -wal / -shm sidecar files in the
+    # saves dir (they shouldn't exist after the TRUNCATE checkpoint
+    # above, but defensive: if a previous save somehow left them
+    # behind, they'd cause sqlite to think the save was mid-
+    # transaction on load).
+    for suffix in ("-wal", "-shm"):
+        sidecar = SAVES_DIR / f"{save_name}.db{suffix}"
+        try:
+            if sidecar.exists():
+                sidecar.unlink()
+        except OSError:
+            pass
+
     # Build + write metadata JSON.
     _write_metadata(save_name, conn)
 
     return save_name
+
+
+class SaveIncompatibleError(Exception):
+    """HW5.3 (W26 — save compatibility) — raised when load_game
+    refuses to load a save because it fails a compatibility check.
+
+    The exception message explains WHY the save is incompatible
+    (schema mismatch, integrity_check failure, or missing sim
+    clock) so the caller can surface it to the player.
+
+    The active DB is NOT modified when this exception is raised —
+    the player can keep playing their current world.
+    """
+    pass
+
+
+def _verify_save_compatibility(save_db_path, save_name):
+    """HW5.3 (W26) — verify a save is loadable BEFORE replacing
+    the active DB.
+
+    Per the HW5.3 spec:
+      1. Read metadata (if exists) — for schema_version + sim_date.
+      2. Check schema version (refuse if incompatible).
+      3. Run PRAGMA integrity_check (refuse if fails).
+      4. Verify simulation_clock exists + has a valid date.
+      5. Only then return — the caller (load_game) will replace
+         the active DB.
+
+    Schema version compatibility policy:
+      - Read save's schema_version from schema_meta (NOT from the
+        .json sidecar — the .db file is the source of truth; the
+        .json may be stale or missing).
+      - Compare to build_db.CODE_SCHEMA_VERSION (the code's
+        expected schema version).
+      - Refuse if MAJOR differs (e.g. save=3.x, code=4.x — real
+        breaking change).
+      - Refuse if save's version is NEWER than code's (the code
+        doesn't know how to handle future schemas).
+      - Allow if save's version is equal or older (same MAJOR) —
+        older saves are loadable, possibly with missing newer
+        columns (which get NULL/default on read).
+
+    Args:
+        save_db_path: Path to the .db save file.
+        save_name: save name (for the error message).
+
+    Returns:
+        Dict with keys: schema_version (str), sim_date (str|None),
+        integrity_check (str), metadata (dict|None). All fields
+        are also informational — the function is called for its
+        side effect of raising SaveIncompatibleError on failure.
+
+    Raises:
+        SaveIncompatibleError: if any check fails. The exception
+            message explains the specific failure.
+    """
+    # Connect to the save DB read-only (we don't want to modify it
+    # during verification). URI mode + read-only prevents any
+    # accidental write.
+    save_uri = f"file:{save_db_path}?mode=ro"
+    try:
+        verify_conn = sqlite3.connect(save_uri, uri=True)
+    except sqlite3.Error as e:
+        raise SaveIncompatibleError(
+            f"Cannot open save file '{save_name}' ({save_db_path}): "
+            f"{type(e).__name__}: {e}. The file may be corrupted or "
+            f"not a valid SQLite database."
+        )
+
+    info = {
+        "schema_version": "unknown",
+        "sim_date": None,
+        "integrity_check": "unknown",
+        "metadata": None,
+    }
+
+    # Read save's schema_version from schema_meta.
+    try:
+        row = verify_conn.execute(
+            "SELECT schema_version FROM schema_meta "
+            "WHERE schema_name='cage_empire'"
+        ).fetchone()
+        if row and row[0]:
+            info["schema_version"] = str(row[0])
+    except sqlite3.Error:
+        # schema_meta table missing — the save predates schema_meta
+        # tracking. This is a serious red flag (the save is from
+        # before CONVENTIONS §10 was enforced). Refuse.
+        verify_conn.close()
+        raise SaveIncompatibleError(
+            f"Save '{save_name}' is missing the schema_meta table — "
+            f"it predates schema version tracking (CONVENTIONS §10) "
+            f"and cannot be safely loaded. The schema version is "
+            f"unknown; refusing to load to avoid corrupting the "
+            f"active DB."
+        )
+
+    # Check 2 — schema version compatibility. Compare to code's
+    # CODE_SCHEMA_VERSION (lazy import to avoid circular import
+    # at module load time).
+    try:
+        from build_db import CODE_SCHEMA_VERSION
+        code_version = str(CODE_SCHEMA_VERSION)
+    except ImportError:
+        code_version = None
+
+    if code_version:
+        save_major = info["schema_version"].split(".")[0]
+        code_major = code_version.split(".")[0]
+        # Refuse if MAJOR differs.
+        if save_major != code_major:
+            verify_conn.close()
+            raise SaveIncompatibleError(
+                f"Save '{save_name}' schema version "
+                f"({info['schema_version']}) is incompatible with "
+                f"the current code ({code_version}) — MAJOR version "
+                f"differs (save={save_major}, code={code_major}). "
+                f"Major version changes indicate breaking schema "
+                f"changes; the save cannot be safely loaded."
+            )
+        # Refuse if save's version is NEWER than code's. Parse as
+        # a tuple of ints for comparison.
+        def _parse_ver(v):
+            parts = v.split(".")
+            try:
+                return tuple(int(p) for p in parts[:3])
+            except ValueError:
+                return tuple(0 for _ in parts[:3])
+        save_ver = _parse_ver(info["schema_version"])
+        code_ver = _parse_ver(code_version)
+        if save_ver > code_ver:
+            verify_conn.close()
+            raise SaveIncompatibleError(
+                f"Save '{save_name}' schema version "
+                f"({info['schema_version']}) is NEWER than the "
+                f"current code ({code_version}). The code doesn't "
+                f"know how to handle this schema version. Update "
+                f"the game to a newer version to load this save."
+            )
+
+    # Check 3 — PRAGMA integrity_check. Refuse if not "ok".
+    try:
+        row = verify_conn.execute("PRAGMA integrity_check").fetchone()
+        integrity_result = row[0] if row else "unknown"
+        info["integrity_check"] = str(integrity_result)
+    except sqlite3.Error as e:
+        verify_conn.close()
+        raise SaveIncompatibleError(
+            f"Save '{save_name}' failed integrity_check: "
+            f"{type(e).__name__}: {e}. The DB file is structurally "
+            f"corrupted and cannot be safely loaded."
+        )
+    if integrity_result != "ok":
+        verify_conn.close()
+        # Truncate the integrity_check output for the error message
+        # (it can be very long if there are many issues).
+        msg = str(integrity_result)
+        if len(msg) > 500:
+            msg = msg[:500] + "..."
+        raise SaveIncompatibleError(
+            f"Save '{save_name}' failed integrity_check: {msg}. "
+            f"The DB file is structurally corrupted and cannot be "
+            f"safely loaded."
+        )
+
+    # Check 4 — simulation_clock must exist + have a valid date.
+    try:
+        # First check the table exists.
+        tbl = verify_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='simulation_clock'"
+        ).fetchone()
+        if not tbl:
+            verify_conn.close()
+            raise SaveIncompatibleError(
+                f"Save '{save_name}' is missing the simulation_clock "
+                f"table. This save is not a valid CAGE EMPIRE world "
+                f"DB — refusing to load."
+            )
+        row = verify_conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        if not row or not row[0]:
+            verify_conn.close()
+            raise SaveIncompatibleError(
+                f"Save '{save_name}' has no simulation_clock row "
+                f"with a valid current_date. The save's world state "
+                f"is incomplete — refusing to load."
+            )
+        info["sim_date"] = row[0]
+    except sqlite3.Error as e:
+        verify_conn.close()
+        raise SaveIncompatibleError(
+            f"Save '{save_name}' failed simulation_clock check: "
+            f"{type(e).__name__}: {e}. The save's world state is "
+            f"incomplete — refusing to load."
+        )
+
+    # Check 1 (informational) — read the .meta.json or .json
+    # sidecar if it exists. We don't refuse on missing metadata
+    # (the .db is the source of truth), but we surface it in the
+    # returned info dict for the caller's UI.
+    meta_integrity_path = SAVES_DIR / f"{save_name}.meta.json"
+    meta_legacy_path = SAVES_DIR / f"{save_name}.json"
+    meta_path = meta_integrity_path if meta_integrity_path.exists() else meta_legacy_path
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                info["metadata"] = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            info["metadata"] = None
+
+    verify_conn.close()
+    return info
 
 
 def load_game(save_name):
@@ -463,6 +924,19 @@ def load_game(save_name):
     to the restored DB. The caller is responsible for closing any
     existing connection BEFORE calling load_game — on Windows,
     you can't overwrite a file that's open by another process.
+
+    HW5.3 (W26 — save compatibility): BEFORE replacing the active
+    DB, runs a 4-step compatibility check on the save file:
+      1. Read save metadata (schema_version, sim_date) — from the
+         .db's schema_meta (the source of truth, not the .json
+         sidecar which may be stale).
+      2. Check schema version — refuse if MAJOR differs from code
+         OR if save's version is NEWER than code's.
+      3. PRAGMA integrity_check — refuse if not "ok".
+      4. simulation_clock must exist + have a valid current_date.
+    If any check fails, raises SaveIncompatibleError WITHOUT
+    modifying the active DB (the player can keep playing their
+    current world).
 
     Args:
         save_name: name of the save to load. Sanitized per
@@ -475,6 +949,9 @@ def load_game(save_name):
 
     Raises:
         FileNotFoundError: if the save file doesn't exist.
+        SaveIncompatibleError: if the save fails a compatibility
+            check (HW5.3). The exception message explains the
+            specific failure.
         OSError: if the file copy fails.
     """
     _ensure_saves_dir()
@@ -487,10 +964,32 @@ def load_game(save_name):
             f"Save file not found: {save_db_path} (save_name={save_name!r})"
         )
 
+    # HW5.3 — verify save compatibility BEFORE replacing the active
+    # DB. If this raises SaveIncompatibleError, the active DB is
+    # untouched and the player can keep playing.
+    _verify_save_compatibility(save_db_path, save_name)
+
     # Copy the save file back to the active DB path. shutil.copy2
     # preserves file metadata (mtime, mode). The active DB file is
     # overwritten in place.
     shutil.copy2(save_db_path, DB_PATH)
+
+    # P5.2 — purge any stale WAL / shared-memory sidecar files for
+    # the active DB. The Api opens its connection in WAL mode, so
+    # the active DB_PATH may have a -wal file containing in-flight
+    # writes from the previous session. If we leave it in place,
+    # sqlite would replay those writes ON TOP of the loaded save
+    # file — corrupting the loaded state. Deleting the sidecars
+    # forces sqlite to start fresh from the loaded main file only.
+    # (The save file itself doesn't carry a -wal because save_game
+    # checkpoints + removes sidecars before copying.)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(DB_PATH) + suffix)
+        try:
+            if sidecar.exists():
+                sidecar.unlink()
+        except OSError:
+            pass
 
     # Open a new connection to the restored DB. The caller is
     # responsible for closing any prior connection (we cannot do
@@ -525,6 +1024,10 @@ def list_saves():
 
     saves = []
     for json_path in SAVES_DIR.glob("*.json"):
+        # HW5.2 — skip the .meta.json sidecar (it's a duplicate of
+        # the .json payload; only list each save once).
+        if json_path.name.endswith(".meta.json"):
+            continue
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
@@ -557,31 +1060,29 @@ def list_saves():
 def delete_save(save_name):
     """Delete a save file (both .db and .json).
 
+    HW5.2 — also deletes the .meta.json sidecar if present.
+
     Args:
         save_name: name of the save to delete. Sanitized per
             _sanitize_save_name.
 
     Returns:
-        True if any file was deleted (the .db OR .json), False if
-        no save with that name existed.
+        True if any file was deleted (the .db OR .json OR .meta.json),
+        False if no save with that name existed.
     """
     save_name = _sanitize_save_name(save_name)
     save_db_path = SAVES_DIR / f"{save_name}.db"
     save_json_path = SAVES_DIR / f"{save_name}.json"
+    save_meta_path = SAVES_DIR / f"{save_name}.meta.json"
 
     deleted = False
-    if save_db_path.exists():
-        try:
-            save_db_path.unlink()
-            deleted = True
-        except OSError:
-            pass
-    if save_json_path.exists():
-        try:
-            save_json_path.unlink()
-            deleted = True
-        except OSError:
-            pass
+    for path in (save_db_path, save_json_path, save_meta_path):
+        if path.exists():
+            try:
+                path.unlink()
+                deleted = True
+            except OSError:
+                pass
     return deleted
 
 

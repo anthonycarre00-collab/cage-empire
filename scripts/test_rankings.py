@@ -115,7 +115,11 @@ INITIAL_RATING = 1000.0
 ELO_K = 32.0
 
 # Expected event date from the seed (Alpha Combat: Test Night).
-SEEDED_EVENT_DATE = "2026-08-15"
+# HW8.1: the seeded event now follows simulation_clock.current_date
+# (was hardcoded "2026-08-15" while the fresh-DB clock started at
+# "2026-08-14"). The fresh-DB clock is GAME_START_DATE = "2026-01-01"
+# (per build_db.py), so the seeded event is now dated "2026-01-01".
+SEEDED_EVENT_DATE = "2026-01-01"
 
 
 # --------------------------------------------------------------------

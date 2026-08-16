@@ -429,7 +429,7 @@ _FEATURED_PRELIM_COUNT_BY_TIER = {
 
 
 
-_REST_PERIOD_DAYS = 21
+_REST_PERIOD_DAYS = 60  # CR-BALANCE: was 21 (too short), then 90 (too long). 60 days = ~6 fights/year max.
 
 # Title fights are 5 rounds; non-title fights are 3 rounds.
 
@@ -447,7 +447,8 @@ _NON_TITLE_FIGHT_ROUNDS = 3
 
 def _get_available_fighters_for_card(conn, promotion_id,
                                      rest_days=_REST_PERIOD_DAYS,
-                                     before_date=None):
+                                     before_date=None,
+                                     event_id=None):
     """Return all fighters eligible to be booked on a new card.
 
     Eligibility:
@@ -460,11 +461,15 @@ def _get_available_fighters_for_card(conn, promotion_id,
       - Has not fought in the last `rest_days` days (rest period —
         checked against rankings.last_fight_date, relative to the
         new event's date)
+      - MM3.1 (docs/MASTER_PLAN_MATCHMAKING_V2.md §3.1): NOT already
+        booked on another scheduled event within ±7 days of this
+        event's date. Prevents double-booking a fighter across two
+        cards in the same week.
 
     Returns a list of dicts with keys: fighter_id, weight_class_id,
     gender, rating (ELO from rankings, default 1000.0), record_wins,
     record_losses, record_draws, win_streak, loss_streak, potential,
-    last_fight_date.
+    last_fight_date, camp_status.
 
     Args:
         conn: sqlite3 connection (read-only — no writes here).
@@ -477,6 +482,13 @@ def _get_available_fighters_for_card(conn, promotion_id,
             new event on 2026-09-12, since 28 >= 21 days). If None,
             falls back to simulation_clock.current_date (used by
             callers that don't have a specific event date yet).
+        event_id: optional int — the event_id whose card is being
+            built. Used by the MM3.1 cross-event booking check so we
+            can exclude the THIS-event's existing bookings from the
+            ±7-day exclusion (those are filtered separately by the
+            caller via the booked_ids set). None means "no specific
+            event" (treated as a brand-new card with no prior
+            bookings to exclude).
 
     Returns:
         List of fighter-dict rows. Empty list if no fighters are
@@ -489,6 +501,29 @@ def _get_available_fighters_for_card(conn, promotion_id,
     is a redundant check — but it makes the gender filter explicit
     and impossible to forget. See `_assert_same_gender` (used by the
     build functions).
+
+    MM3.1 (cross-event booking check): if `event_id` AND `before_date`
+    are both provided, fighters already booked on another scheduled
+    event within ±7 days of `before_date` are excluded. This is the
+    fix for the "double-booked across two cards in the same week"
+    gap flagged in RESEARCH_MATCHMAKING_CURRENT_STATE.md §3.2 GAP 1.
+
+    MM3.2 (camp status): each fighter dict now includes a
+    `camp_status` field with one of three values:
+      - "ready"          — fighter has a completed training_camps
+                            row in the last 30 days (proper camp
+                            done, ready to fight).
+      - "needs_camp"     — no recent camp AND the event is > 14
+                            days away (camp can still be run; the
+                            fighter shows a "needs camp" warning chip
+                            but is bookable).
+      - "short_notice"   — no recent camp AND the event is ≤ 14
+                            days away (camp cannot fit; the fighter
+                            MAY reject per MM3.3 personality check at
+                            book_fight time).
+    The `before_date` is used as the event date for this calculation.
+    If `before_date` is None, defaults to "ready" (defensive — older
+    callers that don't pass a date shouldn't be blocked).
     """
     rows = conn.execute(
         "SELECT f.fighter_id, f.weight_class_id, f.gender, "
@@ -512,6 +547,90 @@ def _get_available_fighters_for_card(conn, promotion_id,
         "    (SELECT fighter_id FROM suspensions WHERE is_active = 1)",
         (promotion_id,),
     ).fetchall()
+
+    # MM3.1 — Cross-event booking check. Exclude fighters already
+    # booked on ANY scheduled event within ±7 days of this event's
+    # date (per docs/MASTER_PLAN_MATCHMAKING_V2.md §3.1). The
+    # exclusion is computed once for the whole roster (set lookup
+    # is O(1) per fighter). The THIS-event's own bookings are NOT
+    # excluded here (the caller filters those via booked_ids);
+    # we exclude only OTHER events' bookings.
+    cross_event_booked_ids = set()
+    if before_date:
+        try:
+            xrows = conn.execute(
+                "SELECT DISTINCT fp.fighter_id "
+                "FROM fight_participants fp "
+                "JOIN fights f ON f.fight_id = fp.fight_id "
+                "JOIN events e ON e.event_id = f.event_id "
+                "WHERE e.status = 'scheduled' "
+                "  AND e.event_id != ? "
+                "  AND ABS(julianday(e.event_date) - julianday(?)) <= 7",
+                (event_id or 0, before_date),
+            ).fetchall()
+            cross_event_booked_ids = {r[0] for r in xrows if r[0]}
+        except Exception:
+            # Defensive — if the join fails (e.g., a missing column
+            # on a partial migration), fall back to no cross-event
+            # exclusion (older behavior). Better to show the fighter
+            # than to crash the roster query.
+            cross_event_booked_ids = set()
+
+    # MM3.2 — Training camp status. The camp-status logic uses two
+    # reference dates:
+    #   1. camp_ready_cutoff_date = event_date - 30 days. A fighter
+    #      with a training_camps row whose end_date >= this cutoff
+    #      has "completed a camp in the last 30 days" → 'ready'.
+    #   2. short_notice_threshold_date = sim_today + 14 days. If the
+    #      event_date <= this threshold (i.e., the event is within
+    #      14 days of today), fighters without a recent camp fall to
+    #      'short_notice' (may reject per MM3.3); otherwise they're
+    #      'needs_camp' (camp can still fit before the event).
+    camp_ready_cutoff_date = None
+    is_short_notice_event = False
+    if before_date:
+        try:
+            ev_dt = datetime.strptime(before_date, "%Y-%m-%d")
+            camp_ready_cutoff_date = (ev_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+            # Resolve "today" (the sim's current_date). Falls back to
+            # the simulation_clock row; if neither is parseable we
+            # treat the event as NOT short-notice (defensive — older
+            # callers shouldn't be blocked).
+            today_str = None
+            try:
+                crow = conn.execute(
+                    "SELECT simulation_clock.current_date "
+                    "FROM simulation_clock WHERE clock_id=1"
+                ).fetchone()
+                today_str = crow[0] if crow else None
+            except Exception:
+                today_str = None
+            if today_str:
+                try:
+                    today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+                    days_to_event = (ev_dt - today_dt).days
+                    # days_to_event can be negative if the event is in
+                    # the past (shouldn't happen for a 'scheduled'
+                    # event, but defensive). Treat as short-notice.
+                    is_short_notice_event = days_to_event <= 14
+                except (ValueError, TypeError):
+                    is_short_notice_event = False
+        except (ValueError, TypeError):
+            pass
+    # Cache of fighter_ids with a completed camp in the last 30 days.
+    # Built once (1 query), checked per-fighter via set lookup.
+    camp_ready_ids = set()
+    if camp_ready_cutoff_date:
+        try:
+            crows = conn.execute(
+                "SELECT DISTINCT fighter_id FROM training_camps "
+                "WHERE is_completed = 1 "
+                "  AND end_date >= ?",
+                (camp_ready_cutoff_date,),
+            ).fetchall()
+            camp_ready_ids = {r[0] for r in crows if r[0]}
+        except Exception:
+            camp_ready_ids = set()
 
     # Resolve the reference date for the 21-day rest check. Prefer
     # before_date (the new event's date) — this lets us book fighters
@@ -553,6 +672,21 @@ def _get_available_fighters_for_card(conn, promotion_id,
                     continue
             except (ValueError, TypeError):
                 pass  # bad date — be lenient and include the fighter
+        # MM3.1 — Cross-event booking check. Skip fighters already
+        # booked on another scheduled event within ±7 days.
+        if fighter_id in cross_event_booked_ids:
+            continue
+        # MM3.2 — Compute camp_status for this fighter.
+        if not camp_ready_cutoff_date:
+            camp_status = 'ready'  # no event date — defensive default
+        elif fighter_id in camp_ready_ids:
+            camp_status = 'ready'
+        elif is_short_notice_event:
+            # Event is ≤ 14 days away — short notice.
+            camp_status = 'short_notice'
+        else:
+            # Event is > 14 days away — camp can still fit.
+            camp_status = 'needs_camp'
         available.append({
             'fighter_id': fighter_id,
             'weight_class_id': weight_class_id,
@@ -568,6 +702,8 @@ def _get_available_fighters_for_card(conn, promotion_id,
             'loss_streak': loss_streak,
             'potential': potential,
             'last_fight_date': last_fight_date,
+            # MM3.2 — camp_status: 'ready' / 'needs_camp' / 'short_notice'.
+            'camp_status': camp_status,
         })
     return available
 
@@ -1484,6 +1620,30 @@ def schedule_next_event(conn, promotion_id, from_event_date=None, weeks_out=4):
                 event_date=new_date_str,
                 style_archetype_id=f_archetype_id,
             )
+
+        # HW9.2 — wire memory resurfacing into the fight booking path.
+        # After each fight is INSERTed, call surface_memories to find
+        # any relevant history between the two fighters. If memories
+        # are found, write a memory_resurfacing news item ("fight
+        # preview" beat). This is the wiring that HW3.5 flagged as
+        # missing — the engine + data existed but the caller wasn't
+        # connected. The function is defensive (never raises, returns
+        # None on any failure) so it can't crash the booking path.
+        try:
+            from news import generate_fight_preview_memory_news
+            generate_fight_preview_memory_news(
+                conn, fight_id=new_fight_id,
+                fighter_a_id=fight['fighter_a'],
+                fighter_b_id=fight['fighter_b'],
+                event_id=new_event_id,
+                promotion_id=promotion_id,
+                published_at=new_date_str,
+            )
+        except Exception as e:
+            import sys
+            print(f"WARNING: generate_fight_preview_memory_news failed "
+                  f"for fight_id={new_fight_id}: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
 
     # 12. Return the new event_id. Do NOT commit — the caller commits,
     # matching the existing pattern (resolve_next_fight, advance_day,

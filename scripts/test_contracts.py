@@ -97,8 +97,10 @@ EXPECTED_SCHEMA_VERSION = build_db.CODE_SCHEMA_VERSION
 EXPECTED_MIGRATION_PREFIX = f"v{EXPECTED_SCHEMA_VERSION.replace('.', '_')}_"
 
 # Expected contract defaults from seed_data.py.
-EXPECTED_START_DATE = "2026-07-20"
-EXPECTED_END_DATE = "2027-07-20"  # start_date + 365 days
+# HW8.1: contracts use build_db.GAME_START_DATE (= "2026-01-01" since
+# HW2.3) — was "2026-07-20" before HW2.3. The test was stale.
+EXPECTED_START_DATE = "2026-01-01"
+EXPECTED_END_DATE = "2027-01-01"  # start_date + 365 days
 EXPECTED_SALARY = 50000.0
 EXPECTED_EXCLUSIVE_FLAG = 1
 EXPECTED_STATUS = "active"

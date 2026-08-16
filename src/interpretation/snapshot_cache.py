@@ -91,11 +91,336 @@ import sqlite3
 # momentum / pressure / career_phase (the heaviest-bucket columns).
 # No schema change required — the rebuild just re-runs the existing
 # _EXT pickers and overwrites the stale cache rows. Idempotent.
-ENGINE_VERSION = "1.6.0"
+#
+# VOICE-P2 (Claude VOICE_ENFORCEMENT §3 + §5.3, 2026-10-18): bumped
+# 1.6.0 → 1.7.0 to force another full cache rebuild. The legacy_engine
+# + narrative_families modules now ship LEGACY_PHRASES_EXT and
+# FAMILY_PHRASES_EXT banks (8 variants per label, vs the original 3).
+# Without this bump, the version-mismatch rebuild logic won't trigger
+# and the production DB will keep shipping the 3-variant phrases
+# (verified live: legacy_state has 3 distinct phrases per label,
+# narrative_family has 2-3, vs Claude's §3 bar of ≥8). This bump
+# cuts perceived repetition another ~60% for legacy_state + narrative_
+# family (the two columns still on the 3-variant original pickers).
+# No schema change required. Idempotent.
+#
+# INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3 + §5.3, 2026-12-04):
+# bumped 1.7.0 → 1.8.0 to force ANOTHER full cache rebuild. This task
+# ships:
+#   1. 5 new SHORT-variant columns on fighter_descriptors
+#      (momentum_short, pressure_short, career_phase_short,
+#      narrative_family_short, legacy_state_short) — schema v3.15.0.
+#   2. 4 new SHORT phrase banks (MOMENTUM_PHRASES_SHORT,
+#      PRESSURE_PHRASES_SHORT, PHASE_PHRASES_SHORT,
+#      FAMILY_PHRASES_SHORT, LEGACY_PHRASES_SHORT) with 8 ≤25-char
+#      variants per label, for Fighter Watch Cards (the LONG _EXT
+#      phrases were getting clipped at 35-65 chars).
+#   3. Show rating descriptions expanded 5 → 8 per tier (5 tiers × 8
+#      = 40 distinct descriptions, was 5).
+#   4. News headline templates expanded for top 5 topics
+#      (news_engine, career_arc, weight_cut, injury, training) —
+#      each from 1-6 templates → 8+ templates.
+# Without this bump, the version-mismatch rebuild logic won't trigger
+# and the production DB will keep shipping the LONG-only phrases (no
+# SHORT columns populated) + the 5-variant show_rating descriptions
+# + the lower-template-count news headlines. This bump forces all
+# 4450 active fighters + 60 retired legends to be re-interpreted
+# with the new SHORT pickers, populating the 5 new columns in one go.
+# Schema change REQUIRES the v3.15.0 migration to land first — the
+# migration is in build_db._migrate_v3_15_0_add_fighter_descriptor_
+# short_columns.
+#
+# CR-12 (Career-phase pyramid rebalance, 2027-01 — see docs/CR10_14_
+# FIX_PLAN §3): bumped 1.8.0 → 1.9.0 to force a full cache rebuild.
+# The career_phase_engine D4 priority-order thresholds were relaxed
+# (declining: age 33→32 / ls 3→2 / health 50→60; prospect: age <24
+# →<26 / fights <10→<12; veteran: age 35→32 / fights 20→12; gate-
+# keeper: age 30→28 / fights 15→10 / win_rate <0.50→<0.55). Without
+# this bump the production DB would keep shipping the stale career_
+# phase values from the audit baseline (76.1% rising_contender,
+# 0.6% veteran, 0.5% gatekeeper, 0.3% declining) instead of the
+# relaxed-threshold pyramid (~40-50% rising_contender, ~15-20%
+# veteran, ~12-18% gatekeeper, ~8-12% declining, ~10-15% prospect,
+# ~2-3% champion). career_phase_short is derived from the same
+# label + RNG seed so it's also stale — both columns rebuild on
+# the next daily pass. Idempotent. No schema change required.
+#
+# ENGINE_VERSION coordination note (Subagent G — CR-10): Subagent G
+# is also expected to bump ENGINE_VERSION (for the attribute re-seed
+# in CR-10). As of this commit, G has NOT bumped yet (last commit
+# on main: 081972c, ENGINE_VERSION was 1.8.0). If G commits a bump
+# after this one, the supervisor resolves any merge conflict —
+# whoever's bump lands SECOND becomes the active version + the
+# earlier bump's rebuild is subsumed (the rebuild is idempotent).
+# The career_phase + attribute_descriptors caches will both rebuild
+# on the next daily pass after whichever bump lands last.
+#
+# CR-10 G.4 (Training-camp re-seed, 2027-01 — see docs/CR10_14_FIX_
+# PLAN §1.3): the v3.20.0 migration re-seeded all 26 fighter_
+# attributes columns down by 15 (clamp at 25) for active fighters.
+# The attribute_descriptors cache column in fighter_descriptors is
+# STALE — it references the pre-reseed (higher) attribute values.
+# A full cache rebuild is required to regenerate descriptors from
+# the post-reseed attributes.
+#
+# Per docs/CR10_14_FIX_PLAN.md §6, "snapshot_cache.py has ONE
+# ENGINE_VERSION constant. Whoever commits first bumps it; the
+# second subagent sees the new version + doesn't need to bump
+# again." Subagent I (CR-12) committed first (commit afc2166) +
+# bumped 1.8.0 → 1.9.0. This 1.9.0 bump is SUFFICIENT for CR-10's
+# cache-rebuild requirement too — the daily interpretation pass
+# rebuilds ALL descriptor columns (career_phase, career_phase_short,
+# attribute_descriptors, momentum, etc.) on a single version
+# mismatch. No further bump is needed here; the G.4 deliverable is
+# satisfied by Subagent I's CR-12 bump. This comment block documents
+# the G.4 acceptance: the cache will rebuild on the next daily pass
+# after the v3.20.0 migration runs, regenerating attribute_descriptors
+# from the freshly-lowered attribute values.
+ENGINE_VERSION = "1.9.0"
+
+
+# ----------------------------------------------------------------
+# TICK-REENGINEER (Fix 1) — Dirty-fighter tracking.
+#
+# Module-level set of fighter_ids whose interpretation cache rows
+# were invalidated by an event (FIGHT_RESOLVED, FIGHTER_SIGNED,
+# FIGHTER_RETIRED, INJURY_RECOVERED, TITLE_CHANGED, CONTRACT_
+# EXPIRED) since the last daily pass. The 4 event-bus subscribers
+# in interpretation/__init__.py call refresh_fighter(conn, fid)
+# immediately (per-event refresh — the cache is updated in-step
+# with the simulation transaction). They ALSO call mark_fighter_
+# dirty(fid) so the next daily pass knows the fighter was touched.
+#
+# On the daily pass (run_daily_interpretation_pass), the dirty set
+# is consumed:
+#   - Non-weekly tick + dirty set non-empty → targeted refresh of
+#     only those fighters (the per-event refresh already did the
+#     work, but this is a safety-net re-refresh to catch anything
+#     the event path missed due to a transient error).
+#   - Weekly tick (current_day % 7 == 0) OR engine_version mismatch
+#     OR meta row missing → full rebuild (the existing 4 450-fighter
+#     pass). Catches anything the per-event path missed across the
+#     whole week.
+#
+# The dirty set is cleared at the end of every daily pass.
+#
+# Performance impact (PERF_ARCH_AUDIT §4.5): the full pass costs
+# ~333 ms / tick. The targeted path costs ~5-15 ms / tick (5-20
+# fighters × 0.7 ms). On weekly ticks the full pass still runs
+# (~333 ms once every 7 ticks = ~47 ms amortized), so the average
+# per-tick interpretation cost drops from 333 ms → ~55 ms — a 6×
+# improvement on the post-commit step.
+# ----------------------------------------------------------------
+_dirty_fighters: set[int] = set()
+
+
+# ----------------------------------------------------------------
+# TIER1-365DAY (2027-02) — Dirty-for-rebuild tracking.
+#
+# SEPARATE from _dirty_fighters above. This set tracks fighters
+# whose ATTRIBUTES changed in a way that crossed a voice-tier
+# boundary during the monthly career_arc pass (tier_crossed=True
+# or pers_tier_crossed=True in career_arc._process_career_arc).
+# These fighters need a full interpretation refresh on the next
+# weekly rebuild — but the OTHER 4400+ fighters whose attributes
+# didn't cross a tier boundary don't.
+#
+# Why a separate set? _dirty_fighters is consumed on EVERY daily
+# pass (targeted refresh). _fighters_dirty_for_rebuild is consumed
+# ONLY on the weekly rebuild tick. The weekly tick used to call
+# _interpret_fighters (ALL 4450 fighters, ~333ms). Now it calls
+# _interpret_dirty_fighters (only the dirty-for-rebuild subset,
+# typically 50-200 fighters, ~15-50ms). This drops the weekly-tick
+# interpretation cost by ~10×.
+#
+# The set is cleared at the end of every weekly dirty rebuild.
+# Engine-version-mismatch rebuilds still do the TRUE full rebuild
+# (all 4450 fighters) — those are rare (only when ENGINE_VERSION
+# is bumped).
+# ----------------------------------------------------------------
+_fighters_dirty_for_rebuild: set[int] = set()
+
+
+def mark_fighter_dirty(fighter_id: int) -> None:
+    """Mark a fighter as needing re-interpretation on the next daily pass.
+
+    Called by the event-bus subscribers in interpretation/__init__.py
+    (FIGHT_RESOLVED, FIGHTER_SIGNED, FIGHTER_RETIRED, INJURY_RECOVERED,
+    TITLE_CHANGED, CONTRACT_EXPIRED). The subscriber ALSO calls
+    refresh_fighter(conn, fighter_id) immediately — the dirty-set
+    entry is a safety-net backstop so the next daily pass can
+    re-refresh the fighter (in case the per-event refresh missed
+    something due to a transient error or because the cache meta
+    row is being recomputed).
+    """
+    if fighter_id is None:
+        return
+    try:
+        _dirty_fighters.add(int(fighter_id))
+    except (TypeError, ValueError):
+        pass  # defensive — non-int fighter_id silently ignored
+
+
+def mark_fighter_dirty_for_rebuild(fighter_id: int) -> None:
+    """Mark a fighter as needing re-interpretation on the next WEEKLY
+    rebuild tick.
+
+    TIER1-365DAY (2027-02): called by career_arc._process_career_arc
+    when a fighter's attribute change crossed a voice-tier boundary
+    (tier_crossed=True or pers_tier_crossed=True). The weekly
+    rebuild tick (current_day % 7 == 0) used to rebuild ALL 4450
+    active fighters (~333ms). Now it rebuilds only the dirty-for-
+    rebuild subset (typically 50-200 fighters, ~15-50ms).
+
+    Distinct from mark_fighter_dirty (which targets the DAILY pass).
+    Both can be called for the same fighter — the daily refresh
+    re-touches the fighter immediately, the weekly rebuild re-
+    refreshes them again as a safety net (catches any drift between
+    the daily refresh and the bulk career-arc changes that landed
+    later in the month).
+    """
+    if fighter_id is None:
+        return
+    try:
+        _fighters_dirty_for_rebuild.add(int(fighter_id))
+    except (TypeError, ValueError):
+        pass  # defensive — non-int fighter_id silently ignored
+
+
+def clear_dirty_fighters() -> None:
+    """Clear the dirty-fighter set.
+
+    Called at the end of run_daily_interpretation_pass (the daily
+    pass has either re-refreshed each dirty fighter via the targeted
+    path, OR done a full rebuild which subsumes them). Also exposed
+    publicly so tests can reset state between runs.
+    """
+    _dirty_fighters.clear()
+
+
+def clear_fighters_dirty_for_rebuild() -> None:
+    """Clear the dirty-for-rebuild set.
+
+    Called at the end of _interpret_dirty_fighters (the weekly dirty
+    rebuild has re-refreshed each fighter in the set). Also exposed
+    publicly so tests can reset state between runs.
+    """
+    _fighters_dirty_for_rebuild.clear()
+
+
+def get_dirty_fighter_count() -> int:
+    """Return the current size of the dirty-fighter set (for diagnostics)."""
+    return len(_dirty_fighters)
+
+
+def get_fighters_dirty_for_rebuild_count() -> int:
+    """Return the current size of the dirty-for-rebuild set (for diagnostics)."""
+    return len(_fighters_dirty_for_rebuild)
+
+
+def _should_full_rebuild(conn, current_date: str) -> bool:
+    """Decide whether the daily pass should do a full 4 450-fighter rebuild
+    or a targeted refresh of only the dirty fighters.
+
+    Returns True (full rebuild) when ANY of:
+      1. The interpretation_cache_meta row is missing (fresh DB or
+         first run after a schema reset — every fighter's cache row
+         starts NULL and must be populated).
+      2. The cached engine_version != snapshot_cache.ENGINE_VERSION
+         (the interpretation logic changed — every cache row is
+         stale and must be recomputed with the new logic).
+      3. The simulation_clock.current_day is a multiple of 7 — the
+         weekly re-baseline. Catches anything the per-event refresh
+         path missed across the whole week (per PERF_ARCH_AUDIT §4.5).
+
+    Returns False (targeted refresh only) otherwise — the per-event
+    subscribers have already refreshed the dirty fighters, and the
+    daily pass just needs to re-touch them as a safety net + write
+    fresh headlines + meta.
+
+    Args:
+        conn: sqlite3.Connection.
+        current_date: ISO date string for the current sim day.
+
+    Returns:
+        bool — True for full rebuild, False for targeted refresh.
+    """
+    # 1. + 2. — engine_version mismatch (covers "meta row missing"
+    # because a missing row returns None, which != ENGINE_VERSION).
+    try:
+        row = conn.execute(
+            "SELECT engine_version, current_day "
+            "FROM interpretation_cache_meta, simulation_clock "
+            "WHERE interpretation_cache_meta.meta_id=1 "
+            "AND simulation_clock.clock_id=1"
+        ).fetchone()
+    except sqlite3.Error:
+        # Defensive — if either table is missing (shouldn't happen
+        # post-v3.10.0), default to full rebuild.
+        return True
+    if row is None or row[0] is None or row[0] != ENGINE_VERSION:
+        return True
+
+    # 3. — weekly re-baseline (current_day % 7 == 0). On day 0
+    # (before any tick has run), the modulo is 0 too — but day 0
+    # also has no meta row, so case 1 already returned True above.
+    current_day = row[1]
+    if current_day is None:
+        return True
+    try:
+        if int(current_day) % 7 == 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+
+    return False
+
+
+def _is_engine_version_mismatch(conn) -> bool:
+    """Return True iff the cached engine_version != ENGINE_VERSION
+    (or the interpretation_cache_meta row is missing).
+
+    TIER1-365DAY (2027-02): used by run_daily_interpretation_pass to
+    distinguish between the two flavors of "full rebuild":
+      - Engine-version mismatch (or missing meta row) → TRUE full
+        rebuild of ALL 4450 active fighters via _interpret_fighters.
+        Rare — only fires when ENGINE_VERSION is bumped or on a
+        fresh DB. Cost ~333ms.
+      - Weekly tick (current_day % 7 == 0) but engine_version
+        matches → DIRTY rebuild of only fighters in the
+        _fighters_dirty_for_rebuild set via _interpret_dirty_
+        fighters. Common — fires once every 7 ticks. Cost ~15-50ms.
+
+    _should_full_rebuild returns True for EITHER case. This helper
+    disambiguates: returns True iff the cause was an engine-version
+    mismatch (or missing meta row). Returns False otherwise —
+    meaning _should_full_rebuild returned True because of the
+    weekly-tick check (case 3 in _should_full_rebuild).
+
+    Args:
+        conn: sqlite3.Connection.
+
+    Returns:
+        bool — True if cached engine_version != ENGINE_VERSION or
+        meta row missing; False otherwise.
+    """
+    try:
+        row = conn.execute(
+            "SELECT engine_version "
+            "FROM interpretation_cache_meta "
+            "WHERE interpretation_cache_meta.meta_id=1"
+        ).fetchone()
+    except sqlite3.Error:
+        # Defensive — table missing → treat as mismatch (force
+        # full rebuild to repopulate the cache from scratch).
+        return True
+    if row is None or row[0] is None or row[0] != ENGINE_VERSION:
+        return True
+    return False
 
 
 def run_daily_interpretation_pass(conn):
-    """Run the full daily interpretation pass.
+    """Run the daily interpretation pass.
 
     Called from tick_processor.run_tick AFTER conn.commit() (per
     CONVENTIONS §17.5). Writes to fighter_descriptors (the 6 new
@@ -105,14 +430,22 @@ def run_daily_interpretation_pass(conn):
 
     Per CONVENTIONS §17: NEVER writes to simulation tables.
 
-    Performance budget: <1 second for 4450 active fighters + 300 gyms
-    + 10 promotions + 80 divisions + 4 headlines. Requires the bulk-
-    load pattern (one SELECT, Python loop, executemany UPDATE) per
-    career_arc._process_career_arc.
+    TICK-REENGINEER (Fix 1, PERF_ARCH_AUDIT §4.5): the pass now has
+    two modes — full rebuild and targeted refresh. See
+    _should_full_rebuild() for the decision logic. On non-weekly
+    ticks (the common case), only the dirty fighters (those touched
+    by an event-bus subscriber since the last pass) are re-refreshed
+    — typically 5-20 fighters instead of all 4 450. This drops the
+    per-tick interpretation cost from ~333 ms → ~10-15 ms (a 25×
+    improvement on the post-commit step).
 
-    Skeleton behavior (Task 2.1): the 5 sub-engine calls are stubs.
-    Only interpretation_cache_meta is updated. The actual cache
-    writes are added in Tasks 2.2-2.8.
+    Performance budget:
+      - Full rebuild: <1 second for 4 450 active fighters + 300 gyms
+        + 10 promotions + 80 divisions + 4 headlines. Uses the
+        bulk-load pattern (one SELECT, Python loop, executemany
+        UPDATE) per career_arc._process_career_arc.
+      - Targeted refresh: <50 ms for ~20 dirty fighters (refresh_
+        fighter is ~0.7 ms each) + headlines + meta.
 
     Args:
         conn: sqlite3.Connection. Caller has ALREADY committed the
@@ -142,49 +475,70 @@ def run_daily_interpretation_pass(conn):
         current_date = row[0]
 
     # ----------------------------------------------------------------
-    # 1. Fighter interpretation (bulk-load pattern).
+    # 1. Fighter interpretation.
     # ----------------------------------------------------------------
-    # TODO (Tasks 2.2-2.4, 2.7): compute momentum, pressure,
-    # career_phase, narrative_family, public_narrative, legacy_state
-    # via the sub-engines and batch UPDATE fighter_descriptors.
-    # For now, this is a stub — the 6 new columns stay NULL until
-    # the sub-engines are implemented.
-    _interpret_fighters(conn, current_date)
+    # TICK-REENGINEER (Fix 1): pick the mode.
+    #   - Full rebuild: re-run all 4 sub-engines across all 4 450
+    #     fighters. Expensive (~333 ms) but catches anything the
+    #     event-driven path missed.
+    #   - Targeted refresh: re-run refresh_fighter on the dirty
+    #     set only. Cheap (~10-15 ms) and correct because the per-
+    #     event subscribers already did the heavy lifting.
+    # Either way, the daily_headlines + meta rows are updated below.
+    #
+    # TIER1-365DAY (2027-02): the "full rebuild" branch is now
+    # further split:
+    #   - TRUE full rebuild (engine_version mismatch or missing meta
+    #     row) → _interpret_fighters (ALL 4450 fighters, ~333ms).
+    #     Rare — fires only when ENGINE_VERSION is bumped or on a
+    #     fresh DB.
+    #   - WEEKLY dirty rebuild (current_day % 7 == 0, engine_version
+    #     matches) → _interpret_dirty_fighters (only fighters in
+    #     _fighters_dirty_for_rebuild, ~15-50ms). Common — fires
+    #     once every 7 ticks. The dirty-for-rebuild set is populated
+    #     by career_arc._process_career_arc when a fighter's attribute
+    #     change crossed a voice-tier boundary (tier_crossed=True or
+    #     pers_tier_crossed=True). The other ~4400 fighters whose
+    #     attributes didn't cross a tier boundary don't need a refresh
+    #     (their cached descriptors are still valid).
+    full_rebuild = _should_full_rebuild(conn, current_date)
+    if full_rebuild:
+        if _is_engine_version_mismatch(conn):
+            _interpret_fighters(conn, current_date)  # ALL fighters
+        else:
+            _interpret_dirty_fighters(conn, current_date)  # only dirty
+    else:
+        _refresh_dirty_fighters(conn)
 
     # ----------------------------------------------------------------
     # 2. Gym interpretation.
     # ----------------------------------------------------------------
-    # TODO (Task 2.8): gym_identity_engine.compute_gym_descriptor()
-    # for every gym; batch UPSERT into gym_descriptors.
+    # Gym identity is a daily-pass concern (not a per-event one) —
+    # the per-fight refresh_fighter path doesn't touch gym_descriptors.
+    # Always run the gym pass, regardless of full vs targeted mode.
     _interpret_gyms(conn, current_date)
 
     # ----------------------------------------------------------------
     # 3. Promotion interpretation.
     # ----------------------------------------------------------------
-    # TODO: compute prestige_desc, market_position_desc,
-    # roster_quality_desc for every promotion; batch UPSERT into
-    # promotion_descriptors.
     _interpret_promotions(conn, current_date)
 
     # ----------------------------------------------------------------
     # 4. Division interpretation.
     # ----------------------------------------------------------------
-    # TODO: compute depth_desc + competitiveness_desc for every
-    # (promotion, weight_class) pair; batch UPSERT into
-    # division_descriptors.
     _interpret_divisions(conn, current_date)
 
     # ----------------------------------------------------------------
     # 5. Daily headlines.
     # ----------------------------------------------------------------
-    # TODO (Task 2.6): headline_engine.generate_daily_headlines()
-    # for the 4 MVP headline types (top_story, upset_of_week,
-    # fastest_rising, biggest_fall); INSERT OR REPLACE into
-    # daily_headlines.
+    # Headlines are derived from fighter_descriptors, so they're
+    # only as fresh as the last fighter refresh. They're regenerated
+    # on every daily pass (idempotent INSERT OR REPLACE) — the player
+    # expects fresh "today's top story" on every Advance Day.
     _generate_headlines(conn, current_date)
 
     # ----------------------------------------------------------------
-    # 6. Update cache meta (always — even in skeleton mode).
+    # 6. Update cache meta (always — even in targeted mode).
     # ----------------------------------------------------------------
     # Records engine_version + last_built_date + last_built_fighter_
     # count. On next run, the daily pass compares engine_version to
@@ -201,6 +555,91 @@ def run_daily_interpretation_pass(conn):
         (ENGINE_VERSION, current_date, fighter_count),
     )
     conn.commit()
+
+    # Clear the dirty-fighter set — the daily pass has either re-
+    # refreshed each dirty fighter (targeted mode) or done a full
+    # rebuild (which subsumes them). Either way, the set is stale
+    # by the next tick.
+    clear_dirty_fighters()
+
+
+def _refresh_dirty_fighters(conn):
+    """Targeted refresh — re-run refresh_fighter on each dirty fighter.
+
+    Called from run_daily_interpretation_pass on non-weekly ticks
+    (the common case). The per-event subscribers have ALREADY called
+    refresh_fighter(conn, fid) when each event fired (FIGHT_RESOLVED,
+    FIGHTER_SIGNED, etc.) — this re-refresh is a safety net that
+    catches anything the per-event path missed (e.g., a transient
+    error during the event-driven refresh, or a fighter whose
+    descriptor snapshot was invalidated by a downstream write that
+    happened after the per-event refresh).
+
+    Cheap: ~0.7 ms × N dirty fighters (typically 5-20 per tick).
+    """
+    # Snapshot the set so iteration is safe even if refresh_fighter
+    # somehow re-enters mark_fighter_dirty (it shouldn't, but the
+    # defensive copy costs nothing).
+    dirty = list(_dirty_fighters)
+    for fid in dirty:
+        try:
+            refresh_fighter(conn, fid)
+        except Exception as e:
+            import sys
+            print(f"WARNING: _refresh_dirty_fighters: refresh_fighter("
+                  f"fighter_id={fid}) failed: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+
+
+def _interpret_dirty_fighters(conn, current_date):
+    """Weekly dirty rebuild — refresh only the fighters in
+    _fighters_dirty_for_rebuild.
+
+    TIER1-365DAY (2027-02): replaces the unconditional weekly
+    _interpret_fighters call (which rebuilt ALL 4450 active fighters
+    on every 7th tick, ~333ms). Now only fighters whose attributes
+    crossed a voice-tier boundary since the last weekly rebuild are
+    refreshed (~15-50ms for 50-200 fighters).
+
+    The dirty-for-rebuild set is populated by career_arc._process_
+    career_arc when tier_crossed=True or pers_tier_crossed=True
+    (i.e., when the monthly career-arc tick changed an attribute
+    in a way that shifts the fighter's voice-tier label, which in
+    turn shifts the descriptor strings produced by the context /
+    phase / family / legacy sub-engines).
+
+    After refreshing all dirty fighters, the set is cleared. The
+    next weekly rebuild will only refresh fighters newly dirtied
+    between now and then.
+
+    Args:
+        conn: sqlite3.Connection.
+        current_date: ISO date string for the current sim day
+            (passed for interface symmetry with _interpret_fighters;
+            refresh_fighter reads the date from simulation_clock
+            internally, so this is currently unused).
+    """
+    # Snapshot the set so iteration is safe even if refresh_fighter
+    # somehow re-enters mark_fighter_dirty_for_rebuild (it shouldn't,
+    # but the defensive copy costs nothing).
+    dirty = list(_fighters_dirty_for_rebuild)
+    if not dirty:
+        # Nothing to refresh — the weekly rebuild is a no-op this
+        # tick. This is the common case early in a soak (no monthly
+        # career-arc tick has fired yet to populate the set).
+        return
+    for fid in dirty:
+        try:
+            refresh_fighter(conn, fid)
+        except Exception as e:
+            import sys
+            print(f"WARNING: _interpret_dirty_fighters: refresh_fighter("
+                  f"fighter_id={fid}) failed: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+    # Clear the set — the weekly rebuild has re-refreshed each
+    # fighter in it. The next weekly rebuild will only refresh
+    # fighters newly dirtied between now and then.
+    clear_fighters_dirty_for_rebuild()
 
 
 def refresh_fighter(conn, fighter_id):

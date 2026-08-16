@@ -1,0 +1,352 @@
+/* ============================================================
+   CAGE EMPIRE — The Record Book Screen Styles
+   ============================================================
+   Voice/design (per P3_P4_PLAN.md §P4 + CONVENTIONS §14):
+     - Section header: "THE RECORD BOOK" (gold accent) + subtitle
+       "all-time leaders".
+     - Records grid: 2-3 column responsive. Each card has:
+       * Tier-colored left border (gold / green / crimson / white)
+       * Icon (emoji)
+       * Title (uppercase gold)
+       * Big value (display font, gold)
+       * Fighter name (clickable gold link → Fighter Profile)
+       * Context phrase (italic voice-layer narrative)
+     - Current Champions strip: grid of champion chips (top 12 by
+       defenses). Player's promo champions get a gold accent + gold
+       name. Each chip shows: belt icon, name, weight class, promo,
+       reign length, defense count.
+     - Voice empty state: "The record book is being written. Give
+       it time."
+   ============================================================ */
+
+.ce-records {
+  position: relative;
+  z-index: 1;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.ce-records__sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   RECORDS GRID — 3 columns on desktop, 2 on tablet, 1 on mobile
+   ============================================================ */
+.ce-records__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 960px) {
+  .ce-records__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .ce-records__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   RECORD CARD — single all-time leader
+   ============================================================ */
+.ce-records__card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.ce-records__card:hover {
+  border-color: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+/* Tier-colored left borders — visual variety by record type. */
+.ce-records__card--gold    { border-left-color: var(--gold); }
+.ce-records__card--green   { border-left-color: var(--green); }
+.ce-records__card--crimson { border-left-color: var(--crimson); }
+.ce-records__card--white   { border-left-color: var(--text-secondary); }
+
+.ce-records__card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ce-records__icon {
+  font-size: 18px;
+  line-height: 1;
+  filter: drop-shadow(0 0 4px rgba(224, 169, 87, 0.2));
+}
+.ce-records__title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+}
+
+.ce-records__value {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  margin: 2px 0 4px;
+}
+.ce-records__card--gold .ce-records__value    { color: var(--gold); }
+.ce-records__card--green .ce-records__value   { color: var(--green); }
+.ce-records__card--crimson .ce-records__value { color: var(--crimson); }
+
+.ce-records__fighter {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ce-records__name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--gold);
+  transition: color 0.15s;
+}
+.ce-records__name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-records__nick {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.ce-records__context {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+/* ============================================================
+   CURRENT CHAMPIONS STRIP — top 12 by defenses
+   ============================================================ */
+.ce-records__champions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-records__champions-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-records__champions-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-records__champions-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.ce-records__champions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 960px) {
+  .ce-records__champions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .ce-records__champions-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Champion chip — compact horizontal layout (belt + body). */
+.ce-records__champ {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ce-records__champ:hover {
+  border-color: var(--gold);
+  background: var(--bg-card-elevated);
+}
+/* Player's promo champions get a gold accent + gold-tinted bg so
+   the player can spot their own champions at a glance. */
+.ce-records__champ--player {
+  background: var(--gold-tint);
+  border-color: var(--gold);
+  border-left: 3px solid var(--gold);
+}
+.ce-records__champ--player:hover {
+  background: var(--gold-tint-strong);
+}
+.ce-records__champ-belt {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(224, 169, 87, 0.3));
+}
+.ce-records__champ-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ce-records__champ-name {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--gold);
+  transition: color 0.15s;
+}
+.ce-records__champ-name:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-records__champ-nick {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+  margin-left: 4px;
+  font-weight: 400;
+}
+.ce-records__champ-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.ce-records__champ-wc {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ce-records__champ-promo {
+  color: var(--text-tertiary);
+}
+.ce-records__champ-sep {
+  color: var(--text-tertiary);
+}
+.ce-records__champ-stats {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+}
+.ce-records__champ-reign {
+  color: var(--gold);
+  font-weight: 600;
+}
+.ce-records__champ-defs {
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   EMPTY STATE — voice-phrased
+   ============================================================ */
+.ce-records__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 56px 24px;
+  text-align: center;
+}
+.ce-records__empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.7;
+}
+.ce-records__empty-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.ce-records__empty-body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 560px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-records {
+    padding: 16px 12px 60px;
+  }
+  .ce-records__value {
+    font-size: 30px;
+  }
+  .ce-records__champions-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ce-records__champions-count {
+    margin-left: 0;
+    width: 100%;
+  }
+}

@@ -1,3 +1,10 @@
+> ⚠️ **OBSOLETE** — This is a historical planning doc. The current source of truth is
+> [`docs/Hardening_Phase.md`](Hardening_Phase.md) (the canonical hardening plan) +
+> [`docs/CURRENT_SYSTEM_STATE.md`](CURRENT_SYSTEM_STATE.md) (what exists, what works,
+> what's broken). This doc is preserved for historical context only.
+
+---
+
 # CAGE EMPIRE — Stage 3 Forensic Analysis
 
 > **Date:** 2026-07-23

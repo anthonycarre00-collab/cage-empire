@@ -1,0 +1,197 @@
+/* ============================================================
+   CAGE EMPIRE — Theme (CSS variables + @font-face, OFFLINE)
+   ============================================================
+   Source: docs/GUI_PLAN.md §4.5 (4-tier depth color system) +
+   dashboard_prototype.html (the approved 9/10 visual prototype).
+   All fonts loaded LOCALLY via @font-face — no Google Fonts CDN
+   so the desktop app works fully offline.
+   ============================================================ */
+
+@font-face {
+  font-family: 'Oswald';
+  src: url('../assets/fonts/Oswald-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/Inter-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../assets/fonts/JetBrainsMono-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('../assets/fonts/SourceSerifPro-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('../assets/fonts/SourceSerifPro-Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('../assets/fonts/SourceSerifPro-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Source Serif Pro';
+  src: url('../assets/fonts/SourceSerifPro-SemiBoldItalic.ttf') format('truetype');
+  font-weight: 600;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* ============================================================
+   CSS VARIABLES — 4-tier depth color system (GUI_PLAN §4.5)
+   ============================================================ */
+:root {
+  /* Background tiers (Office Mode) */
+  --bg-base: #0a0c10;          /* main window bg — 8px gutters between cards */
+  --bg-surface: #15181f;       /* sidebar, top bar — the SHELL surfaces */
+  --bg-card: #1c2028;          /* card backgrounds — every discrete panel */
+  --bg-card-elevated: #252a33; /* hover, active tab, dialog, dropdown */
+
+  /* Borders */
+  --border-subtle: #2a2f38;    /* 1px card borders, divider lines */
+  --border-strong: #3a4049;    /* 2px accent card borders (champion, selected) */
+
+  /* Text */
+  --text-primary: #e8eaed;     /* body, headings */
+  --text-secondary: #aab0b8;   /* metadata, captions, table column headers */
+  --text-tertiary: #6b7280;    /* disabled, timestamps only — NEVER for content */
+  --text-on-gold: #1a1410;     /* text on gold button bg (dark brown — ink on gold leaf) */
+  --text-on-crimson: #ffffff;
+
+  /* Brand accents */
+  --crimson: #d63a3f;          /* loss, KO/TKO, danger, rival heat — IMPACT moments only */
+  --gold: #e0a957;             /* EMPIRE wordmark, champion, primary actions, hyperlinks, win */
+  --gold-bright: #f5c878;      /* hover state for hyperlinks + buttons */
+  --green: #4ade80;            /* success — signed, recovered (sparingly) */
+  --warning: #fbbf24;          /* at-risk, injured, contract expiring */
+  --danger: #ef4444;           /* cut, suspended, critical */
+
+  /* Tints (for hover/active bg) */
+  --gold-tint: rgba(224, 169, 87, 0.10);
+  --gold-tint-strong: rgba(224, 169, 87, 0.18);
+  --crimson-tint: rgba(214, 58, 63, 0.10);
+  --crimson-tint-strong: rgba(214, 58, 63, 0.18);
+  --green-tint: rgba(74, 222, 128, 0.10);
+
+  /* Typography tokens */
+  --font-display: 'Oswald', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-serif: 'Source Serif Pro', serif;
+
+  /* Sizing */
+  --top-bar-h: 56px;
+  --sidebar-w: 220px;
+
+  /* Radius */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 10px;
+
+  /* Shadow — subtle, for elevated cards only */
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================================
+   GLOBAL RESET + BASE
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden; /* desktop app — no page scroll, inner panels scroll */
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  /* Subtle noise grain — "this is a real surface, not a flat fill" */
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0);
+  background-size: 3px 3px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar — themed to match the dark UI */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid var(--bg-base);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* ============================================================
+   TYPOGRAPHY HELPERS (from GUI_PLAN §10.1 — 5 voice registers)
+   ============================================================ */
+.display       { font-family: var(--font-display); font-size: 36px; font-weight: 700; letter-spacing: -0.01em; }
+.display-small { font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.h1            { font-family: var(--font-body); font-size: 22px; font-weight: 700; }
+.h2            { font-family: var(--font-body); font-size: 18px; font-weight: 700; }
+.h3            { font-family: var(--font-body); font-size: 15px; font-weight: 600; }
+.body          { font-family: var(--font-body); font-size: 14px; font-weight: 400; }
+.body-small    { font-family: var(--font-body); font-size: 13px; font-weight: 400; }
+.caption       { font-family: var(--font-body); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.descriptor       { font-family: var(--font-body); font-size: 14px; font-style: italic; color: var(--text-primary); }
+.descriptor-small { font-family: var(--font-body); font-size: 12px; font-style: italic; color: var(--text-secondary); }
+.commentary-fight { font-family: var(--font-serif); font-size: 17px; font-style: italic; }
+.pundit           { font-family: var(--font-serif); font-size: 14px; font-weight: 600; font-style: italic; }
+.mono          { font-family: var(--font-mono); font-size: 14px; }
+.mono-small    { font-family: var(--font-mono); font-size: 12px; }
+
+/* Color helpers */
+.c-gold     { color: var(--gold); }
+.c-green    { color: var(--green); }
+.c-crimson  { color: var(--crimson); }
+.c-secondary{ color: var(--text-secondary); }
+.c-tertiary { color: var(--text-tertiary); }

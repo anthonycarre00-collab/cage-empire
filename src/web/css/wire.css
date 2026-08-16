@@ -1,0 +1,308 @@
+/* ============================================================
+   CAGE EMPIRE — The Wire Screen Styles
+   ============================================================
+   Voice/design (per INFO-SCREENS-BATCH-1 §1):
+     - Section header: "THE WIRE" (gold accent) + subtitle.
+     - Filter bar: gold-bordered card with topic + sentiment
+       dropdowns + search input + Reset button.
+     - News list: each item is a card with a chips row (topic +
+       sentiment dot) + meta row (date · source · promo · fighter)
+       + headline (gold link if fighter_id) + body excerpt.
+     - Pagination: compact 1 … 3 4 [5] 6 7 … 12 layout.
+     - Color-coded topic chips: Signings/Fight Results/Title
+       Scene gold, Injuries/Bad Blood/Suspensions crimson,
+       Finance green, others default.
+     - Sentiment dot: green = bullish, gray = neutral,
+       red = bearish.
+   ============================================================ */
+
+.ce-wire {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ============================================================
+   SECTION HEADER — accent bar + title + subtitle
+   ============================================================ */
+.ce-wire .ce-sec-header .ce-sec-sub {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ============================================================
+   FILTER BAR
+   ============================================================ */
+.ce-wire__filter-bar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ce-wire__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ce-wire__filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+.ce-wire__filter-group--search {
+  flex: 1;
+  min-width: 220px;
+}
+.ce-wire__filter-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-wire__select,
+.ce-wire__search {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ce-wire__select:focus,
+.ce-wire__search:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-tint);
+}
+.ce-wire__clear-btn {
+  align-self: flex-end;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ce-wire__summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   NEWS LIST
+   ============================================================ */
+.ce-wire__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ce-wire__item {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.ce-wire__item:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-card-elevated);
+}
+
+.ce-wire__item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ce-wire__item-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Sentiment dot — small color indicator next to the topic chip. */
+.ce-wire__sent {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+.ce-wire__sent--positive { background: var(--green); border-color: var(--green); }
+.ce-wire__sent--neutral  { background: var(--text-tertiary); border-color: var(--text-tertiary); }
+.ce-wire__sent--negative { background: var(--crimson); border-color: var(--crimson); }
+
+.ce-wire__item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+.ce-wire__meta-sep { color: var(--text-tertiary); }
+.ce-wire__meta-date { color: var(--gold); font-weight: 600; }
+.ce-wire__meta-source { color: var(--text-secondary); }
+.ce-wire__meta-promo { color: var(--text-secondary); }
+.ce-wire__meta-fighter { color: var(--text-primary); font-weight: 600; }
+
+.ce-wire__item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-wire__headline {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--gold);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.ce-wire__headline:hover {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+.ce-wire__headline--plain {
+  color: var(--text-primary);
+  cursor: default;
+}
+.ce-wire__headline--plain:hover {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.ce-wire__excerpt {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  font-style: italic;
+}
+
+/* ============================================================
+   EMPTY STATE — voice-phrased
+   ============================================================ */
+.ce-wire__empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 48px 24px;
+  text-align: center;
+}
+.ce-wire__empty-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.ce-wire__empty-body {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   PAGINATION
+   ============================================================ */
+.ce-wire__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+}
+.ce-page-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ce-page-btn:hover:not(:disabled):not(.ce-page-btn--active) {
+  background: var(--gold-tint);
+  border-color: var(--gold);
+  color: var(--gold);
+}
+.ce-page-btn--active {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--text-on-gold);
+}
+.ce-page-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.ce-page-ellipsis {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  padding: 0 4px;
+}
+
+/* ============================================================
+   RESPONSIVE — collapse filters under 760px
+   ============================================================ */
+@media (max-width: 760px) {
+  .ce-wire {
+    padding: 16px 12px 60px;
+  }
+  .ce-wire__filters {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .ce-wire__filter-group,
+  .ce-wire__filter-group--search {
+    min-width: 0;
+    width: 100%;
+  }
+  .ce-wire__clear-btn {
+    align-self: flex-start;
+  }
+  .ce-wire__item-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ce-wire__list {
+    max-height: none;
+  }
+}

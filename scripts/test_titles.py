@@ -114,11 +114,15 @@ A_ID = 1
 B_ID = 2
 
 # Seeded event date from src/seed_data.py — used for assertions.
-SEEDED_EVENT_DATE = "2026-08-15"
+# HW8.1: the seeded event now follows simulation_clock.current_date
+# (was hardcoded "2026-08-15" while the fresh-DB clock started at
+# "2026-08-14"). The fresh-DB clock is GAME_START_DATE = "2026-01-01"
+# (per build_db.py), so the seeded event is now dated "2026-01-01".
+SEEDED_EVENT_DATE = "2026-01-01"
 
 # Auto-scheduled next event is 4 weeks after the seeded event.
-# 2026-08-15 + 28 days = 2026-09-12.
-AUTO_SCHEDULED_EVENT_DATE = "2026-09-12"
+# 2026-01-01 + 28 days = 2026-01-29.
+AUTO_SCHEDULED_EVENT_DATE = "2026-01-29"
 
 
 # --------------------------------------------------------------------

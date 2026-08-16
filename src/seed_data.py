@@ -46,13 +46,23 @@ def one(conn, sql, params=()):
 #   fighter contract_type: 'standard'.
 # ----------------------------------------------------------------
 
-def _seed_default_fighter_contract(conn, fighter_id, promotion_id, start_date="2026-07-20"):
+def _seed_default_fighter_contract(conn, fighter_id, promotion_id, start_date=None):
     """Create a default 12-month exclusive fighter contract.
 
     Inserts one row into `contracts` (target_type='fighter') and one
     row into `fighter_contracts` (contract_type='standard'). Returns
     the new contract_id.
+
+    HW2.3: if start_date is None, fall back to build_db.GAME_START_DATE
+    (the formal sim-start constant) so seeded contracts align with the
+    sim clock's seeded current_date.
     """
+    if start_date is None:
+        # Lazy import to avoid circular dep (build_db imports nothing
+        # from seed_data, but seed_data is imported by tests that may
+        # have build_db stubbed).
+        from build_db import GAME_START_DATE
+        start_date = GAME_START_DATE
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = start_dt + timedelta(days=365)
     end_date = end_dt.strftime("%Y-%m-%d")
@@ -70,14 +80,19 @@ def _seed_default_fighter_contract(conn, fighter_id, promotion_id, start_date="2
     return contract_id
 
 
-def _seed_default_staff_contract(conn, staff_id, promotion_id, role, start_date="2026-07-20"):
+def _seed_default_staff_contract(conn, staff_id, promotion_id, role, start_date=None):
     """Create a default 12-month staff contract.
 
     Inserts one row into `contracts` (target_type='staff') and one
     row into `staff_contracts` with the given role. Returns the new
     contract_id. Symmetric to `_seed_default_fighter_contract` but
     for the staff subtype.
+
+    HW2.3: if start_date is None, fall back to build_db.GAME_START_DATE.
     """
+    if start_date is None:
+        from build_db import GAME_START_DATE
+        start_date = GAME_START_DATE
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = start_dt + timedelta(days=365)
     end_date = end_dt.strftime("%Y-%m-%d")
@@ -702,7 +717,22 @@ def main():
         # ----------------------------------------------------------------
         _seed_vacant_title(conn, promo_id, wc_id)  # Task ID 11
 
-        event_id = one(conn, "INSERT INTO events (promotion_id, venue_id, market_id, event_name, event_date, event_type) VALUES (?, ?, ?, ?, ?, ?)", (promo_id, venue_id, market_id, "Alpha Combat: Test Night", "2026-08-15", "fight_night"))
+        # HW8.1: use the simulation_clock's current_date as the seeded
+        # event's date. Previously hardcoded "2026-08-15" while the
+        # fresh-DB clock started at "2026-08-14" — so the seeded event
+        # was 1 day in the future, which the HW8.1 event-lifecycle fix
+        # correctly blocks from resolving. Aligning the dates lets all
+        # 33 test scripts that call resolve_next_fight on the seeded
+        # event work without modification.
+        sim_clock_row = conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        seeded_event_date = (
+            sim_clock_row[0] if sim_clock_row and sim_clock_row[0]
+            else "2026-08-15"  # fallback for safety (shouldn't happen)
+        )
+        event_id = one(conn, "INSERT INTO events (promotion_id, venue_id, market_id, event_name, event_date, event_type) VALUES (?, ?, ?, ?, ?, ?)", (promo_id, venue_id, market_id, "Alpha Combat: Test Night", seeded_event_date, "fight_night"))
         # v2.2.0 (Task pre-B2-fix): the seeded title-fight INSERT now
         # also sets `card_slot='main_event'` and `is_title_fight=1`
         # explicitly (the deprecated `bout_type='title_fight'` is kept

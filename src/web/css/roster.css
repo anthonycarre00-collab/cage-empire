@@ -1,0 +1,335 @@
+/* ============================================================
+   CAGE EMPIRE — Roster Screen Styles ("The Stable")
+   ============================================================
+   Sharp-cornered "ledger" table with:
+     - Alternating row colors
+     - Gold-tint hover
+     - Gold left-border on selected row
+     - Active dot (gold/crimson/neutral)
+     - Voice phrases in italic (Stage, Form)
+     - Mono numbers (Age, WC, Record, Nat)
+     - Filter row with dropdowns + search + clear
+     - Pagination (prev / numbered / next)
+     - Weight Class Distribution viz
+   ============================================================ */
+
+.ce-roster {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.ce-sec-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================
+   FILTER ROW
+   ============================================================ */
+.ce-roster-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0 4px;
+}
+.ce-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-filter-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-filter-select,
+.ce-filter-input {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+  height: 32px;
+}
+.ce-filter-select:focus,
+.ce-filter-input:focus {
+  border-color: var(--gold);
+}
+.ce-filter-search { min-width: 220px; }
+.ce-filter-input { width: 100%; }
+.ce-filter-input::placeholder { color: var(--text-tertiary); }
+
+.ce-filter-clear { height: 32px; }
+.ce-filter-spacer { flex: 1; }
+.ce-filter-actions { flex-shrink: 0; }
+
+/* ============================================================
+   TABLE
+   ============================================================ */
+.ce-roster-table-wrap {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;  /* sharp corners — "ledger" feel */
+  overflow-x: auto;
+}
+.ce-roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.ce-roster-th {
+  text-align: left;
+  padding: 12px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid var(--border-strong);
+  background: var(--bg-surface);
+  white-space: nowrap;
+  user-select: none;
+}
+.ce-roster-th--sortable {
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.ce-roster-th--sortable:hover { color: var(--gold); }
+.ce-roster-th--sorted { color: var(--gold); }
+.ce-sort-icon { font-size: 10px; margin-left: 2px; color: var(--gold); }
+
+.ce-roster-tr {
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 0.12s;
+  cursor: pointer;
+}
+.ce-roster-tr:nth-child(even) { background: rgba(255,255,255,0.015); }
+.ce-roster-tr:hover { background: var(--gold-tint); }
+.ce-roster-tr--selected {
+  background: var(--gold-tint-strong);
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+.ce-roster-td {
+  padding: 11px 12px;
+  vertical-align: middle;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.ce-roster-td--dot { width: 40px; text-align: center; }
+.ce-roster-td--name { min-width: 160px; }
+.ce-roster-nick {
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-left: 4px;
+  font-size: 12px;
+}
+.ce-roster-wc,
+.ce-roster-nat,
+.ce-roster-record {
+  color: var(--text-secondary);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.ce-roster-record { color: var(--text-primary); font-weight: 500; }
+.ce-roster-stage,
+.ce-roster-form {
+  font-style: italic;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.ce-roster-gym {
+  color: var(--text-secondary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ce-roster-name { font-size: 14px; font-weight: 600; }
+
+/* ============================================================
+   ACTIVE DOT
+   ============================================================ */
+.ce-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.2);
+}
+.ce-dot-gold     { background: var(--gold); box-shadow: 0 0 6px rgba(224,169,87,0.6); }
+.ce-dot-crimson  { background: var(--crimson); box-shadow: 0 0 6px rgba(214,58,63,0.6); }
+.ce-dot-neutral  { background: var(--border-strong); }
+.ce-dot-green    { background: var(--green); }
+
+/* ============================================================
+   PAGINATION
+   ============================================================ */
+.ce-roster-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 4px 4px;
+}
+.ce-page-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-page-info .ce-mono { color: var(--text-primary); font-style: normal; font-weight: 600; }
+.ce-page-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ce-page-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  min-width: 32px;
+}
+.ce-page-btn:hover:not(:disabled) {
+  background: var(--gold-tint);
+  color: var(--gold);
+  border-color: var(--gold);
+}
+.ce-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ce-page-btn--current {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border-color: var(--gold);
+  font-weight: 700;
+}
+.ce-page-btn--current:hover {
+  background: var(--gold-bright);
+  color: var(--text-on-gold);
+}
+.ce-page-ellipsis {
+  color: var(--text-tertiary);
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+/* ============================================================
+   WEIGHT CLASS DISTRIBUTION VIZ
+   ============================================================ */
+.ce-wc-viz {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 16px;
+}
+.ce-wc-bar-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 40px;
+  align-items: center;
+  gap: 12px;
+}
+.ce-wc-bar-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-wc-bar-track {
+  height: 10px;
+  background: var(--border-subtle);
+  border-radius: 0;
+  overflow: hidden;
+}
+.ce-wc-bar-fill {
+  height: 100%;
+  background: var(--gold);
+  transition: width 0.3s ease;
+}
+.ce-wc-bar-count {
+  font-size: 13px;
+  color: var(--text-primary);
+  text-align: right;
+  font-weight: 600;
+}
+
+/* ============================================================
+   CR-7 — PROMO LOGO IN ROSTER HEADER + WC VIZ GENDER TOGGLE
+   ============================================================ */
+.ce-roster-promo-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  border: 1px solid var(--gold, #c9a227);
+  vertical-align: middle;
+  object-fit: contain;
+  background: #1a1a1a;
+  flex-shrink: 0;
+}
+
+/* CR-7: Men's / Women's toggle for the weight-class distribution viz. */
+.ce-wc-viz-toggle {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.ce-wc-toggle-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: var(--surface-2, #2a2f36);
+  color: var(--text-secondary, #9aa3ad);
+  border: 1px solid var(--border-subtle, #3a3f46);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-family: var(--font-body);
+}
+.ce-wc-toggle-btn:hover {
+  background: var(--surface-3, #3a3f46);
+  color: var(--text-primary, #e8e8e8);
+}
+.ce-wc-toggle-btn--active {
+  background: var(--gold, #c9a227);
+  color: #1a1a1a;
+  border-color: var(--gold, #c9a227);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .ce-roster-filters { gap: 8px; }
+  .ce-filter-search { min-width: 160px; }
+  .ce-roster-gym { max-width: 100px; }
+  .ce-wc-bar-row { grid-template-columns: 110px 1fr 30px; }
+}

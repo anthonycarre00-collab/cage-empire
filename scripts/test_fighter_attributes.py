@@ -123,10 +123,16 @@ EXPECTED_MIGRATION_PREFIX = f"v{EXPECTED_CODE_VERSION.replace('.', '_')}_"
 # with a LIKE query (used in A.2) is the durable check — it passes regardless
 # of the description suffix.
 
-# Seeded clock date from src/build_db.py + a date exactly 1 day later
-# (used to verify the current_date quirk fix in case F).
-SEEDED_CLOCK_DATE = "2026-07-20"
-EXPECTED_CLOCK_AFTER_ONE_TICK = "2026-07-21"
+# Seeded clock date from src/build_db.py GAME_START_DATE constant + a
+# date exactly 1 day later (used to verify the current_date quirk fix
+# in case F). HW2.3 changed GAME_START_DATE from the legacy 2026-07-20
+# to the formal 2026-01-01, so the test reads the constant dynamically
+# instead of hardcoding the date.
+from datetime import datetime as _dt, timedelta as _td
+SEEDED_CLOCK_DATE = build_db.GAME_START_DATE
+EXPECTED_CLOCK_AFTER_ONE_TICK = (
+    (_dt.strptime(SEEDED_CLOCK_DATE, "%Y-%m-%d") + _td(days=1)).strftime("%Y-%m-%d")
+)
 
 # The 21 new attribute columns (must match fighter_gen.NEW_ATTRIBUTE_NAMES).
 NEW_ATTR_COLUMNS = fighter_gen.NEW_ATTRIBUTE_NAMES

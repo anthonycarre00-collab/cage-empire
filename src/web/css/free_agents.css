@@ -1,0 +1,408 @@
+/* ============================================================
+   CAGE EMPIRE — Free Agents Screen Styles ("Open Market")
+   ============================================================
+   Reuses roster.css for the table + filters + pagination. This
+   file adds the unique Free Agents elements:
+     - Sticky sign bar (bottom)
+     - Ceiling display (mono, gold for scouted / dim "????" for unknown)
+     - Sign confirmation modal
+   ============================================================ */
+
+.ce-fa {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 110px;  /* bottom padding for sticky sign bar */
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ============================================================
+   FILTER ROW — same as roster but distinct class for spacing tweaks
+   ============================================================ */
+.ce-fa-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0 4px;
+}
+
+/* CR-4: "Page X of Y" indicator next to the Next button. Sits
+   between the page numbers and the Next button in .ce-page-controls.
+   Uses the roster.css .ce-page-controls flex container — no
+   layout changes needed there. */
+.ce-page-indicator {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  padding: 0 8px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   CEILING DISPLAY
+   ============================================================ */
+.ce-fa-ceiling--scouted {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-fa-ceiling--unknown {
+  color: var(--text-tertiary);
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+/* ============================================================
+   STICKY SIGN BAR — bottom of viewport
+   ============================================================ */
+.ce-fa-signbar {
+  position: fixed;
+  bottom: 0;
+  left: 220px;  /* sidebar width */
+  right: 0;
+  background: var(--bg-surface);
+  border-top: 2px solid var(--gold);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  z-index: 50;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+}
+.ce-fa-signbar--empty {
+  border-top-color: var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  font-style: italic;
+  padding: 16px 24px;
+}
+.ce-fa-signbar-text {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.ce-fa-signbar-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fa-signbar-name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.ce-fa-signbar-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+
+.ce-fa-signbar-cost {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+}
+.ce-fa-signbar-cost-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fa-signbar-cost-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+/* Sign button override — slightly larger for prominence */
+.ce-fa-signbar .ce-btn-primary {
+  padding: 10px 24px;
+  font-size: 14px;
+}
+
+/* ============================================================
+   SIGN CONFIRMATION MODAL
+   ============================================================ */
+.ce-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: ce-modal-fade 0.15s ease-out;
+}
+@keyframes ce-modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ce-modal-dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  width: 90%;
+  max-width: 480px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+  animation: ce-modal-slide 0.15s ease-out;
+}
+/* Phase E3.3 — wider modal for the negotiation panel
+   (4 sliders + acceptance indicator + summary). */
+.ce-fa-modal-dialog--wide {
+  max-width: 640px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+@keyframes ce-modal-slide {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.ce-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-modal-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 22px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.ce-modal-close:hover { color: var(--text-primary); }
+.ce-modal-body {
+  padding: 20px;
+}
+.ce-modal-line {
+  font-size: 15px;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+.ce-modal-line strong { color: var(--gold); }
+.ce-modal-contract {
+  background: var(--bg-base);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ce-modal-contract-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.ce-modal-contract-row span:first-child {
+  color: var(--text-secondary);
+}
+.ce-modal-contract-row span:last-child {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ce-modal-foot {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.ce-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ============================================================
+   TOAST — sign success/fail feedback
+   ============================================================ */
+.ce-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 20px;
+  border-radius: var(--r-md);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  animation: ce-toast-slide 0.2s ease-out;
+  max-width: 380px;
+}
+@keyframes ce-toast-slide {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.ce-toast--success {
+  background: var(--green);
+  color: var(--bg-base);
+}
+.ce-toast--error {
+  background: var(--crimson);
+  color: var(--text-on-crimson);
+}
+.ce-toast--info {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .ce-fa-signbar {
+    left: 0;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+  }
+  .ce-fa-signbar-cost {
+    border-left: none;
+    border-right: none;
+    padding: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+/* ============================================================
+   PHASE E3.3 — NEGOTIATION PANEL
+   4 sliders (salary, signing_bonus, contract_length, win_bonus)
+   + live acceptance indicator + total value summary.
+   ============================================================ */
+.ce-fa-negotiation {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+@media (max-width: 700px) {
+  .ce-fa-negotiation { grid-template-columns: 1fr; }
+}
+.ce-fa-lever {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg-base);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+}
+.ce-fa-lever__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ce-fa-lever__label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.ce-fa-lever__value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.ce-fa-lever input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  background: var(--bg-card-elevated);
+  border-radius: 3px;
+  outline: none;
+  border: 1px solid var(--border-subtle);
+  margin: 4px 0;
+}
+.ce-fa-lever input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--gold);
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid var(--bg-base);
+  box-shadow: 0 0 6px rgba(224, 169, 87, 0.4);
+}
+.ce-fa-lever input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--gold);
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid var(--bg-base);
+}
+.ce-fa-lever__hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* Live acceptance indicator */
+.ce-fa-acceptance {
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+  margin-bottom: 12px;
+}
+.ce-fa-acceptance__indicator {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.ce-fa-acceptance__indicator--accept {
+  color: var(--green);
+}
+.ce-fa-acceptance__indicator--reject {
+  color: var(--crimson);
+}
+.ce-fa-acceptance__detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}

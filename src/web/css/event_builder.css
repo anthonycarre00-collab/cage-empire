@@ -1,0 +1,985 @@
+/* ============================================================
+   CAGE EMPIRE — Event Builder Screen Styles ("Stack a Card")
+   ============================================================
+   Phase E3.1 (docs/PHASE_E3_PLAN.md §1.E3.1 + docs/ECON_STAFF_PLAN.md
+   §3.3) + F3 UX refresh (docs/FIX_PLAN_CACHE_CASH_EB.md §3) +
+   Phase P2 redesign (docs/COMPREHENSIVE_FIX_PLAN.md §Group B #5-7).
+   6 sections in a vertical stack (P2 reorder — Name → Date →
+   Venue → Business End):
+
+     1. 🎫 STACK A CARD       — section header + promo info strip
+     2. 📛 NAME YOUR EVENT    — text input (auto-default name)
+     3. 📅 PICK YOUR DATE     — date picker + conflict warnings
+     4. 🏟 PICK YOUR VENUE    — compact venue grid (capacity +
+                                country + region filters) + Quick Pick
+     5. 💼 THE BUSINESS END   — sliders (ticket, marketing, ppv, is_ppv)
+                                (renamed from "Set Your Levers" per P2.3)
+     6. 📊 PROJECTED OUTCOME  — live P&L preview (debounce 200ms)
+
+   Mirrors the established dark+gold visual language. Sliders use a
+   gradient track + 16px gold thumb + value bubble above the thumb
+   + min/max labels below the track. Net profit is large + bold +
+   color-coded (green/red gradient banner) per spec.
+   ============================================================ */
+
+.ce-eb {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ============================================================
+   SECTION HEADER — F3: gold accent bar + emoji icon + title + sub
+   ============================================================ */
+.ce-sec-header .ce-sec-icon {
+  font-size: 22px;
+  line-height: 1;
+  margin-right: 4px;
+  filter: drop-shadow(0 0 6px rgba(224, 169, 87, 0.35));
+}
+.ce-sec-header .ce-eb-quickpick {
+  margin-left: auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  background: transparent;
+}
+.ce-sec-header .ce-eb-quickpick:hover {
+  background: var(--gold-tint);
+  color: var(--text-on-gold);
+}
+
+/* ============================================================
+   PROMO INFO STRIP — "YOUR WAR CHEST" + reputation/trust phrases
+   ============================================================ */
+.ce-eb-promo-strip {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+}
+.ce-eb-promo-strip__name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.ce-eb-promo-strip__cash {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-left: auto;
+}
+.ce-eb-promo-strip__cash--negative { color: var(--crimson); }
+.ce-eb-promo-strip__meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.ce-eb-promo-strip__meta span {
+  color: var(--gold);
+  margin-left: 4px;
+}
+
+/* ============================================================
+   NAME YOUR EVENT (P2.1) — text input pre-filled with the auto-
+   generated default name from the backend ("<Promo> <Next N>").
+   ============================================================ */
+.ce-eb-event-name {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+}
+.ce-eb-event-name__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-eb-event-name__input {
+  padding: 8px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+  max-width: 520px;
+}
+.ce-eb-event-name__input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+.ce-eb-event-name__hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ============================================================
+   VENUE GRID — P2.2 compact cards + capacity / country / region filters
+   Each card: icon + name on row 1, city/flag on row 2, capacity
+   (mono) on row 3, venue_type chip + rent/seat on row 4.
+   Selected: gold border + ✓ overlay. Hover: lift + gold glow.
+   Grid packs ~4 cards per row at 1200px (was 3 with the larger cards).
+   ============================================================ */
+.ce-eb-venue-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ce-eb-venue-filter-chips {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ce-eb-venue-filter-selects {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ce-eb-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ce-eb-filter-select {
+  padding: 5px 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  min-width: 160px;
+}
+.ce-eb-filter-select:hover { border-color: var(--gold); }
+.ce-eb-filter-select:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+.ce-eb-venue-filters .ce-chip {
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ce-eb-venue-filters .ce-chip.ce-chip--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border-color: var(--gold);
+}
+.ce-eb-venue-grid {
+  display: grid;
+  /* P2.2 — compact ~200px-wide cards (was 240px). Yields ~4 cards
+     per row at 1200px / ~5 at 1400px. */
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.ce-eb-venue-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  /* P2.2 — tighter padding than F3 (10px vs 14px). */
+  padding: 10px 10px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s,
+              box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-eb-venue-card:hover {
+  border-color: var(--gold);
+  background: var(--bg-card-elevated);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(224, 169, 87, 0.18),
+              0 0 0 1px rgba(224, 169, 87, 0.25);
+}
+.ce-eb-venue-card--selected {
+  border-color: var(--gold);
+  background: var(--gold-tint);
+  box-shadow: 0 0 0 2px var(--gold) inset,
+              0 4px 14px rgba(224, 169, 87, 0.25);
+}
+/* Selected-state checkmark overlay — top-right gold disc. */
+.ce-eb-venue-card__check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: var(--bg-base);
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+.ce-eb-venue-card--selected .ce-eb-venue-card__check {
+  opacity: 1;
+  transform: scale(1);
+}
+/* P2.2 — head row: icon + name side-by-side. Tighter than F3's
+   stacked layout (saves vertical space for the compact card). */
+.ce-eb-venue-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-eb-venue-card__icon {
+  font-size: 22px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+  flex-shrink: 0;
+}
+.ce-eb-venue-card__name {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  /* 2-line clamp so long venue names wrap cleanly within the card. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ce-eb-venue-card__city {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.ce-eb-venue-card__flag {
+  font-size: 12px;
+  line-height: 1;
+}
+.ce-eb-venue-card__capacity {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
+.ce-eb-venue-card__capacity-unit {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-left: 2px;
+}
+.ce-eb-venue-card__chips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ce-eb-venue-card__type {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--bg-card-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+.ce-eb-venue-card__rent {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* ============================================================
+   LEVER PANEL — sliders (F3: gradient track + bubble + axis)
+   ============================================================ */
+.ce-eb-levers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+@media (max-width: 900px) {
+  .ce-eb-levers { grid-template-columns: 1fr; }
+}
+.ce-eb-lever {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-base);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+}
+.ce-eb-lever__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ce-eb-lever__label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.ce-eb-lever__value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+/* Slider wrapper — relative positioning so the bubble can float. */
+.ce-eb-slider-wrap {
+  position: relative;
+  height: 28px;
+  margin-top: 6px;
+  padding: 0 8px;  /* half-thumb width so thumb doesn't overflow */
+}
+/* Value bubble — gold pill that follows the thumb. */
+.ce-eb-slider-bubble {
+  position: absolute;
+  top: -4px;
+  transform: translateX(-50%);
+  background: var(--gold);
+  color: var(--bg-base);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  transition: left 0.05s linear;
+  z-index: 2;
+}
+/* Min/max axis labels below the track. */
+.ce-eb-slider-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+}
+.ce-eb-slider-axis__min,
+.ce-eb-slider-axis__max { font-weight: 500; }
+
+/* Range input — gradient track (F3 spec). */
+.ce-eb-slider-wrap input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  outline: none;
+  margin: 12px 0 0;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+}
+/* "Good" lever (ticket, ppv): red → yellow → green left→right
+   (low = caution, high = reward). */
+.ce-eb-slider--good input[type="range"] {
+  background: linear-gradient(to right,
+    #d63a3f 0%, #fbbf24 50%, #4ade80 100%);
+}
+/* "Bad" lever (marketing spend): green → yellow → red
+   (low = safe, high = overspend risk). */
+.ce-eb-slider--bad input[type="range"] {
+  background: linear-gradient(to right,
+    #4ade80 0%, #fbbf24 50%, #d63a3f 100%);
+}
+/* 16px gold thumb with glow (F3 spec). */
+.ce-eb-slider-wrap input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--gold);
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid var(--bg-base);
+  box-shadow: 0 0 8px rgba(224, 169, 87, 0.55),
+              0 2px 4px rgba(0,0,0,0.4);
+  transition: background 0.12s, transform 0.1s, box-shadow 0.12s;
+}
+.ce-eb-slider-wrap input[type="range"]::-webkit-slider-thumb:hover {
+  background: var(--gold-bright);
+  transform: scale(1.15);
+  box-shadow: 0 0 12px rgba(224, 169, 87, 0.75),
+              0 2px 6px rgba(0,0,0,0.5);
+}
+.ce-eb-slider-wrap input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+.ce-eb-slider-wrap input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--gold);
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid var(--bg-base);
+  box-shadow: 0 0 8px rgba(224, 169, 87, 0.55);
+}
+.ce-eb-slider-wrap input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+}
+.ce-eb-lever__hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* is_ppv toggle */
+.ce-eb-lever--toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.ce-eb-lever--toggle .ce-eb-lever__label {
+  flex: 1;
+  margin: 0;
+}
+.ce-eb-toggle {
+  position: relative;
+  width: 44px;
+  height: 22px;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-eb-toggle--on {
+  background: var(--gold-tint-strong);
+  border-color: var(--gold);
+}
+.ce-eb-toggle__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 18px;
+  height: 18px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 0.15s, background 0.15s;
+}
+.ce-eb-toggle--on .ce-eb-toggle__thumb {
+  transform: translateX(22px);
+  background: var(--gold);
+}
+.ce-eb-toggle--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   PROJECTED OUTCOME — live P&L preview (F3: visual hierarchy)
+   ============================================================ */
+.ce-eb-preview {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 16px;
+}
+.ce-eb-preview__cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+@media (max-width: 900px) {
+  .ce-eb-preview__cols { grid-template-columns: 1fr; }
+}
+.ce-eb-preview__col-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-secondary);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-eb-preview__col-title--revenue { color: var(--green); }
+.ce-eb-preview__col-title--expense { color: var(--crimson); }
+.ce-eb-preview__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  padding: 4px 0;
+}
+.ce-eb-preview__row span:first-child {
+  color: var(--text-secondary);
+}
+.ce-eb-preview__row span:last-child {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.ce-eb-preview__row--sub {
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ce-eb-preview__row--total {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 6px;
+  padding-top: 8px;
+  font-weight: 700;
+}
+.ce-eb-preview__row--total span:first-child {
+  color: var(--text-primary);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12px;
+}
+.ce-eb-preview__row--total span:last-child {
+  font-size: 15px;
+}
+
+/* F3 — Net profit banner (replaces the small .ce-eb-net block).
+   Two-cell layout: NET PROFIT (left) | WAR CHEST AFTER (right).
+   Background gradient color-codes the verdict:
+     - safe   = green gradient
+     - risky  = yellow/orange gradient
+     - lethal = red gradient
+   Voice phrase appears below in italic. */
+.ce-eb-net-banner {
+  margin-top: 16px;
+  padding: 18px 22px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-base);
+}
+.ce-eb-net-banner--safe {
+  background: linear-gradient(135deg,
+    rgba(74, 222, 128, 0.18) 0%,
+    rgba(74, 222, 128, 0.05) 100%);
+  border-color: rgba(74, 222, 128, 0.45);
+}
+.ce-eb-net-banner--risky {
+  background: linear-gradient(135deg,
+    rgba(251, 191, 36, 0.20) 0%,
+    rgba(251, 191, 36, 0.05) 100%);
+  border-color: rgba(251, 191, 36, 0.5);
+}
+.ce-eb-net-banner--lethal {
+  background: linear-gradient(135deg,
+    rgba(214, 58, 63, 0.22) 0%,
+    rgba(214, 58, 63, 0.06) 100%);
+  border-color: rgba(214, 58, 63, 0.55);
+}
+.ce-eb-net-banner__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.ce-eb-net-banner__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ce-eb-net-banner__cell--right {
+  align-items: flex-end;
+  text-align: right;
+}
+.ce-eb-net-banner__label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.ce-eb-net-banner__value {
+  font-family: var(--font-mono);
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.ce-eb-net-banner--safe .ce-eb-net-banner__value { color: var(--green); }
+.ce-eb-net-banner--risky .ce-eb-net-banner__value { color: var(--warning); }
+.ce-eb-net-banner--lethal .ce-eb-net-banner__value { color: var(--crimson); }
+.ce-eb-net-banner__cash-after {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--gold);
+  line-height: 1.1;
+}
+.ce-eb-net-banner__phrase {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-top: 12px;
+}
+.ce-eb-net-banner__phrase--safe { color: var(--green); }
+.ce-eb-net-banner__phrase--risky { color: var(--warning); }
+.ce-eb-net-banner__phrase--lethal { color: var(--crimson); }
+
+.ce-eb-preview__empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* Phase F1.3 — show-quality variance hint banner. Sits above the
+   revenue/expense columns and explains WHY the projection is a range
+   (show quality is unknown pre-event; revenue varies ±30%). */
+.ce-eb-preview__variance-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg,
+    rgba(224, 169, 87, 0.10) 0%,
+    rgba(224, 169, 87, 0.03) 100%);
+  border: 1px solid rgba(224, 169, 87, 0.35);
+  border-radius: var(--r-md);
+}
+.ce-eb-preview__variance-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.ce-eb-preview__variance-text {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Phase F1.3 — range display (the net banner now shows RANGE instead
+   of a single number). Range values use a slightly smaller font-size
+   + a slightly muted color vs the legacy single-number net so the
+   player visually parses "this is a range, not a promise". */
+.ce-eb-net-banner__value--range {
+  font-size: 22px;  /* was 30px for single-number — range needs less emphasis */
+  font-weight: 700;  /* was 800 */
+  letter-spacing: 0;
+}
+.ce-eb-net-banner__row--net {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-eb-preview__loading {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* ============================================================
+   SCHEDULE BUTTON (sticky at bottom)
+   ============================================================ */
+.ce-eb-cta {
+  position: fixed;
+  bottom: 0;
+  left: 220px;
+  right: 0;
+  background: var(--bg-surface);
+  border-top: 2px solid var(--gold);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 50;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+}
+.ce-eb-cta__summary {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.ce-eb-cta__summary strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  margin: 0 4px;
+}
+.ce-eb-cta .ce-btn-primary {
+  padding: 10px 24px;
+  font-size: 14px;
+}
+.ce-eb-cta .ce-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+@media (max-width: 900px) {
+  .ce-eb-cta { left: 0; }
+}
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.ce-eb-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 13px;
+  background: var(--bg-card);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
+/* ============================================================
+   TOAST — success/fail feedback
+   ============================================================ */
+.ce-eb-toast {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  padding: 12px 20px;
+  border-radius: var(--r-md);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  animation: ce-eb-toast-slide 0.2s ease-out;
+  max-width: 380px;
+}
+@keyframes ce-eb-toast-slide {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.ce-eb-toast--success {
+  background: var(--green);
+  color: var(--bg-base);
+}
+.ce-eb-toast--error {
+  background: var(--crimson);
+  color: var(--text-on-crimson);
+}
+.ce-eb-toast--info {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+}
+
+/* ============================================================
+   DATE PICKER — MM2 §2.3 (PICK YOUR DATE section)
+   Native date input + Calendar shortcut + voice/conflict block.
+   ============================================================ */
+.ce-eb-date-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+}
+.ce-eb-date-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ce-eb-date-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  min-width: 90px;
+}
+.ce-eb-date-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 8px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ce-eb-date-input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+.ce-eb-date-input::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+.ce-eb-date-calendar {
+  padding: 7px 14px !important;
+  font-size: 12px !important;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--gold) !important;
+  color: var(--gold) !important;
+  background: transparent !important;
+}
+.ce-eb-date-calendar:hover {
+  background: var(--gold-tint) !important;
+  color: var(--gold-bright) !important;
+}
+.ce-eb-date-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-eb-date-hint strong {
+  color: var(--gold);
+  font-family: var(--font-mono);
+  font-style: normal;
+}
+
+/* Voice pill — "Clear date" / "Counter-programming risk" / "Short turnaround" */
+.ce-eb-date-voice {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid;
+  align-self: flex-start;
+}
+.ce-eb-date-voice--clear {
+  color: var(--green);
+  border-color: var(--green);
+  background: var(--green-tint);
+}
+.ce-eb-date-voice--warning {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: rgba(251,191,36,0.10);
+}
+.ce-eb-date-voice--danger {
+  color: var(--crimson);
+  border-color: var(--crimson);
+  background: var(--crimson-tint);
+}
+.ce-eb-date-voice--loading {
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+  background: var(--bg-card-elevated);
+  font-family: var(--font-body);
+  font-style: italic;
+}
+
+/* Conflict lines (one per rival/own conflict). */
+.ce-eb-date-conflicts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.ce-eb-date-conflict-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card-elevated);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-eb-date-conflict-line--rival { border-left-color: var(--crimson); }
+.ce-eb-date-conflict-line--own    { border-left-color: var(--gold); }
+.ce-eb-date-conflict-line--clear  { border-left-color: var(--green); }
+.ce-eb-date-conflict-line--danger { border-left-color: var(--danger); }
+.ce-eb-date-conflict-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.3;
+}

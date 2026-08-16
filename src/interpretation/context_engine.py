@@ -366,6 +366,176 @@ TRAJECTORY_PHRASES_EXT = {
 
 
 # ============================================================
+# INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3): SHORT PHRASE BANK
+# ============================================================
+# Per the §3 minimum variety bar: SHORT variants per label ≥8 for
+# table cells + chips (≤25 chars each). Fighter Watch Cards have
+# limited horizontal space — the existing _EXT phrases (35-60 chars)
+# get clipped. These SHORT variants stay under 25 chars so they fit
+# the Watch Card layout without truncation.
+#
+# CONSTRAINT (per the _EXT pattern): the acceptance tests
+# (test_context_engine.py Case D) verify the ORIGINAL MOMENTUM_PHRASES
+# has 3 variants per label. We CANNOT modify those dicts. We add a
+# NEW `_SHORT_PHRASES` parallel dict + a NEW picker. The daily pass
+# writes BOTH the long phrase (existing column) AND the short phrase
+# (new `*_short` column) so the UI can pick which to display based on
+# available space.
+#
+# Voice per Claude §1: short fragments, still specific imagery, no
+# generic praise, no digits (CONVENTIONS §14), ≤25 chars hard cap.
+
+MOMENTUM_PHRASES_SHORT = {
+    "very_high":  [
+        "white-hot run",
+        "scorching the earth",
+        "the hottest hand",
+        "on absolute fire",
+        "can't miss right now",
+        "division on notice",
+        "undefeated in form",
+        "red-hot streak",
+    ],
+    "high":       [
+        "hot streak rolling",
+        "wind at his back",
+        "trending upward",
+        "stringing wins",
+        "found his rhythm",
+        "building momentum",
+        "turning heads",
+        "the division listening",
+    ],
+    "stable":     [
+        "steady rhythm",
+        "holding form",
+        "consistent form",
+        "neither hot nor cold",
+        "doing the work",
+        "showing up",
+        "reliable hand",
+        "no real swing",
+    ],
+    "falling":    [
+        "sliding hard",
+        "rough patch",
+        "form dipping",
+        "the slide is on",
+        "searching for form",
+        "losses stacking",
+        "doubters loud",
+        "off his game",
+    ],
+    "collapsing": [
+        "in freefall",
+        "wheels coming off",
+        "spiraling",
+        "tailspin",
+        "bottom dropped out",
+        "skid careers end on",
+        "desperate for a win",
+        "the whisper started",
+    ],
+}
+
+PRESSURE_PHRASES_SHORT = {
+    "minimal":  [
+        "house money",
+        "carefree and loose",
+        "nothing to lose",
+        "low-pressure runway",
+        "free swinging",
+        "no urgency",
+        "loose leash",
+        "zero stakes",
+    ],
+    "moderate": [
+        "quiet heat",
+        "stakes rising",
+        "expectations on",
+        "stay on track",
+        "steady weight",
+        "focus the camp",
+        "matchup matters",
+        "path still clear",
+    ],
+    "high":     [
+        "real pressure",
+        "the heat is on",
+        "spotlight's on",
+        "must show up",
+        "no slack left",
+        "margin is gone",
+        "division watching",
+        "needs a big night",
+    ],
+    "extreme":  [
+        "do or die",
+        "back to the wall",
+        "career on the line",
+        "no room left",
+        "the wall is up",
+        "everything on it",
+        "clock is loud",
+        "winner stays alive",
+    ],
+}
+
+TRAJECTORY_PHRASES_SHORT = {
+    "rising":     [
+        "on the way up",
+        "arrow pointing up",
+        "still climbing",
+        "ascent is real",
+        "future belongs to him",
+        "ceiling not in sight",
+        "the next name",
+        "going up fast",
+    ],
+    "peaking":    [
+        "in his prime",
+        "peak of his powers",
+        "the summit",
+        "best version",
+        "the version remembered",
+        "prime years",
+        "as good as it gets",
+        "right now, this moment",
+    ],
+    "stable":     [
+        "holding ground",
+        "steady hand",
+        "reliable middle",
+        "known quantity",
+        "no volatility",
+        "build a card on",
+        "reliably present",
+        "the steady middle",
+    ],
+    "declining":  [
+        "past his best",
+        "the slow fade",
+        "father time winning",
+        "slide getting loud",
+        "form ages a fighter",
+        "finding the exit",
+        "the version gone",
+        "best days behind",
+    ],
+    "collapsing": [
+        "falling apart",
+        "end feels near",
+        "running out of road",
+        "bottom's here",
+        "spiral on",
+        "career-ending fall",
+        "in sight of the end",
+        "the slide a spiral",
+    ],
+}
+
+
+# ============================================================
 # CANONICAL LABEL ↔ VOICE PHRASE HELPERS
 # ============================================================
 
@@ -486,6 +656,55 @@ def get_trajectory_phrase_ext(trajectory, rng=None):
         rng = random
     variants = TRAJECTORY_PHRASES_EXT.get(
         trajectory, TRAJECTORY_PHRASES_EXT[TRAJECTORY_STABLE])
+    return rng.choice(variants)
+
+
+# ============================================================
+# INTERP-EXPAND-V2: SHORT phrase pickers (≤25 chars, ≥8 variants)
+# ============================================================
+# Used by the daily-pass write path to populate the new `*_short`
+# cache columns. The UI's Fighter Watch Card picks the short variant
+# when the available width can't fit the long _EXT phrase; the Fighter
+# Profile (full width) still uses the long _EXT variant. Same RNG
+# seed as the long picker (D3) so each fighter's short + long phrases
+# are both deterministic across daily passes.
+
+def get_momentum_phrase_short(momentum, rng=None):
+    """Pick a SHORT voice phrase (≤25 chars) for the momentum label.
+
+    INTERP-EXPAND-V2 (Claude §3): returns one of 8 short variants
+    per label. The engine uses this for the new `momentum_short`
+    cache column so the UI can pick short vs long based on width.
+    Falls back to the stable short variants if the label is
+    unrecognized (defensive — should not happen).
+    """
+    if rng is None:
+        rng = random
+    variants = MOMENTUM_PHRASES_SHORT.get(
+        momentum, MOMENTUM_PHRASES_SHORT[MOMENTUM_STABLE])
+    return rng.choice(variants)
+
+
+def get_pressure_phrase_short(pressure, rng=None):
+    """Pick a SHORT voice phrase (≤25 chars) for the pressure label."""
+    if rng is None:
+        rng = random
+    variants = PRESSURE_PHRASES_SHORT.get(
+        pressure, PRESSURE_PHRASES_SHORT[PRESSURE_MODERATE])
+    return rng.choice(variants)
+
+
+def get_trajectory_phrase_short(trajectory, rng=None):
+    """Pick a SHORT voice phrase (≤25 chars) for the trajectory label.
+
+    Trajectory doesn't have its own column (D6), but engines that
+    surface trajectory inline (e.g., narrative_families) can use the
+    short variant when their UI surface has limited width.
+    """
+    if rng is None:
+        rng = random
+    variants = TRAJECTORY_PHRASES_SHORT.get(
+        trajectory, TRAJECTORY_PHRASES_SHORT[TRAJECTORY_STABLE])
     return rng.choice(variants)
 
 
@@ -876,10 +1095,19 @@ def compute_all_fighters(conn, current_date=None):
         # checks which call them directly.
         momentum_phrase = get_momentum_phrase_ext(momentum, rng)
         pressure_phrase = get_pressure_phrase_ext(pressure, rng)
+        # INTERP-EXPAND-V2 (Claude §3): also pick SHORT variants for
+        # the new `momentum_short` + `pressure_short` columns. Same
+        # RNG seed so the same fighter always gets the same short +
+        # long pair (no UI flicker). The short variants are ≤25 chars
+        # for the Fighter Watch Card's narrow width.
+        momentum_short = get_momentum_phrase_short(momentum, rng)
+        pressure_short = get_pressure_phrase_short(pressure, rng)
 
         updates.append((
             encode(momentum, momentum_phrase),
             encode(pressure, pressure_phrase),
+            encode(momentum, momentum_short),
+            encode(pressure, pressure_short),
             fighter_id,
         ))
 
@@ -887,6 +1115,7 @@ def compute_all_fighters(conn, current_date=None):
     if updates:
         conn.executemany(
             "UPDATE fighter_descriptors SET momentum=?, pressure=?, "
+            "momentum_short=?, pressure_short=?, "
             "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
             updates,
         )
@@ -1000,12 +1229,20 @@ def compute_single_fighter(conn, fighter_id, current_date=None):
     # event-driven refreshes stay consistent with the daily pass.
     momentum_phrase = get_momentum_phrase_ext(momentum, rng)
     pressure_phrase = get_pressure_phrase_ext(pressure, rng)
+    # INTERP-EXPAND-V2: also write the SHORT variants (mirrors the
+    # bulk-pass behavior so the new `*_short` columns stay populated
+    # on event-driven refreshes too).
+    momentum_short = get_momentum_phrase_short(momentum, rng)
+    pressure_short = get_pressure_phrase_short(pressure, rng)
 
     conn.execute(
         "UPDATE fighter_descriptors SET momentum=?, pressure=?, "
+        "momentum_short=?, pressure_short=?, "
         "updated_at=CURRENT_TIMESTAMP WHERE fighter_id=?",
         (encode(momentum, momentum_phrase),
          encode(pressure, pressure_phrase),
+         encode(momentum, momentum_short),
+         encode(pressure, pressure_short),
          fighter_id),
     )
     conn.commit()

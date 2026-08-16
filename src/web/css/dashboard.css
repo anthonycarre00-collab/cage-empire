@@ -1,0 +1,649 @@
+/* ============================================================
+   CAGE EMPIRE — Dashboard Screen Styles
+   ============================================================
+   Ported from dashboard_prototype.html (the approved 9/10 VLM
+   visual prototype). All 8 dashboard sections:
+     1. Welcome + Logo
+     2. Gradient Header ("THE EMPIRE")
+     3. Top Story (gold-bordered card)
+     4. Promotion Status (5 stat tiles)
+     5. Next Event
+     6. Fighter Watch (3 cards: momentum ring + form meter)
+     7. Champions (3-col grid of champion cards)
+     8. Recent Results (4-col grid)
+     9. Recent News (vertical list)
+   ============================================================ */
+
+/* ============================================================
+   DASHBOARD ROOT — centered max-width column with vertical rhythm
+   ============================================================ */
+.ce-dash {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ============================================================
+   1. WELCOME + LOGO
+   ============================================================ */
+.ce-welcome-section {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.ce-promo-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-lg);
+  border: 2px solid var(--gold);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.ce-welcome-text { flex: 1; min-width: 0; }
+.ce-welcome-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+.ce-welcome-sub {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.ce-welcome-sub strong { color: var(--text-primary); font-weight: 600; }
+.ce-welcome-sub .ce-green { color: var(--green); }
+
+/* ============================================================
+   3. TOP STORY
+   ============================================================ */
+.ce-top-story {
+  background: var(--bg-card);
+  border: 2px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-card);
+}
+.ce-ts-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+.ce-ts-headline {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+.ce-ts-body {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+.ce-ts-footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ============================================================
+   3b. ECHOES — Phase R §1.5 + §6 Principle 4
+   Agency reward: 2-3 cards per Advance Day surfacing the
+   consequences of the player's past bookings/signings/cuts.
+   Gold accent bar — matches the Top Story + Fighter Watch
+   pattern (color-coded section headers per the v2 prototype).
+   ============================================================ */
+.ce-echo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-echo-card {
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.ce-echo-card:hover {
+  background: var(--bg-card-elevated);
+  transform: translateY(-1px);
+}
+.ce-echo-cut_echo {
+  border-color: var(--crimson);
+  border-left-color: var(--crimson);
+}
+.ce-echo-booking_echo {
+  border-color: var(--border-strong);
+  border-left-color: var(--green);
+}
+.ce-echo-scouting_echo {
+  border-color: var(--gold);
+  border-left-color: var(--gold);
+}
+.ce-echo-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-echo-phrase {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.45;
+  font-style: italic;
+  font-family: var(--font-display);
+  margin: 0;
+}
+.ce-echo-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-echo-link {
+  font-size: 12px;
+  font-weight: 600;
+  font-style: normal;
+  font-family: var(--font-body);
+}
+
+/* ============================================================
+   4. PROMOTION STATUS (5-col stat grid)
+   ============================================================ */
+.ce-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+
+/* Sub-label under a stat tile value (e.g. "5 titles to capture"
+   beneath "3 of 8" champions). Phase R §4.1 ownership language. */
+.ce-stat-sub {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+/* ============================================================
+   5. NEXT EVENT
+   ============================================================ */
+.ce-next-event-card {
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-next-event-date {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--gold);
+}
+.ce-next-event-name {
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ce-next-event-detail {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+/* Task FIGHT-NIGHT-SHOWCASE — "Watch the Show" launch button on the
+   Your Next Card section. P3.2 — replaced the old "🔥 Fight Night"
+   label with "▶ Watch the Show" + gated by event-day check. Gold,
+   prominent — this is the dopamine button that closes the
+   matchmaking → fight loop. */
+.ce-fn-launch-btn {
+  margin-top: 10px;
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-md);
+  padding: 10px 18px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(224, 169, 87, 0.25);
+}
+.ce-fn-launch-btn:hover {
+  background: var(--gold-bright);
+  box-shadow: 0 4px 12px rgba(224, 169, 87, 0.35);
+}
+.ce-fn-launch-btn:active {
+  transform: translateY(1px);
+}
+.ce-fn-launch-btn--ready {
+  animation: ce-fn-pulse 2.2s ease-in-out infinite;
+}
+@keyframes ce-fn-pulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(224, 169, 87, 0.25); }
+  50% { box-shadow: 0 4px 18px rgba(224, 169, 87, 0.55); }
+}
+.ce-fn-launch-btn--disabled {
+  background: var(--bg-card-elevated);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  cursor: not-allowed;
+  box-shadow: none;
+  opacity: 0.7;
+}
+.ce-fn-launch-btn--disabled:hover {
+  background: var(--bg-card-elevated);
+  box-shadow: none;
+}
+.ce-fn-launch-hint {
+  margin-top: 4px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-tertiary);
+  max-width: 320px;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   6. FIGHTER WATCH — 3 watch cards
+   ============================================================ */
+.ce-watch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.ce-watch-card {
+  background: var(--bg-card);
+  border: 2px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-watch-card-crimson { border-color: var(--crimson); }
+.ce-watch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ce-watch-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-watch-card-crimson .ce-watch-label { color: var(--crimson); }
+.ce-watch-icon { font-size: 14px; }
+.ce-watch-body { display: flex; gap: 12px; }
+.ce-watch-portrait { flex-shrink: 0; }
+.ce-watch-info { flex: 1; min-width: 0; }
+.ce-watch-name {
+  font-size: 16px;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+.ce-watch-phrase {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ce-watch-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ============================================================
+   7. CHAMPIONS — 3-col grid of champion cards
+   ============================================================ */
+.ce-champ-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ce-champ-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--green);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-champ-wc {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-champ-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ce-champ-meta { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ============================================================
+   8. RECENT RESULTS — 4-col grid of result cards
+   ============================================================ */
+.ce-results-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.ce-result-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-result-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.ce-result-promo {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ce-result-rating {
+  font-size: 12px;
+  font-weight: 600;
+  font-style: italic;
+  white-space: nowrap;
+}
+.ce-result-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ce-result-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-result-date {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   9. RECENT NEWS — vertical list
+   ============================================================ */
+.ce-news-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-news-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-news-card:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--border-strong);
+}
+.ce-news-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.ce-news-date {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.ce-news-headline {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: block;
+  margin-bottom: 4px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.ce-news-headline:hover { color: var(--gold); text-decoration: underline; }
+.ce-news-headline-plain { text-decoration: none; cursor: default; color: var(--text-primary); }
+.ce-news-headline-plain:hover { color: var(--text-primary); text-decoration: none; }
+.ce-news-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   RESPONSIVE — collapse grids on narrow windows
+   ============================================================ */
+@media (max-width: 1100px) {
+  .ce-stat-grid { grid-template-columns: repeat(3, 1fr); }
+  .ce-watch-grid { grid-template-columns: repeat(2, 1fr); }
+  .ce-champ-grid { grid-template-columns: repeat(2, 1fr); }
+  .ce-results-grid { grid-template-columns: repeat(2, 1fr); }
+  .ce-echo-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 760px) {
+  .ce-stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .ce-watch-grid { grid-template-columns: 1fr; }
+  .ce-champ-grid { grid-template-columns: 1fr; }
+  .ce-results-grid { grid-template-columns: 1fr; }
+  .ce-echo-grid { grid-template-columns: 1fr; }
+  .ce-welcome-title { font-size: 22px; }
+  .ce-grad-header-title { font-size: 22px; }
+}
+
+/* ============================================================
+   BIDDING WAR ALERT — Phase M3.2
+   ============================================================
+   Red-accented section surfacing rival AI signing intents the
+   player can counter-offer against. Renders between Top Story
+   and Echoes so it's visible on the first screen. Each card
+   shows: fighter name (link), rival promo name, offered salary,
+   days remaining to respond, and a Counter Offer button.
+
+   Voice compliance (CONVENTIONS §14 + VOICE_ENFORCEMENT):
+   business-page register ("Rival Fight League is pursuing
+   [Fighter]"), no raw potential/realization numbers — only
+   salary in $K/M format + voice phrases for ceiling + size tier.
+   ============================================================ */
+
+.ce-bid-section {
+  /* Slightly stronger background tint to draw the eye. */
+  background: linear-gradient(180deg,
+    rgba(214, 58, 63, 0.06) 0%,
+    rgba(214, 58, 63, 0.02) 100%);
+  border: 1px solid rgba(214, 58, 63, 0.25);
+  border-radius: 8px;
+  /* P1.1 — reduced frame: less padding so the section reads as a
+     compact alert strip, not a full card. */
+  padding: 10px 14px;
+}
+.ce-sec-title-danger {
+  color: var(--crimson);
+  /* Slight uppercase + letter-spacing for "ALERT" register. */
+  letter-spacing: 0.05em;
+}
+.ce-bid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ce-bid-card {
+  background: rgba(20, 22, 28, 0.6);
+  border: 1px solid rgba(214, 58, 63, 0.2);
+  border-left: 3px solid var(--crimson);
+  border-radius: 6px;
+  /* P1.1 — tighter card padding to keep the strip compact. */
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ce-bid-card:hover {
+  border-color: rgba(214, 58, 63, 0.45);
+  box-shadow: 0 2px 12px rgba(214, 58, 63, 0.15);
+}
+.ce-bid-card--warning {
+  /* 2 days left — amber tint. */
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.04);
+}
+.ce-bid-card--urgent {
+  /* 1 day left — pulsing crimson. */
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  animation: ce-bid-pulse 2.5s ease-in-out infinite;
+}
+@keyframes ce-bid-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.0); }
+  50%      { box-shadow: 0 0 12px 2px rgba(239, 68, 68, 0.25); }
+}
+.ce-bid-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.ce-bid-days {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--crimson);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.ce-bid-card--warning .ce-bid-days { color: #f59e0b; }
+.ce-bid-card--urgent  .ce-bid-days { color: #ef4444; }
+.ce-bid-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ce-bid-info {
+  flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-bid-target {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+.ce-bid-action {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-bid-fighter {
+  font-weight: 700;
+  color: var(--gold);
+}
+.ce-bid-fighter:hover { text-decoration: underline; }
+.ce-bid-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ce-bid-rival {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ce-bid-action-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.ce-bid-counter-btn {
+  /* Inherits .ce-btn-danger — small size override. */
+  font-size: 12px;
+  padding: 8px 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-bid-window {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* P1.1 — "View all" overflow link shown when more than 3 alerts. */
+.ce-bid-overflow {
+  margin-top: 6px;
+  text-align: right;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ce-bid-viewall {
+  color: var(--crimson);
+  font-weight: 600;
+  text-decoration: none;
+}
+.ce-bid-viewall:hover { text-decoration: underline; }
+
+/* Responsive — stack the action block under the info on narrow
+   windows. */
+@media (max-width: 760px) {
+  .ce-bid-body { flex-direction: column; }
+  .ce-bid-action-block {
+    align-items: stretch;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+}

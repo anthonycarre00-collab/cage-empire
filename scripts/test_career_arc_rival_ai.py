@@ -552,10 +552,15 @@ def case_e_descriptor_snapshot_refreshed():
     reset_bus()
     career_arc.register_subscribers()
 
-    # Make fighter 1 a 35-year-old with cardio=70 (decline band).
+    # Make fighter 1 a 35-year-old with cardio=60 (decline band).
+    # HW9.1: cardio=60 is the BOTTOM of the "capable" tier (60-74).
+    # A -1 decline to 59 crosses into the "average" tier (40-59),
+    # which triggers the descriptor snapshot refresh (the tier-
+    # crossing optimization in _process_career_arc skips the refresh
+    # when no tier boundary is crossed).
     set_fighter_age(conn, A_ID, 35, SEEDED_CLOCK_DATE)
     conn.execute(
-        "UPDATE fighter_attributes SET cardio=70 WHERE fighter_id=?",
+        "UPDATE fighter_attributes SET cardio=60 WHERE fighter_id=?",
         (A_ID,),
     )
     conn.commit()
@@ -679,10 +684,28 @@ def case_f_decline_news():
               row is not None, "")
         if row:
             headline, body = row
-            check("F", "headline references 'Father time' + fighter name",
-                  "father time" in headline.lower()
-                  and "vale" in headline.lower(),
-                  f"headline={headline!r}")
+            # INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3): the
+            # career_arc decline headline was expanded from 1 template
+            # ("Father time catches up with {name}") → 8 templates
+            # per Claude §1 voice (past-tense narrative, specific
+            # imagery, elegiac for decline, no tabloid clichés). The
+            # test asserts the headline contains the fighter's name
+            # AND a decline-themed keyword drawn from the 8-template
+            # bank. This is purely additive — the original "Father
+            # time" check still passes (template[0] still contains
+            # it), but the assertion no longer locks in a single
+            # template.
+            decline_keywords = [
+                "father time", "miles", "wall", "slide",
+                "wear", "step", "clock", "version",
+            ]
+            headline_lower = headline.lower()
+            has_name = "vale" in headline_lower
+            has_decline_word = any(k in headline_lower for k in decline_keywords)
+            check("F", "headline references a decline theme + fighter name",
+                  has_name and has_decline_word,
+                  f"headline={headline!r}, has_name={has_name}, "
+                  f"has_decline_word={has_decline_word}")
             # CONVENTIONS §14 — no raw numbers in player-facing text.
             # The headline + body should NOT contain digit characters
             # (age, attribute values, deltas are all forbidden).

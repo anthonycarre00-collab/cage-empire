@@ -1,0 +1,1371 @@
+/* ============================================================
+   CAGE EMPIRE — Fight Night Screen ("FIGHT NIGHT")
+   ============================================================
+   Task FIGHT-NIGHT-SHOWCASE. The showcase feature — live play-by-
+   play. Replaces the placeholder fight_resolution nav item.
+
+   3 phases per fight:
+     1. Pre-Fight Build-Up (3-5s) — tale of tape + punditry +
+        rivalry/memory context.
+     2. Live Fight (2-5min, speed-controllable) — 4-zone fixed
+        grid (no scroll): Commentary Feed / Fight Status /
+        Fight Tracker / Key Moments.
+     3. Post-Fight Recap (5-10s) — result card + stat changes +
+        news item + show rating (if last fight on card).
+
+   Voice compliance (CONVENTIONS §14 + VOICE_ENFORCEMENT.md):
+     - Commentary uses serif font (Source Serif Pro 17px italic).
+     - NO raw attribute numbers, NO raw rating ints — voice phrases.
+     - Momentum shown as a visual bar (not numbers).
+     - Damage indicators shown as glow (not numerals).
+     - Ownership language ("YOUR fighter", "YOUR champion").
+     - Specific imagery, short fragmentary sentences, no tabloid.
+   ============================================================ */
+
+
+/* ============================================================
+   ROOT LAYOUT — fills the screen-content area, no scroll on the
+   outer container. Each phase is absolutely positioned; only the
+   commentary feed (Zone A) scrolls internally.
+   ============================================================ */
+.ce-fn {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  max-height: calc(100vh - 56px); /* minus top bar */
+  overflow: hidden;
+  background: var(--bg-base);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============================================================
+   HEADER — event name + transport bar (Fight X of Y, speed controls)
+   ============================================================ */
+.ce-fn__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--bg-surface);
+  border-bottom: 2px solid var(--gold);
+  min-height: 56px;
+}
+.ce-fn__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-fn__event-name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+.ce-fn__event-meta {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fn__header-spacer { flex: 1; }
+
+.ce-fn__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+/* P3.4 — hide the raw beat counter ("No of beats" per the user's
+   complaint #6). The transport bar still shows the round/phase
+   visually, just not the "Beat X / Y" number. */
+.ce-fn__progress-count {
+  color: var(--gold);
+  font-weight: 700;
+  display: none;
+}
+
+.ce-fn__speed-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 4px;
+}
+/* P3.4 — larger transport buttons (48x48px minimum). The old 6x10
+   padding was unreadable on a touchpad and gave no room for icons. */
+.ce-fn__speed-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 12px;
+  min-width: 48px;
+  min-height: 48px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.ce-fn__speed-btn:hover {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+}
+.ce-fn__speed-btn--active {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+.ce-fn__speed-btn--active:hover {
+  background: var(--gold-bright);
+  color: var(--text-on-gold);
+}
+.ce-fn__speed-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ce-fn__exit-btn {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__exit-btn:hover {
+  background: var(--crimson-tint);
+  border-color: var(--crimson);
+  color: var(--crimson);
+}
+
+/* ============================================================
+   PHASE 1 — PRE-FIGHT BUILD-UP
+   ============================================================
+   Centered tale of tape + punditry + rivalry context. 3-5s timer
+   bar at the top, with a "Skip to Fight" button.
+   ----------------------------------------------------------- */
+.ce-fn__prefight {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.ce-fn__prefight-timer {
+  height: 3px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.ce-fn__prefight-timer-fill {
+  position: absolute;
+  top: 0; left: 0; height: 100%;
+  background: var(--gold);
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+.ce-fn__prefight-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ce-fn__prefight-eyebrow {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.ce-fn__prefight-skip-btn {
+  background: transparent;
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fn__prefight-skip-btn:hover {
+  background: var(--gold);
+  color: var(--text-on-gold);
+}
+
+/* Tale of Tape — 2-column fighter comparison */
+.ce-fn__tape {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 16px;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: 24px;
+}
+.ce-fn__tape-corner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ce-fn__tape-corner--red { order: 1; }
+.ce-fn__tape-corner--blue { order: 3; }
+
+.ce-fn__tape-portrait {
+  width: 110px;
+  height: 110px;
+  border-radius: var(--r-md);
+  border: 3px solid var(--crimson);
+  background: var(--bg-card-elevated);
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.ce-fn__tape-corner--blue .ce-fn__tape-portrait {
+  border-color: #4a90d9; /* blue accent for Blue Corner */
+}
+
+.ce-fn__tape-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.ce-fn__tape-nickname {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.ce-fn__tape-record {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--gold);
+  font-weight: 600;
+}
+.ce-fn__tape-corner-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+
+.ce-fn__tape-vs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  order: 2;
+}
+.ce-fn__tape-vs-small {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ce-fn__tape-stats {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px 16px;
+  font-size: 12px;
+  margin-top: 8px;
+}
+.ce-fn__tape-stat-label {
+  font-family: var(--font-body);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  font-size: 10px;
+  text-align: center;
+}
+.ce-fn__tape-stat-red,
+.ce-fn__tape-stat-blue {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+.ce-fn__tape-stat-red { text-align: right; }
+.ce-fn__tape-stat-blue { text-align: left; }
+
+/* Punditry / rivalry context panel */
+.ce-fn__context-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.ce-fn__context-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-fn__context-card--rivalry {
+  border-left-color: var(--crimson);
+}
+.ce-fn__context-card--memory {
+  border-left-color: var(--text-secondary);
+}
+.ce-fn__context-card--show {
+  border-left-color: var(--gold);
+}
+.ce-fn__context-card-title {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-fn__context-card-body {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.ce-fn__context-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.ce-fn__empty-context {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+/* ============================================================
+   PHASE 2 — LIVE FIGHT (4-zone fixed grid)
+   ============================================================
+   Zone A: top-left, 7 cols — Commentary Feed (scrollable, serif)
+   Zone B: top-right, 5 cols — Fight Status (portraits + scorecards
+           + momentum bar + damage indicators)
+   Zone C: bottom-left, 7 cols — Fight Tracker (clock + beat counter
+           + phase indicator + control time)
+   Zone D: bottom-right, 5 cols — Key Moments (highlight beats)
+   ----------------------------------------------------------- */
+.ce-fn__live {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 7fr 5fr;
+  grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  min-height: 0; /* critical for grid children to scroll */
+  overflow: hidden;
+}
+
+.ce-fn__zone {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.ce-fn__zone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.ce-fn__zone-title {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-fn__zone-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ce-fn__zone-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 8px 12px;
+}
+
+/* Zone A — Commentary Feed */
+.ce-fn__zone-a {
+  grid-column: 1;
+  grid-row: 1;
+}
+.ce-fn__commentary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 8px 8px;
+}
+.ce-fn__beat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  transition: background 0.2s, border-color 0.2s;
+  animation: ce-fn-beat-in 0.3s ease-out;
+}
+.ce-fn__beat--red {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.04);
+}
+.ce-fn__beat--blue {
+  border-left-color: #4a90d9;
+  background: rgba(74, 144, 217, 0.04);
+}
+.ce-fn__beat--highlight {
+  background: rgba(224, 169, 87, 0.12);
+  border-left-color: var(--gold);
+}
+.ce-fn__beat--finish {
+  background: rgba(224, 169, 87, 0.20);
+  border-left: 3px solid var(--gold);
+  font-weight: 600;
+}
+.ce-fn__beat--round-end {
+  border-top: 1px dashed var(--border-subtle);
+  margin-top: 6px;
+  padding-top: 8px;
+}
+.ce-fn__beat-timestamp {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__beat-text {
+  /* P3.4 — bumped from 14px to 22px per the user's complaint #4
+     ("commentary too small"). Serif font, high contrast, generous
+     line-height so the play-by-play reads as continuous prose. */
+  font-family: var(--font-serif);
+  font-size: 22px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+.ce-fn__beat--highlight .ce-fn__beat-text {
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+.ce-fn__beat--finish .ce-fn__beat-text {
+  font-size: 24px;
+  color: var(--gold);
+  font-weight: 700;
+}
+
+@keyframes ce-fn-beat-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Zone B — Fight Status */
+.ce-fn__zone-b {
+  grid-column: 2;
+  grid-row: 1;
+}
+.ce-fn__status {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+  gap: 12px;
+  overflow-y: auto;
+}
+.ce-fn__status-fighters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.ce-fn__status-corner {
+  background: var(--bg-card-elevated);
+  border-radius: var(--r-md);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border-top: 3px solid var(--crimson);
+  text-align: center;
+}
+.ce-fn__status-corner--blue {
+  border-top-color: #4a90d9;
+}
+.ce-fn__status-portrait {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-sm);
+  background: var(--bg-card);
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.ce-fn__status-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.ce-fn__status-record {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+  font-weight: 600;
+}
+
+/* Damage indicators — head/body/legs glow */
+.ce-fn__status-damage {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  margin-top: 4px;
+}
+.ce-fn__dmg-zone {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
+}
+.ce-fn__dmg-zone--hit-1 {
+  background: rgba(251, 191, 36, 0.25);
+  border-color: var(--warning);
+  color: var(--warning);
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+}
+.ce-fn__dmg-zone--hit-2 {
+  background: rgba(214, 58, 63, 0.35);
+  border-color: var(--crimson);
+  color: var(--crimson);
+  box-shadow: 0 0 8px rgba(214, 58, 63, 0.5);
+}
+.ce-fn__dmg-zone--hit-3 {
+  background: rgba(214, 58, 63, 0.6);
+  border-color: var(--crimson);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(214, 58, 63, 0.7);
+  animation: ce-fn-dmg-pulse 1s ease-in-out infinite;
+}
+@keyframes ce-fn-dmg-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(214, 58, 63, 0.5); }
+  50% { box-shadow: 0 0 16px rgba(214, 58, 63, 0.8); }
+}
+
+/* Round-by-round scorecard */
+.ce-fn__status-scorecard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-fn__scorecard-row {
+  display: grid;
+  grid-template-columns: 30px 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.ce-fn__scorecard-round-label {
+  color: var(--text-tertiary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.ce-fn__scorecard-cell {
+  text-align: center;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  background: var(--bg-card-elevated);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.ce-fn__scorecard-cell--won {
+  background: rgba(224, 169, 87, 0.15);
+  color: var(--gold);
+}
+.ce-fn__scorecard-cell--lost {
+  color: var(--text-tertiary);
+}
+
+/* Momentum bar — swings red/blue based on cum_momentum */
+.ce-fn__status-momentum {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ce-fn__momentum-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-fn__momentum-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border-subtle);
+  position: relative;
+  overflow: hidden;
+}
+.ce-fn__momentum-fill-red {
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  background: var(--crimson);
+  transition: width 0.3s ease-out, left 0.3s ease-out;
+  border-radius: 4px 0 0 4px;
+}
+.ce-fn__momentum-fill-blue {
+  position: absolute;
+  top: 0; bottom: 0; right: 50%;
+  background: #4a90d9;
+  transition: width 0.3s ease-out, right 0.3s ease-out;
+  border-radius: 0 4px 4px 0;
+}
+.ce-fn__momentum-center {
+  position: absolute;
+  top: -2px; bottom: -2px; left: 50%;
+  width: 1px;
+  background: var(--text-tertiary);
+  transform: translateX(-50%);
+}
+.ce-fn__momentum-corners {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__momentum-corner--red { color: var(--crimson); font-weight: 600; }
+.ce-fn__momentum-corner--blue { color: #4a90d9; font-weight: 600; }
+
+/* Zone C — Fight Tracker */
+.ce-fn__zone-c {
+  grid-column: 1;
+  grid-row: 2;
+}
+.ce-fn__tracker {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  height: 100%;
+}
+.ce-fn__tracker-tile {
+  background: var(--bg-card-elevated);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border-subtle);
+}
+.ce-fn__tracker-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ce-fn__tracker-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.ce-fn__tracker-value--gold { color: var(--gold); }
+.ce-fn__tracker-value--small {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ce-fn__phase-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  width: fit-content;
+}
+.ce-fn__phase-pill--standing { color: var(--gold); border-color: var(--gold); }
+.ce-fn__phase-pill--clinch { color: #c97e4a; border-color: #c97e4a; }
+.ce-fn__phase-pill--cage { color: #8b9aaa; border-color: #8b9aaa; }
+.ce-fn__phase-pill--ground_top { color: #6db577; border-color: #6db577; }
+.ce-fn__phase-pill--ground_bottom { color: #b06db5; border-color: #b06db5; }
+.ce-fn__phase-pill--scramble { color: var(--crimson); border-color: var(--crimson); }
+
+/* Zone D — Key Moments */
+.ce-fn__zone-d {
+  grid-column: 2;
+  grid-row: 2;
+}
+.ce-fn__moments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.ce-fn__moment {
+  padding: 8px 10px;
+  background: var(--bg-card-elevated);
+  border-left: 2px solid var(--gold);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-fn__moment-meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__moment-text {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+.ce-fn__moment-importance--high {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.08);
+}
+.ce-fn__moments-empty {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 24px 8px;
+}
+
+/* ============================================================
+   PHASE 3 — POST-FIGHT RECAP
+   ============================================================ */
+.ce-fn__recap {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ce-fn__recap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-fn__recap-eyebrow {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+/* Result card — hero moment */
+.ce-fn__result-card {
+  background: var(--bg-card);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 16px;
+  align-items: center;
+  box-shadow: 0 0 24px rgba(224, 169, 87, 0.15);
+}
+.ce-fn__result-card--title {
+  background: linear-gradient(135deg, var(--bg-card), rgba(224, 169, 87, 0.08));
+  border: 2px solid var(--gold);
+}
+
+.ce-fn__result-fighter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.ce-fn__result-fighter--winner {
+  /* winner is rendered larger, gold */
+}
+.ce-fn__result-fighter--loser {
+  opacity: 0.6;
+}
+.ce-fn__result-fighter-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.ce-fn__result-fighter--winner .ce-fn__result-fighter-name {
+  color: var(--gold);
+  font-size: 28px;
+}
+.ce-fn__result-fighter-record {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ce-fn__result-fighter-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+.ce-fn__result-fighter--winner .ce-fn__result-fighter-label {
+  color: var(--gold);
+}
+
+.ce-fn__result-method {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+}
+.ce-fn__result-method-phrase {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-align: center;
+}
+.ce-fn__result-method-detail {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-secondary);
+  text-align: center;
+  max-width: 280px;
+}
+
+/* Recap stat changes (record update + ELO change + streak + title + injury) */
+.ce-fn__recap-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.ce-fn__recap-tile {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fn__recap-tile--title {
+  border-left-color: var(--gold);
+  background: rgba(224, 169, 87, 0.06);
+}
+.ce-fn__recap-tile--injury {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.06);
+}
+.ce-fn__recap-tile-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-fn__recap-tile-value {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ce-fn__recap-tile-sub {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* News item preview */
+.ce-fn__news-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ce-fn__news-headline {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+.ce-fn__news-body {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Highlights recap feed */
+.ce-fn__recap-highlights {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ce-fn__recap-highlight {
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border-left: 2px solid var(--gold);
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+.ce-fn__recap-highlight--major {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.06);
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+
+/* Show rating panel (only when last fight on card) */
+.ce-fn__show-rating {
+  background: linear-gradient(135deg, var(--bg-card), rgba(224, 169, 87, 0.06));
+  border: 2px solid var(--gold);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+.ce-fn__show-rating-eyebrow {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.ce-fn__show-rating-phrase {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.3;
+  font-weight: 600;
+}
+.ce-fn__show-rating-axes {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.ce-fn__show-axis {
+  background: var(--bg-card);
+  border-radius: var(--r-sm);
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.ce-fn__show-axis-label {
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__show-axis-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+.ce-fn__show-axis-bar-fill {
+  height: 100%;
+  background: var(--gold);
+  border-radius: 2px;
+  transition: width 0.3s ease-out;
+}
+
+/* Recap action bar — Next Fight / Done / Replay */
+.ce-fn__recap-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  padding-top: 12px;
+}
+.ce-fn__action-btn {
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border: none;
+  border-radius: var(--r-md);
+  padding: 12px 24px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  box-shadow: 0 2px 8px rgba(224, 169, 87, 0.25);
+}
+.ce-fn__action-btn:hover {
+  background: var(--gold-bright);
+}
+.ce-fn__action-btn:active {
+  transform: translateY(1px);
+}
+.ce-fn__action-btn--secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  box-shadow: none;
+}
+.ce-fn__action-btn--secondary:hover {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+  border-color: var(--gold);
+}
+
+/* ============================================================
+   EMPTY / ERROR STATE — when there's nothing to resolve
+   ============================================================ */
+.ce-fn__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 48px;
+  text-align: center;
+}
+.ce-fn__empty-icon {
+  font-size: 56px;
+  opacity: 0.4;
+}
+.ce-fn__empty-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ce-fn__empty-body {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--text-secondary);
+  max-width: 460px;
+  line-height: 1.5;
+}
+
+/* Title fight badge — shown when fights.is_title_fight=1 */
+.ce-fn__title-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--gold);
+  color: var(--text-on-gold);
+  border-radius: var(--r-sm);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Rivalry heat chip (shown in pre-fight context) */
+.ce-fn__rivalry-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(214, 58, 63, 0.15);
+  color: var(--crimson);
+  border: 1px solid var(--crimson);
+  border-radius: var(--r-sm);
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Loading state */
+.ce-fn__loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px;
+}
+.ce-fn__loading-text {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   P3.4 — Skip to End button (large, prominent — separate from
+   the smaller ⏭ Skip to Finish button in the speed-control group).
+   The user's complaint #4 asked for larger play/pause/skip buttons;
+   the Skip to End button is the marquee "I'm done watching, show me
+   the result" affordance.
+   ============================================================ */
+.ce-fn__skip-end-btn {
+  background: var(--crimson);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-md);
+  padding: 0 20px;
+  min-height: 48px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 2px 10px rgba(214, 58, 63, 0.35);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ce-fn__skip-end-btn:hover {
+  background: #b53035;
+  box-shadow: 0 4px 14px rgba(214, 58, 63, 0.45);
+}
+.ce-fn__skip-end-btn:active {
+  transform: translateY(1px);
+}
+
+/* ============================================================
+   P3.5 — Extra commentary segments (ring announcer, named pundit,
+   crowd reactions). Each gets distinct styling so the player can
+   visually distinguish them from the play-by-play beats.
+   ============================================================ */
+
+/* Ring announcer — gold-tinted card, ALL-CAPS display font, reads
+   as the in-arena PA voice ("In the red corner, weighing in at..."). */
+.ce-fn__beat--announcer {
+  background: linear-gradient(135deg, rgba(224, 169, 87, 0.10), rgba(224, 169, 87, 0.04));
+  border-left: 3px solid var(--gold);
+  padding: 12px 14px;
+  margin: 8px 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.ce-fn__beat--announcer .ce-fn__beat-text {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  font-style: normal;
+}
+.ce-fn__beat--announcer .ce-fn__beat-timestamp {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+/* Named pundit — italic serif with a "PUNDIT" label, reads as a
+   broadcast-booth interjection. Uses the player's actual
+   commentator staff name (from staff.role_type='commentator' on
+   the player's promo) per P3.5. */
+.ce-fn__beat--pundit {
+  background: rgba(74, 144, 217, 0.06);
+  border-left: 3px solid #4a90d9;
+  padding: 10px 12px;
+  margin: 6px 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.ce-fn__beat--pundit .ce-fn__beat-speaker {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: #4a90d9;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.ce-fn__beat--pundit .ce-fn__beat-text {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-style: italic;
+  color: var(--text-primary);
+  line-height: 1.45;
+  font-weight: 400;
+}
+
+/* Crowd reaction — amber-tinted full-width banner, no timestamp
+   (it's ambient, not a discrete beat). Reads as the arena soundscape
+   ("The crowd erupts!", "Silence falls over the arena."). */
+.ce-fn__beat--crowd {
+  background: rgba(251, 191, 36, 0.08);
+  border-left: 3px solid var(--warning);
+  border-right: 3px solid var(--warning);
+  padding: 8px 14px;
+  margin: 8px 0;
+  border-radius: var(--r-sm);
+  text-align: center;
+}
+.ce-fn__beat--crowd .ce-fn__beat-text {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-style: italic;
+  font-weight: 600;
+  color: var(--warning);
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+}
+.ce-fn__beat--crowd .ce-fn__beat-timestamp {
+  display: none;
+}
+
+/* Generic speaker label (used by announcer + pundit). */
+.ce-fn__beat-speaker {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}

@@ -1,0 +1,189 @@
+/* ============================================================
+   CAGE EMPIRE — "The Competition" Screen Styles
+   ============================================================
+   Two views:
+     1. List view: grid of rival promo cards (logo + name + tier
+        chips + voice phrases + fighter/champion counts + View
+        Roster button). Mirrors the pre-game promo card pattern.
+     2. Roster view: read-only fighter table (reuses .ce-roster-*
+        classes from roster.css). Header has a back button +
+        "VIEWING: [PROMO NAME] (read-only)" tag.
+
+   Design notes (CR-9 §5.5):
+     - Gold accents, dark bg, monospace numbers.
+     - Voice phrases (reputation/fan_trust) — no raw numbers.
+     - READ-ONLY badge in the filter row (no action buttons).
+   ============================================================ */
+
+.ce-rival-list,
+.ce-rival-roster {
+  position: relative;
+  z-index: 1;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ============================================================
+   LIST VIEW — PROMO CARD GRID
+   ============================================================ */
+.ce-rival-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.ce-rival-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;  /* sharp corners — ledger feel */
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ce-rival-card:hover {
+  border-color: var(--gold);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.ce-rival-card__logo {
+  width: 100%;
+  height: 80px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #1a1a1a;
+  border: 1px solid var(--border-subtle);
+}
+.ce-rival-card__logo--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card-elevated);
+  font-family: var(--font-display);
+  font-size: 32px;
+  color: var(--gold);
+}
+
+.ce-rival-card__name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.ce-rival-card__meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Voice phrase rows — reputation + fan trust (no raw numbers). */
+.ce-rival-card__phrases {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ce-rival-card__phrase-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.ce-rival-card__phrase-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ce-rival-card__phrase-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  font-style: italic;
+}
+
+/* Stat row — fighter count + champion count (mono numbers). */
+.ce-rival-card__stats {
+  display: flex;
+  gap: 16px;
+}
+.ce-rival-card__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-rival-card__stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+.ce-rival-card__stat-lbl {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ce-rival-card__view-btn {
+  margin-top: 4px;
+  width: 100%;
+}
+
+/* ============================================================
+   ROSTER VIEW — HEADER + READ-ONLY BADGE
+   ============================================================ */
+.ce-rival-roster-header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ce-rival-back-btn {
+  align-self: flex-start;
+}
+.ce-rival-readonly-tag {
+  color: var(--text-tertiary);
+  font-style: italic;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.ce-rival-readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--warning, #fbbf24);
+  border: 1px solid var(--warning, #fbbf24);
+  border-radius: 3px;
+  height: 32px;
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .ce-rival-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .ce-rival-card__logo {
+    height: 60px;
+  }
+}

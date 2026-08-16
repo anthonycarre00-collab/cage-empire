@@ -28,8 +28,55 @@ CONVENTIONS compliance:
         display readers publish nothing.
 
 Migration impact: NONE (code-only refactor).
+
+RESEED Step 10 — Roster caps:
+  Major promos can hold up to 100 fighters, mid promos up to 80, small
+  promos up to 50. sign_free_agent refuses to sign if the target promo
+  is at/over its cap. The rival AI's _maybe_sign_free_agent helper
+  skips signing when the promo is at cap, and the cutting agent bumps
+  cut_risk +25 when the roster is over cap (so over-cap promos trim
+  back down). No schema change required.
 """
 from datetime import datetime, timedelta
+
+
+# Roster caps by promotion size_tier. Used by sign_free_agent +
+# rival AI's signing logic + cutting agent's "over cap" bump.
+ROSTER_CAPS = {
+    "major": 100,
+    "mid":   80,
+    "small": 50,
+}
+
+
+def get_roster_cap(conn, promotion_id):
+    """Return the roster cap for the given promotion.
+
+    Looks up the promotion's size_tier and returns the matching cap
+    from ROSTER_CAPS. Returns 50 (small-tier cap) as a defensive
+    default if the promotion or its size_tier is missing.
+    """
+    row = conn.execute(
+        "SELECT size_tier FROM promotions WHERE promotion_id = ?",
+        (promotion_id,),
+    ).fetchone()
+    if not row:
+        return 50
+    tier = row[0] or "small"
+    return ROSTER_CAPS.get(tier, 50)
+
+
+def get_roster_count(conn, promotion_id):
+    """Return the number of active, non-retired fighters on the
+    promotion's roster.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM fighters "
+        "WHERE current_promotion_id = ? "
+        "AND is_active = 1 AND is_retired = 0",
+        (promotion_id,),
+    ).fetchone()
+    return row[0] if row else 0
 
 
 def get_contracts_for_display(conn, promotion_id=None):
@@ -216,6 +263,19 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
         print(f"Warning: fighter_id={fighter_id} is not active — cannot sign.")
         return None
 
+    # RESEED Step 10 — Roster cap check. Refuse to sign if the
+    # promotion is at or over its roster cap. The caller (player or
+    # rival AI) is responsible for releasing a fighter first.
+    cap = get_roster_cap(conn, promotion_id)
+    current_count = get_roster_count(conn, promotion_id)
+    if current_count >= cap:
+        print(
+            f"Warning: roster is full ({current_count}/{cap}) for "
+            f"promotion_id={promotion_id} — cannot sign fighter_id="
+            f"{fighter_id}. Release a fighter to make room."
+        )
+        return None
+
     # 2. Compute end_date (start_date + 365 days). Mirrors the seed
     #    default in _seed_default_fighter_contract (seed_data.py).
     try:
@@ -258,6 +318,9 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
     #    pulling in app.write_news from this same module (it would be
     #    fine since we're already in app.py, but the direct INSERT is
     #    what the brief specifies and matches the established pattern).
+    #    NEWS-SPAM-MEMORY-CHECK — tag as MAJOR (signings are major
+    #    roster moves). Was defaulting to ROUTINE via the column
+    #    default (the previous INSERT omitted the importance column).
     fighter_name_row = conn.execute(
         "SELECT first_name || ' ' || last_name FROM fighters "
         "WHERE fighter_id = ?",
@@ -286,8 +349,8 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
 
     conn.execute(
         "INSERT INTO news_items (news_source_id, headline, body, "
-        "sentiment, topic, fighter_id, promotion_id, published_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "sentiment, topic, fighter_id, promotion_id, published_at, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             src_id,
             f"{fighter_name} signs with {promo_name}",
@@ -298,6 +361,7 @@ def sign_free_agent(conn, fighter_id, promotion_id, start_date, salary=50000.0):
             fighter_id,
             promotion_id,
             start_date,
+            "MAJOR",
         ),
     )
 

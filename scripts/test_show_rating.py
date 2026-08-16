@@ -113,12 +113,65 @@ _DIGIT_RE = re.compile(r"[0-9]")
 
 # Valid voice-layer rating descriptors (per the brief). Used to
 # verify the rating_description is one of these exact strings.
+#
+# INTERP-EXPAND-V2 (Claude VOICE_ENFORCEMENT §3): the descriptor bank
+# was expanded from 5 (one per tier) → 40 (8 per tier × 5 tiers). The
+# production writer (`_compute_show_ratings`) uses the varied picker
+# `_describe_rating_varied(overall, event_id)` which picks one of the
+# 8 tier-variants deterministically by hash(event_id, tier). This set
+# was updated to include ALL 40 valid descriptors — purely additive
+# (no previously-valid descriptor was removed). The substring check
+# at lines 538-548 (Case E, "verify all 5 descriptors are returned by
+# _describe_rating for the appropriate rating bands") still passes
+# because `_describe_rating(overall)` returns variant[0] of each tier
+# (which contains the expected substring: "instant classic", "highly
+# entertaining", "solid night", "decent show", "lackluster").
 _VALID_RATING_DESCRIPTIONS = {
+    # tier 90+ (8 variants)
     "an instant classic that fans will talk about for years",
+    "a spectacular night of fights",
+    "the kind of card that defines a promotion",
+    "an unforgettable evening of violence and drama",
+    "the sort of night that earns a promoter a raise",
+    "a card that lived up to every ounce of the hype",
+    "the type of show that turns casuals into lifers",
+    "a banner night the division will reference for years",
+    # tier 75-89 (8 variants)
     "a highly entertaining show that delivered on expectations",
+    "a card that delivered from top to bottom",
+    "a night of finishes and fire",
+    "exactly what the fans paid for",
+    "a strong show that justified the ticket price",
+    "the kind of card that gets a promoter a phone call back",
+    "a card that left the crowd on its feet more than once",
+    "the sort of night that builds a promotion's reputation",
+    # tier 60-74 (8 variants)
     "a solid night of fights with some memorable moments",
+    "a workmanlike card that got the job done",
+    "some gems hidden in the undercard",
+    "a decent night out for the fans",
+    "a card that started slow and found its legs",
+    "the kind of night that didn't disappoint but didn't dazzle",
+    "a steady show with moments worth remembering",
+    "a card that did what it said on the poster",
+    # tier 40-59 (8 variants)
     "a decent show that failed to produce many highlights",
+    "the kind of card that fades from memory by morning",
+    "a flat night with few sparks",
+    "passable but unremarkable",
+    "a card that never quite caught fire",
+    "the sort of night the promotion moves on from quickly",
+    "a forgettable show with a couple of bright spots",
+    "a card that left the crowd waiting for the main event",
+    # tier <40 (8 variants)
     "a lackluster card that left fans wanting more",
+    "a forgettable night for the fans",
+    "a card that left the crowd restless",
+    "the kind of show that tests loyalty",
+    "a night to move on from quickly",
+    "the sort of card that has the promoter apologizing",
+    "a flat show with no real moments to salvage",
+    "a night the fans won't be talking about tomorrow",
 }
 
 results = []
@@ -535,10 +588,15 @@ def case_e_rating_description_uses_voice_descriptors():
 
     # Verify all 5 descriptors are returned by _describe_rating for
     # the appropriate rating bands.
+    #
+    # P4.5 — thresholds were raised (was 90/75/60/40/0, now 95/85/65/45/0)
+    # to make the top tier a genuine achievement. Test cases updated to
+    # reflect the new bands: 80 now falls in "solid night" (was "highly
+    # entertaining"); use 88 for "highly entertaining" instead.
     for overall, expected_substring in [
-        (95, "instant classic"),
-        (80, "highly entertaining"),
-        (65, "solid night"),
+        (98, "instant classic"),
+        (88, "highly entertaining"),
+        (70, "solid night"),
         (50, "decent show"),
         (30, "lackluster"),
     ]:
@@ -868,11 +926,14 @@ def case_h_design_law():
     ).fetchone()[0]
     check("H", f"Stories: every show gets a verdict ({desc!r})",
           desc in _VALID_RATING_DESCRIPTIONS, f"desc={desc!r}")
-    # The 5 descriptors span the emotional range — from "instant
+    # The descriptors span the emotional range — from "instant
     # classic" (great) to "lackluster" (bad). This creates the
     # narrative texture the Soul document mandates.
-    check("H", "Stories: 5 voice descriptors span great → bad",
-          len(_VALID_RATING_DESCRIPTIONS) == 5,
+    # INTERP-EXPAND-V2: expanded 5 → 40 (8 per tier × 5 tiers). The
+    # check verifies the count is ≥ 5 (still spans great → bad, with
+    # more variety per tier).
+    check("H", "Stories: voice descriptors span great → bad",
+          len(_VALID_RATING_DESCRIPTIONS) >= 5,
           f"count={len(_VALID_RATING_DESCRIPTIONS)}")
 
     # ---- Anticipation (the "what's next?" thread) ----
