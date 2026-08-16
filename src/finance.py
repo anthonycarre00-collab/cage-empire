@@ -216,6 +216,50 @@ _MARKETING_FILL_BOOST_CAP = 0.15
 _MARKETING_PPV_MULT_CAP = 1.3
 _MARKETING_PPV_MULT_DIVISOR = 250000  # spend / $250k → multiplier delta
 
+# Phase 3 (PHASE3-IMPLEMENT) — flat per-event staff salary by promo
+# size_tier. Replaces the per-event pro-rata (annual staff salary /
+# _N_EVENTS_PER_YEAR) which produced absurd $208K/event staff costs
+# on Alpha (10 staff × ~$2.5M total annual salary / 12 events = $208K
+# — staff are paid per show, not their full annual salary per show).
+# The new flat rate mirrors real-world MMA promo operations: a major
+# promo's event-night staff (cutmen, doctors, commentators, security,
+# timekeepers, etc.) cost ~$15K all-in; mid promos ~$8K; small
+# regional shows ~$3K. The promo's staff_contracts.salary is now
+# treated as the annual retainer (paid via a separate monthly tick
+# in a future Phase E5), NOT pro-rated per event.
+_STAFF_SALARY_PER_EVENT_BY_TIER = {
+    "major": 15000,
+    "mid":    8000,
+    "small":  3000,
+}
+_DEFAULT_STAFF_SALARY_PER_EVENT = 5000  # fallback for unknown tier
+
+# Phase 3 (PHASE3-IMPLEMENT) — fighter purse multiplier by size_tier.
+# Replaces the flat _BASE_PURSE_MULTIPLIER (was 1.2) with a tier-based
+# one so major promos pay UFC-level purses (stars $500K+, min $10K)
+# while small regional promos pay $500-$2K per fight. The multiplier
+# is applied on top of the per-event pro-rata (salary /
+# _N_EVENTS_PER_YEAR), so a $200K/yr fighter on a major promo gets
+# ($200K / 3) × 3.0 = $200K/event base purse; the same fighter on a
+# small promo gets ($200K / 3) × 0.5 = $33K/event — realistic spread.
+_PURSE_MULT_BY_TIER = {
+    "major": 3.0,
+    "mid":   1.5,
+    "small": 0.5,
+}
+_DEFAULT_PURSE_MULT = 1.0  # fallback for unknown tier
+
+# Phase 3 (PHASE3-IMPLEMENT) — default ticket price by size_tier.
+# Applied when events.ticket_price is NULL (the player hasn't set the
+# lever). Major promos charge $120 (UFC charges $100-$500), mid $60,
+# small $35 (regional). Replaces the flat $80 default for all promos.
+_DEFAULT_TICKET_PRICE_BY_TIER = {
+    "major": 120,
+    "mid":    60,
+    "small":  35,
+}
+_DEFAULT_TICKET_PRICE_FALLBACK = 80  # if size_tier unknown
+
 # Phase E2.6 — assumed events per year for staff salary pro-rata
 # (mirrors fighter purse pro-rata). Phase E5 will move staff salaries
 # to a monthly tick (separate from per-event P&L).
@@ -563,8 +607,43 @@ def _compute_broadcast_revenue(conn, event_id, broadcast_tier,
         return ppv_revenue
 
     # Non-PPV path (either tier is non-PPV OR player chose is_ppv=0):
-    # flat broadcast rights fee per tier.
-    return _FLAT_BROADCAST_RIGHTS.get(broadcast_tier, 0)
+    # Phase 3 (PHASE3-IMPLEMENT) — scale the flat broadcast rights fee
+    # by reputation + fan_trust so a high-rep mid promo earns more from
+    # its regional TV deal than a low-rep one. The old model returned a
+    # flat $150K for 'streaming', $75K for 'tv_regional', $15K for
+    # 'local_stream' regardless of rep — which overpaid low-rep promos
+    # and underpaid high-rep ones. New ranges (per PHASE3_PLAN.md §3d):
+    #   - tv_regional / streaming: $100K-$300K (rep + fan_trust scaled)
+    #   - local_stream:             $10K-$50K  (rep scaled)
+    #   - none / unknown:           $0         (no broadcast partner)
+    # 'streaming' is treated like 'tv_regional' (regional TV level) —
+    # both are mid-tier broadcast deals where the partner pays a rights
+    # fee that scales with the promo's brand power. The PPV tiers
+    # (ppv_global, ppv_streaming) are handled by the early return above.
+    rep = max(0, min(100, promo_reputation or 50))
+    trust = max(0, min(100, promo_fan_trust or 50))
+    if broadcast_tier in ("tv_regional", "streaming"):
+        # Rep + fan_trust both contribute. Linear interpolation from
+        # $100K floor (rep=0, trust=0) to $300K cap (rep=100, trust=100):
+        #   rep=0,   trust=0   → $100K
+        #   rep=50,  trust=50  → $200K
+        #   rep=100, trust=100 → $300K
+        # Capped at $300K (defensive — if rep+trust somehow exceeds 200
+        # due to direct-DB edits, we don't pay out more than the spec).
+        factor = 1.0 + (rep + trust) / 100.0
+        return int(min(300000, 100000 * factor))
+    if broadcast_tier == "local_stream":
+        # Rep-only scaling (local stream deals are smaller and only
+        # care about the promo's name recognition, not fan trust).
+        # Linear interpolation: $10K floor at rep=0 → $50K at rep=100.
+        #   rep=0   → $10K
+        #   rep=25  → $20K
+        #   rep=50  → $30K
+        #   rep=75  → $40K
+        #   rep=100 → $50K (cap)
+        return int(10000 + (rep / 100.0) * 40000)
+    # 'none' or unknown tier — no broadcast partner, $0 revenue.
+    return 0
 
 
 def _compute_sponsorship_revenue(broadcast_tier,
@@ -822,11 +901,18 @@ def _process_event_finance_impl(conn, event):
     # existing rows already have the defaults; this defensive fallback
     # only matters if a future code path INSERTs an event without
     # setting the levers).
+    #
+    # Phase 3 (PHASE3-IMPLEMENT) — also fetch p.size_tier (used by
+    # the new tier-based defaults: ticket_price, staff_salary, fighter
+    # purse multiplier). ticket_price is fetched RAW (e.ticket_price,
+    # NOT COALESCE'd) so we can detect NULL and substitute the tier-
+    # based default in Python below (COALESCE can't pick a tier-
+    # dependent default inline).
     event_row = conn.execute(
         "SELECT e.event_date, e.venue_id, e.market_id, "
         "v.capacity, m.heat_level, p.broadcast_tier, p.name, "
-        "p.reputation, p.fan_trust, "
-        "COALESCE(e.ticket_price, 80), "
+        "p.reputation, p.fan_trust, p.size_tier, "
+        "e.ticket_price, "
         "COALESCE(e.marketing_spend, 0), "
         "COALESCE(e.ppv_price, 60), "
         "COALESCE(e.is_ppv, 0) "
@@ -842,7 +928,7 @@ def _process_event_finance_impl(conn, event):
 
     event_date, venue_id, market_id, venue_cap, market_heat, \
         broadcast_tier, promo_name, promo_reputation, promo_fan_trust, \
-        ticket_price, marketing_spend, ppv_price, is_ppv = event_row
+        size_tier, ticket_price_raw, marketing_spend, ppv_price, is_ppv = event_row
 
     venue_cap = venue_cap or 5000
     market_heat = market_heat or 50
@@ -851,6 +937,31 @@ def _process_event_finance_impl(conn, event):
     # future drift / direct-INSERT path).
     promo_reputation = max(0, min(100, promo_reputation or 50))
     promo_fan_trust = max(0, min(100, promo_fan_trust or 50))
+    # Phase 3 (PHASE3-IMPLEMENT) — resolve ticket_price. If the player
+    # set the lever (NOT NULL AND != 80), use it. If NULL OR == 80
+    # (the legacy schema default that represents "no player value yet"
+    # — applied to all pre-existing events via ALTER TABLE ADD COLUMN
+    # DEFAULT 80), fall back to the tier-based default (Major=120,
+    # Mid=60, Small=35). This replaces the flat COALESCE(e.ticket_price,
+    # 80) so all promos no longer charge the same $80 default — major
+    # promos get UFC-level prices ($120), small regional promos get
+    # $35 (matches real-world regional MMA ticket pricing).
+    #
+    # Treating 80 as "unset" is consistent with the original migration
+    # intent: when the ticket_price column was added (v3.21.0), all
+    # existing events got 80 (the schema default), and new events
+    # inserted without an explicit ticket_price also get 80. So 80
+    # means "system default — apply tier-based override". If the player
+    # deliberately sets ticket_price=80, they get 80 (the rare case
+    # where they want a major promo to charge $80 — the explicit
+    # intent overrides the tier default).
+    _TICKET_PRICE_LEGACY_DEFAULT = 80
+    if ticket_price_raw is None or ticket_price_raw == _TICKET_PRICE_LEGACY_DEFAULT:
+        ticket_price = _DEFAULT_TICKET_PRICE_BY_TIER.get(
+            size_tier, _DEFAULT_TICKET_PRICE_FALLBACK,
+        )
+    else:
+        ticket_price = int(ticket_price_raw)
     # Phase E3.2 — clamp the player-set levers to their documented
     # ranges (defensive against bad INSERT paths).
     ticket_price = max(20, min(300, int(ticket_price or 80)))
@@ -985,7 +1096,16 @@ def _process_event_finance_impl(conn, event):
         salary = salary if salary else 10000
         # Phase P2.5 — base purse pro-rata × 1.5 multiplier (was × 1.0).
         # Phase F1.2 — _N_EVENTS_PER_YEAR tightened from 4 to 3.
-        base_purse = (salary / _N_EVENTS_PER_YEAR) * _BASE_PURSE_MULTIPLIER
+        # Phase 3 (PHASE3-IMPLEMENT) — replace the flat
+        # _BASE_PURSE_MULTIPLIER with a tier-based one so major promos
+        # pay UFC-level purses (multiplier 3.0) while small regional
+        # promos pay $500-$2K per fight (multiplier 0.5). Mid promos
+        # stay at 1.5 (the old default). The lookup falls back to
+        # _DEFAULT_PURSE_MULT (1.0) if size_tier is somehow unknown.
+        purse_mult = _PURSE_MULT_BY_TIER.get(
+            size_tier, _DEFAULT_PURSE_MULT,
+        )
+        base_purse = (salary / _N_EVENTS_PER_YEAR) * purse_mult
         is_winner = (winner_id is not None and fid == winner_id)
         is_finish = (result_type or '').lower() in _FINISH_RESULT_TYPES
         is_title_fight = bool(is_title)
@@ -1051,21 +1171,25 @@ def _process_event_finance_impl(conn, event):
                         f"${cost_per_seat}/seat, {venue_type or 'unknown'})",
                         event_date)
 
-    # 6. Staff salaries (Phase E2.6 — reads contracts.salary / 12 per
-    #    active staff_contracts row, per §3.2.2. Replaces the flat
-    #    _STAFF_SALARY_PER_EVENT × n_staff formula which was decoupled
-    #    from the actual contract values + missed all coaches.)
+    # 6. Staff salaries (Phase 3 / PHASE3-IMPLEMENT — flat per-event
+    #    rate by size_tier. Replaces the per-event pro-rata (sum of
+    #    contracts.salary / _N_EVENTS_PER_YEAR for active staff) which
+    #    produced absurd $208K/event staff costs on Alpha (10 staff ×
+    #    ~$2.5M total annual salary / 12 events = $208K — staff are
+    #    paid per show, not their full annual salary per show).
     #
-    # The query JOINs staff_contracts → contracts → staff so:
-    #   - Active staff with promotion-bound contracts get paid
-    #     (general_manager, doctor, commentator, scout, cutman).
-    #   - Coaches (which currently have NO staff_contracts rows —
-    #     300 of them, gym-bound via staff.gym_id) are NATURALLY
-    #     EXCLUDED today, but Phase E4 will give coaches staff_
-    #     contracts rows + this query will pick them up automatically
-    #     without code change. This is the interim fix per spec:
-    #     "Phase E5 will move staff salaries to a monthly tick" —
-    #     for now, per-event pro-rata is fine.
+    #    New model: a flat fee per event based on promo tier:
+    #      - Major: $15,000/event (cutmen, doctors, commentators,
+    #        security, timekeepers, etc. for a UFC-scale production)
+    #      - Mid:    $8,000/event
+    #      - Small:  $3,000/event (regional show skeleton crew)
+    #
+    #    The promo's staff_contracts.salary is now treated as the
+    #    annual retainer (will be paid via a separate monthly tick
+    #    in Phase E5), NOT pro-rated per event. We still query
+    #    staff_contracts to get n_staff for the description label so
+    #    the finance log shows "12 staff" (transparency), but the
+    #    amount is the flat tier rate.
     staff_rows = conn.execute(
         "SELECT sc.staff_id, c.salary, s.role_type "
         "FROM staff_contracts sc "
@@ -1075,17 +1199,16 @@ def _process_event_finance_impl(conn, event):
         (promo_id,),
     ).fetchall()
     n_staff = len(staff_rows)
-    total_staff_salary = 0.0
-    for _sid, sal, _role in staff_rows:
-        sal = sal if sal else 0
-        # Pro-rate annual salary to per-event (12 events/year).
-        total_staff_salary += sal / _N_EVENTS_PER_YEAR
-    staff_cost = int(total_staff_salary)
+    # Phase 3 (PHASE3-IMPLEMENT) — flat per-event rate by tier.
+    staff_cost = _STAFF_SALARY_PER_EVENT_BY_TIER.get(
+        size_tier, _DEFAULT_STAFF_SALARY_PER_EVENT,
+    )
     if staff_cost > 0:
         _record_transaction(conn, promo_id, event_id, None,
                             'staff_salary', -staff_cost,
                             f"staff salaries ({n_staff} staff, "
-                            f"${int(total_staff_salary)} per-event)",
+                            f"tier={size_tier or 'unknown'}, "
+                            f"${staff_cost:,} flat per-event)",
                             event_date)
 
     # 7. Medical costs (per fight)
