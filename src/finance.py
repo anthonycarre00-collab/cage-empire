@@ -56,14 +56,26 @@ _BROADCAST_REVENUE = {
     "local_stream":  15000,
 }
 
-# Phase E2.1 — PPV base buyrates (per §3.1.2). The starting point for
-# ppv_buys before card_draw_multiplier × rep/trust factors are applied.
+# Phase E2.1 + Phase 4 (PHASE4-IMPLEMENT) — PPV base buyrates (per
+# §3.1.2). The starting point for ppv_buys before card_draw_multiplier ×
+# rep/trust factors are applied.
+#
 # CR-DESIGN (docs/DESIGN_REVIEW_E5.md §4): reduced from 250k/50k to
 # 100k/25k — was too high for a new promo. Player builds up to higher
 # buyrates via reputation + fan_trust over time, not from day 1.
+#
+# Phase 4 (PHASE4-IMPLEMENT) — reduced from 100k/25k to 35k/10k because
+# the Phase 3 post-fix major promo avg profit was $4.06M/event (target
+# $500K-$1M), driven by $4.16M/event broadcast_revenue. At rep=50 /
+# trust=50 / card_draw=1.5 / ppv_price=$60 / player_split=0.5:
+#   Old: 100k × 1.5 × 1.0 × 1.0 × $60 × 0.5 = $4.5M
+#   New:  35k × 1.5 × 1.0 × 1.0 × $60 × 0.5 = $1.575M
+# Real UFC numbered events do 200K-1M buys; UFC Fight Night (the bulk
+# of major promo cards) does 100K-300K — the new base is the floor of
+# that range so even a low-draw card generates realistic PPV revenue.
 _PPV_BASE_BUYRATE = {
-    "ppv_global":     100000,
-    "ppv_streaming":   25000,
+    "ppv_global":     35000,
+    "ppv_streaming":  10000,
 }
 
 # Phase E2.1 — PPV price by tier (default — Phase E3 will make this
@@ -127,8 +139,36 @@ _MERCH_PER_ATTENDEE_BASE = 8
 # Finish bonus: $25k (was $5k).
 # Win bonus default: 100% of base purse (was 75%).
 _FINISH_BONUS = 25000        # KO/Sub/Doctor stoppage winner (was $5k)
-_TITLE_FIGHT_BONUS = 250000  # any fighter in a title fight (was $100k)
-_MAIN_EVENT_BONUS = 100000   # fighter in card_slot='main_event' (was $50k)
+# Phase 4 (PHASE4-IMPLEMENT) — title fight + main event bonuses scaled
+# by promo size_tier. Replaces the flat $250K / $100K constants that
+# were applied to ALL promos regardless of tier. A title fight main
+# event on a small promo previously cost $700K in bonuses alone ($250K
+# × 2 fighters + $100K × 2 fighters), which exceeded the small promo's
+# total event revenue ($481K) and forced promos into DISTRESSED.
+#
+# New tier-based rates (per PHASE4_PLAN.md §Issue 2):
+#   - Major: $250K / $100K (unchanged — UFC title fights pay $200K-$500K)
+#   - Mid:   $75K  / $30K  (Bellator mid-tier title fights)
+#   - Small: $25K  / $10K  (regional title fights pay $5K-$25K)
+_TITLE_FIGHT_BONUS_BY_TIER = {
+    "major": 250000,
+    "mid":    75000,
+    "small":  25000,
+}
+_TITLE_FIGHT_BONUS_DEFAULT = 25000  # fallback for unknown tier
+
+_MAIN_EVENT_BONUS_BY_TIER = {
+    "major": 100000,
+    "mid":    30000,
+    "small":  10000,
+}
+_MAIN_EVENT_BONUS_DEFAULT = 10000  # fallback for unknown tier
+
+# Legacy constants retained for backward compatibility — any external
+# caller importing _TITLE_FIGHT_BONUS or _MAIN_EVENT_BONUS will still
+# resolve. The new code paths use the tier-scaled dicts above.
+_TITLE_FIGHT_BONUS = 250000  # deprecated — use _TITLE_FIGHT_BONUS_BY_TIER
+_MAIN_EVENT_BONUS = 100000   # deprecated — use _MAIN_EVENT_BONUS_BY_TIER
 _DEFAULT_WIN_BONUS_PCT = 1.0  # default if contracts.bonus_structure is NULL (was 0.75 — win bonus = 100% of base purse)
 # Phase F1.2 (docs/FIX_PLAN_FINANCES_ADVANCEDAY.md §F1.2) — tightened
 # from /4 to /3 so fighter purses are ~30-40% of projected revenue (was
@@ -174,10 +214,21 @@ _MAIN_EVENT_STAR_MULT_PER_MKT = 1.0 / 100.0  # +1.0 multiplier at mkt=100
 #   rating >= 60 → +10% (good show — modest bump)
 #   rating >= 40 → ±0%  (average — no adjustment)
 #   rating <  40 → -20% (dud — fans demand refunds, bad word of mouth)
-_SHOW_QUALITY_MULT_GREAT = 1.30  # rating >= 80
-_SHOW_QUALITY_MULT_GOOD = 1.10   # rating 60-79
+# Phase 4 (PHASE4-IMPLEMENT) — tightened show-quality multipliers.
+# Phase 3 left GREAT at +30% which added ~$1.3M to a typical major
+# promo card (=$886K avg show_quality_adjustment per event). Combined
+# with the reduced PPV base_buyrate, +30% would still swing the profit
+# band too widely. New values:
+#   - GREAT: +15% (was +30%) — blockbuster shows still reward the promo
+#     but the windfall is bounded
+#   - GOOD:  +5% (was +10%) — modest bump for solid shows
+#   - AVG:   ±0% (unchanged)
+#   - DUD:   -15% (was -20%) — softer penalty so a single bad show
+#     doesn't push a marginal promo into DISTRESSED
+_SHOW_QUALITY_MULT_GREAT = 1.15  # rating >= 80
+_SHOW_QUALITY_MULT_GOOD = 1.05   # rating 60-79
 _SHOW_QUALITY_MULT_AVG = 1.00    # rating 40-59
-_SHOW_QUALITY_MULT_DUD = 0.80    # rating < 40
+_SHOW_QUALITY_MULT_DUD = 0.85    # rating < 40
 _SHOW_QUALITY_GREAT_THRESHOLD = 80
 _SHOW_QUALITY_GOOD_THRESHOLD = 60
 _SHOW_QUALITY_DUD_THRESHOLD = 40
@@ -1125,8 +1176,22 @@ def _process_event_finance_impl(conn, event):
 
         win_bonus = base_purse * win_bonus_pct if is_winner else 0
         finish_bonus = _FINISH_BONUS if (is_winner and is_finish) else 0
-        title_bonus = _TITLE_FIGHT_BONUS if is_title_fight else 0
-        main_event_bonus = _MAIN_EVENT_BONUS if is_main_event else 0
+        # Phase 4 (PHASE4-IMPLEMENT) — tier-scaled title fight + main
+        # event bonuses. Was flat $250K / $100K across all promos which
+        # made title fights unsustainable for small/mid promos. The
+        # size_tier is fetched in the event_row query above (Phase 3).
+        if is_title_fight:
+            title_bonus = _TITLE_FIGHT_BONUS_BY_TIER.get(
+                size_tier, _TITLE_FIGHT_BONUS_DEFAULT,
+            )
+        else:
+            title_bonus = 0
+        if is_main_event:
+            main_event_bonus = _MAIN_EVENT_BONUS_BY_TIER.get(
+                size_tier, _MAIN_EVENT_BONUS_DEFAULT,
+            )
+        else:
+            main_event_bonus = 0
         total_purse = int(
             base_purse + win_bonus + finish_bonus +
             title_bonus + main_event_bonus
