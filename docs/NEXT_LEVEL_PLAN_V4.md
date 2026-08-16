@@ -1,119 +1,148 @@
-# CAGE EMPIRE — Next Level Development Plan (v6 — CORRECTED)
+# CAGE EMPIRE — Next Level Development Plan (v7 — FULLY CORRECTED)
 
 **Date:** 2026-08-15
 **Status:** PLANNING ONLY — no code changes
-**Sources:** ChatGPT Post-Review Development Directive + user feedback + thorough UI investigation
+**Sources:** ChatGPT Post-Review Development Directive + thorough UI audit + user feedback + verified DB state
 
 ---
 
-## CRITICAL CORRECTION
+## CORRECTION: The UI IS working correctly
 
-### What I got wrong
+### What I got wrong (twice)
 
-I was confused about the UI architecture. Here's the ACTUAL situation:
+1. **First time:** I said the launcher was broken (PLAY.bat launches old Tkinter). **WRONG.** `src/app.py`'s `__main__` block delegates to `app_web.main()` — the pywebview desktop app IS what the player sees.
+2. **Second time:** The subagent I hired said the same thing. **ALSO WRONG** — it didn't read the `__main__` block.
 
-**The project DID move away from Tkinter.** The migration from CustomTkinter to pywebview was **approved and completed** (per `docs/UI_MIGRATION_PYWEBVIEW.md`). The current UI is:
+### The verified truth
 
-- **`src/app_web.py`** — 14,896-line pywebview desktop application with 162 API methods
-- **`src/web/`** — 24 FULLY IMPLEMENTED JavaScript screens (17,260 lines total)
-- **pywebview creates a NATIVE DESKTOP WINDOW** — it's NOT a web app. The user sees a native Windows window with HTML/CSS/JS rendering inside it.
+- **PLAY.bat** runs `python src/app.py` → `src/app.py __main__` calls `from app_web import main as _web_main; _web_main()` → **pywebview desktop app launches with all 24 screens.**
+- The user IS seeing the pywebview UI. The old Tkinter `class App(tk.Tk)` in `src/app.py` is dead code — it never runs.
+- **ALL 24 web screens are fully implemented** (17,260 lines of JS, 162 API methods in `app_web.py`).
+- **The launcher is NOT broken.** I wasted time on a non-issue.
 
-**ALL 24 screens are implemented:**
-1. Dashboard (739 lines), 2. Roster (443), 3. Fighter Profile (969), 4. Free Agents (970), 5. Scouting (731), 6. Calendar (514), 7. Event Builder (1,269), 8. Fight Night (1,410), 9. Matchmaking (2,178), 10. The Wire/news (380), 11. Rankings (396), 12. Titles (341), 13. Rivalries (475), 14. Hall of Fame (341), 15. Records (250), 16. Archive (555), 17. Finance (523), 18. Contracts (608), 19. Rival Promotions (484), 20. Gyms (704), 21. Agent Offers (417), 22. Staff Market (721), 23. Save/Load (in app.js), 24. Promotion Select (in app.js)
+### What IS actually broken (verified against DB)
 
-**The ONLY problem: PLAY.bat launches the WRONG file.**
+The audit found **5 DATA bugs** (not code bugs) that affect what the player sees:
 
-`PLAY.bat` runs `python src/app.py` (the OLD Tkinter app). It should run `python src/app_web.py` (the pywebview desktop app).
+| # | Bug | Root cause | Verified |
+|---|---|---|---|
+| 1 | **fight_beats, fight_rounds, commentary_segments ALL EMPTY** (0 rows each, despite 1,747 resolved fights) | The beat engine exists but isn't wired into `resolve_next_fight` for the pre-seeded fights. New sim fights DO write beats (for player fights) but the pre-seeded 1,747 fights have none. | ✅ Confirmed: 0 rows in all 3 tables |
+| 2 | **news_items only has `topic='finance'`** (1,884 rows, ALL finance) | The backfill script (`backfill_finance_transactions.py`) wrote finance news for every event. No other news was generated for the pre-seeded events. | ✅ Confirmed: 1,884 rows, all topic='finance' |
+| 3 | **rivalries counter drift** — 86/343 rivalries show "0-0" despite fights_count>0 | `fights_count` gets incremented but `fighter_a_wins/fighter_b_wins/draws` aren't reconciled when fights resolve. | ✅ Confirmed: 86 rivalries with fights_count>0 but 0-0 |
+| 4 | **show_ratings EMPTY** (0 rows) | Show ratings only fire during sim, not for pre-seeded events. | ✅ Confirmed: 0 rows |
+| 5 | **hall_of_fame EMPTY** (0 rows) | HoF only fires on retirement during sim, not for pre-seeded fighters. | ✅ Confirmed: 0 rows |
 
-The old Tkinter `src/app.py` still exists because it re-exports functions used by tests + tick_processor. But it should NOT be the entry point.
+Plus 3 **code bugs** in the web UI:
 
-### What the user is actually seeing
+| # | Bug | Location | Fix |
+|---|---|---|---|
+| 6 | **$1B+ cash displays as "$1968.3M"** | `_format_cash()` in `app_web.py` + 7 JS `formatCash()` helpers — no Billion branch | Add `if abs(cash) >= 1e9: return f"${cash/1e9:.2f}B"` |
+| 7 | **Fight Night replay mode** reads fight_beats (which are empty) | `fight_night.js` has `state.mode='replay'` with beat-by-beat animation | Remove replay mode (~80 LOC) OR fix beat engine to populate data |
+| 8 | **31% of fighters missing descriptors** | `fighter_descriptors` has 4,450 rows but DB has 6,450 fighters (2,000 grey-name fighters don't need them, but some real fighters may be missing) | Run `refresh_fighter` for all active fighters |
 
-The OLD Tkinter app with:
-- Basic three-pane layout
-- A "Contracts" tab (the "Deals" screen with errors — wrong query for the reseeded DB)
-- A Rankings tab
-- Basic buttons (Advance Day, Resolve Fight, Refresh)
-- NO redesigned screens, NO voice phrases, NO interpretation layer
+### User-reported bugs — CORRECTED analysis
 
-When the user says "we moved away from Tkinter" — they're right. The code was migrated. But the launcher was never updated.
+1. **"Deals" screen errors** — The web Contracts screen (`contracts.js` → `get_contracts_data`) works correctly (verified: returns 60 active fighter contracts + 11 staff contracts). The user may have seen errors from the finance news spam (1,884 finance news items) or from the $1B cash display. **Need to verify by actually running the screen.**
 
----
+2. **"Replay" option** — CONFIRMED. `fight_night.js` has a `replay` mode with beat-by-beat animation. When the user clicks on a resolved fight, it enters replay mode and tries to read fight_beats (which are empty, so it skips to recap). The "↻ Replay" button is visible in the recap. User wants this REMOVED.
 
-## The user's reported bugs — CORRECTED analysis
+3. **"Rivalries series is even" for 0-0** — CONFIRMED. 86 rivalries show "0-0" despite having `fights_count>0`. The win/loss/draw counters aren't reconciled. The display shows "0-0" which looks like "series is even."
 
-### Bug 1: "Deals" screen has errors
-**Location:** The OLD Tkinter app's Contracts tab (`src/app.py` line 670+).
-**Why:** The query references old schema columns. The reseed changed the data.
-**Fix:** Update PLAY.bat to launch `src/app_web.py`. The web UI's Contracts screen (608 lines, fully implemented) handles this correctly via the API.
-
-### Bug 2: Historical fights have "replay" option
-**Location:** The web UI's Fight Night screen (`src/web/js/fight_night.js`).
-**What I found:** Fight Night has TWO modes:
-- `live` mode: resolves a fight in real-time, showing beats one by one
-- `replay` mode: reads existing fight_beats from the DB and replays them beat-by-beat
-
-The replay mode IS a feature of the web UI. When a player clicks on a resolved fight, it enters `replay` mode and shows the beat-by-beat animation. The user wants this REMOVED — no replay, just results.
-
-**Fix:** In `fight_night.js`, remove the `replay` mode. When a fight is already resolved, show ONLY the result (winner, loser, method, round, time) — no beat-by-beat animation. The `live` mode (for currently-resolving fights) can stay — that's the player watching their event in real-time.
-
-### Bug 3: Rivalries show "series is even" for 0-0
-**Location:** The web UI's Rivalries screen (`src/web/js/rivalries.js`).
-**What I found:** The screen displays `riv.head_to_head` which is a string like "6-2-0". For rivalries with `fights_count=0`, this shows "0-0-0" which looks like "series is even."
-
-**Fix:** In `rivalries.js`, check `riv.fights_count`. If 0, display "Haven't met yet" instead of the head-to-head record. If >0, show the actual record.
-
-### Bug 4: Finances — Alpha has $1B+
-**Root cause:** The backfill script accumulated decades of event revenue into `current_cash`.
-**Fix:** Reset `current_cash` to realistic values after backfill (Major=$50M, Mid=$10M, Small=$5M). The finance_transactions remain as historical records.
+4. **"$1B+ cash"** — CONFIRMED. Alpha Combat has $1,968,269,335. The backfill accumulated decades of event revenue. Displays as "$1968.3M" because `_format_cash()` has no Billion branch.
 
 ---
 
-## Revised Plan
+## ChatGPT Directive — Re-assessed with correct understanding
 
-### Phase 1: Fix the launcher + cleanup (1 hour)
-1. Update `PLAY.bat`: `src\app.py` → `src\app_web.py`
-2. Update `run.sh`: `src/app.py` → `src/app_web.py`
-3. Add `pywebview` to requirements.txt + PLAY.bat pip install line
-4. Reset promotion cash to realistic values
-5. Test: game launches with the pywebview desktop UI
+Now that I understand the UI IS working, ChatGPT's directive makes more sense:
 
-### Phase 2: Fix user-reported bugs (1-2 days)
-6. Remove `replay` mode from Fight Night (show results only for resolved fights)
-7. Fix Rivalries 0-0 display ("Haven't met yet")
-8. Fix any errors in the Contracts/Deals screen (verify the API method works)
-9. Remove fight_beats + fight_rounds writes for AI vs AI fights (already done — verify)
-10. Consider removing fight_beats + fight_rounds writes for PLAYER fights too (user said no replay needed)
+1. **"Stop expanding the foundation"** — AGREE. 24 screens, 162 API methods, all implemented. The foundation is built. Now make it meaningful.
+
+2. **"Fix world-simulation correctness issues"** — AGREE. The 5 data bugs (empty fight_beats, finance-only news, rivalry counter drift, empty show_ratings, empty HoF) are correctness issues that break immersion.
+
+3. **"Fix promotion economics"** — AGREE. $1B+ cash is unrealistic. Need to reset to realistic values.
+
+4. **"Memory resurfacing in player gameplay"** — AGREE. Need to verify it fires when the player books fights.
+
+5. **"Dashboard = sports newsroom"** — AGREE. But the dashboard is already 739 lines of JS. It needs redesign, not implementation.
+
+6. **"Attribute colour scheme"** — ALREADY EXISTS. The audit found that `fighter_profile.js` already has a 3-tier colour scheme (gold for elite, crimson for weak, steel for default). The user may not have noticed because 31% of fighters are missing descriptors.
+
+7. **"Remove fight replay"** — User request. The replay mode in `fight_night.js` should be removed. Show results only for resolved fights.
+
+8. **"Do not overfit to MMA statistics"** — AGREE. KO 28.6% is close enough.
+
+---
+
+## Corrected Plan (v7)
+
+### Phase 1: Fix DATA bugs (1-2 days)
+
+These are the highest priority because they break immersion:
+
+1. **Reconcile rivalry counters** — write a script that recomputes `fighter_a_wins`, `fighter_b_wins`, `draws`, `fights_count` from `fight_history` for every rivalry. This fixes the "0-0" display.
+
+2. **Reset promotion cash** — set `current_cash` to realistic values:
+   - Major: $50M, Mid: $10M, Small: $5M
+   - Keep the finance_transactions as historical records
+   - This fixes the "$1968.3M" display
+
+3. **Backfill show_ratings** — write a script that computes show ratings for the 1,884 pre-seeded events (based on fight results, card quality, attendance). This fixes the Archive "unrated" display.
+
+4. **Backfill hall_of_fame** — write a script that inducts eligible retired fighters based on career criteria (title reigns, win records, milestones). This fixes the HoF empty state.
+
+5. **Backfill non-finance news** — write a script that generates fight result news, signing news, retirement news, etc. for the pre-seeded events. This fixes the Wire showing only finance news.
+
+6. **Backfill fighter_descriptors** — run `refresh_fighter` for all active fighters missing descriptors. This fixes the 31% missing attribute/personality displays.
+
+### Phase 2: Fix CODE bugs (1 day)
+
+7. **Add Billion branch to `_format_cash()`** — one line in `app_web.py` + one line in each of 7 JS files.
+
+8. **Remove fight replay mode** — remove `state.mode='replay'`, the replay button, and the beat-by-beat animation from `fight_night.js`. When a fight is already resolved, show ONLY the result (winner, loser, method, round, time, performance rating). ~80 LOC removal.
+
+9. **Fix rivalries 0-0 display** — in `rivalries.js`, when `fights_count=0` OR (`fights_count>0` AND all win/draw counters are 0), show "Haven't met yet" instead of "0-0".
 
 ### Phase 3: Economics + memory (2-3 days)
-11. Audit + tune promotion economics (venue costs, purses, ticket revenue)
-12. Write player-path memory resurfacing test
-13. Fix any memory issues
+
+10. **Audit + tune promotion economics** — investigate venue costs, purses, ticket revenue, broadcast revenue. Target: Major profitable with good cards, small promos break even.
+
+11. **Player-path memory resurfacing test** — book a rematch between fighters with history, verify `generate_fight_preview_memory_news` fires, verify the player sees it in the Wire.
 
 ### Phase 4: UI/UX polish (3-4 days)
-14. Implement attribute colour scheme (CSS in web UI — easy)
-15. Audit all 24 screens for data source + performance + voice vs numbers
-16. Dashboard redesign (newsroom hierarchy per ChatGPT §13)
-17. Add player watchlist (minimal — use existing player_decisions data)
+
+12. **Dashboard redesign** — restructure the dashboard per ChatGPT §13 (sports newsroom hierarchy: today's story → promotion status → important fighters → upcoming → what changed → threats → opportunities → world stories).
+
+13. **Player watchlist** — minimal implementation using existing `player_decisions` data. Surface watched fighters on the dashboard.
+
+14. **Screen audit** — review all 24 screens for voice vs raw numbers, performance, data freshness. The audit found voice compliance is GOOD but some screens may need tweaking.
+
+15. **Attribute colour scheme verification** — the 3-tier scheme (gold/crimson/steel) already exists. Verify it renders correctly after the descriptor backfill.
 
 ### Phase 5: Long-run validation (2-3 days)
-18. Run 5-year, 10-year, 20-year soaks
-19. Profile + fix bottlenecks
-20. Final analysis + docs
+
+16. **Run 5-year, 10-year, 20-year soaks** — track all metrics, profile bottlenecks.
+17. **Final analysis + docs** — update README, CURRENT_SYSTEM_STATE, 1YR_SIM_ANALYSIS.
 
 ---
 
-## ChatGPT Directive Assessment (CORRECTED)
+## What we're NOT doing
+- ❌ NO launcher fix (it's NOT broken — app.py delegates to app_web.py)
+- ❌ NO web UI removal (it IS the UI — pywebview desktop app)
+- ❌ NO new screens (all 24 are implemented)
+- ❌ NO new schema/tables
+- ❌ NO architecture rewrite
+- ❌ NO fight replay (removing it, not building it)
 
-ChatGPT's directive is **excellent and correct**. Key points:
+## Performance notes
 
-1. **"Stop expanding the foundation"** — AGREE. We have 24 screens, 162 API methods, 80K fight history, 15 memory types, rival AI with memory. Enough systems. Surface them.
-2. **"Do not overfit to real MMA statistics"** — AGREE. KO 28.6% is close enough.
-3. **"Memory resurfacing success = visible recognition"** — AGREE. Need player-path test.
-4. **"Promotion economics — don't just inject cash"** — AGREE. Fix the model.
-5. **"Dashboard = sports newsroom"** — AGREE. The web Dashboard (739 lines) needs redesign.
-6. **"Player watchlist — smallest possible mechanism"** — AGREE.
-7. **"Remove fight replay"** — User request. The web Fight Night has replay mode — remove it.
-8. **"Attribute colour scheme"** — User request. Easy in CSS.
+The audit found NO performance concerns in the web UI:
+- All list screens use LIMIT/OFFSET pagination (20/page)
+- No unbounded queries
+- Minor N+1 patterns (matchmaking rank subquery, rivalry fighter stage) are acceptable for N<20
+- All queries reference existing columns (no schema mismatches)
 
-The biggest issue ChatGPT didn't know about: **the launcher points to the wrong file.** The player has never seen the actual game UI. Fixing this is Priority #1.
+The sim performance is stable:
+- 365-day sim completes in ~7 minutes (337ms avg tick)
+- No super-linear growth
+- All pruned tables stay bounded
