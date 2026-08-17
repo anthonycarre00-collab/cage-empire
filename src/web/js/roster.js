@@ -60,6 +60,11 @@ window.CE.roster = (function () {
     { key: 'record',    label: 'RECORD UNDER YOU',   sortable: true, mono: true, width: '90px' },
     { key: 'gym',       label: 'TRAINING WITH',      sortable: true },
     { key: 'nat',       label: 'Nat',      sortable: false, mono: true, width: '60px' },
+    // Phase 5 Task 3 — ★ Watch column. Always visible on the player's
+    // roster (this module never renders rival rosters — those go
+    // through rival_promotions.js). Clicking the star toggles watch
+    // state in-place (no full roster re-render).
+    { key: 'watch',     label: '★',        sortable: false, width: '44px', center: true },
   ];
 
   /** Stage filter options (career_phase labels). */
@@ -149,13 +154,14 @@ window.CE.roster = (function () {
     // Header row
     var headerHtml = COLUMNS.map(function (col) {
       var w = col.width ? ' style="width:' + col.width + '"' : '';
+      var centerCls = col.center ? ' ce-roster-th--center' : '';
       if (!col.sortable) {
-        return '<th class="ce-roster-th"' + w + '>' + escapeHtml(col.label) + '</th>';
+        return '<th class="ce-roster-th' + centerCls + '"' + w + '>' + escapeHtml(col.label) + '</th>';
       }
       var isSorted = state.filters.sort_col === col.key;
       var sortIcon = isSorted ? (state.filters.sort_dir === 'asc' ? ' ▲' : ' ▼') : '';
       var sortClass = isSorted ? ' ce-roster-th--sorted' : '';
-      return '<th class="ce-roster-th ce-roster-th--sortable' + sortClass + '" data-sort-col="' + col.key + '"' + w + '>' +
+      return '<th class="ce-roster-th ce-roster-th--sortable' + sortClass + centerCls + '" data-sort-col="' + col.key + '"' + w + '>' +
         escapeHtml(col.label) + '<span class="ce-sort-icon">' + sortIcon + '</span></th>';
     }).join('');
 
@@ -165,6 +171,24 @@ window.CE.roster = (function () {
       var isSelected = state.selectedFighterId === f.fighter_id;
       var selectedClass = isSelected ? ' ce-roster-tr--selected' : '';
       var nickHtml = f.nickname ? ' <span class="ce-roster-nick">\'' + escapeHtml(f.nickname) + '\'</span>' : '';
+
+      // Phase 5 Task 3 — ★ watch cell. The star glyph itself is the
+      // click target (so the row's select/dblclick handlers don't
+      // fire when toggling watch). data-watched is the source of truth
+      // for in-place updates (avoids re-fetching the whole roster).
+      var watched = !!f.is_watched;
+      var starChar = watched ? '★' : '☆';
+      var starCls = watched ? 'ce-watch-star ce-watch-star--on' : 'ce-watch-star ce-watch-star--off';
+      var watchCell = '' +
+        '<td class="ce-roster-td ce-roster-td--watch">' +
+          '<span class="' + starCls + '" ' +
+            'data-fighter-id="' + f.fighter_id + '" ' +
+            'data-watched="' + (watched ? '1' : '0') + '" ' +
+            'role="button" tabindex="0" ' +
+            'title="' + (watched ? 'Remove from watchlist' : 'Add to watchlist') + '">' +
+            starChar +
+          '</span>' +
+        '</td>';
 
       return '' +
         '<tr class="ce-roster-tr' + selectedClass + '" data-fighter-id="' + f.fighter_id + '">' +
@@ -180,6 +204,7 @@ window.CE.roster = (function () {
           '<td class="ce-roster-td ce-mono ce-roster-record">' + escapeHtml(f.record_str) + '</td>' +
           '<td class="ce-roster-td ce-roster-gym">' + escapeHtml(f.gym_name) + '</td>' +
           '<td class="ce-roster-td ce-mono ce-roster-nat">' + escapeHtml(f.nat_code) + '</td>' +
+          watchCell +
         '</tr>';
     }).join('');
 
@@ -367,8 +392,12 @@ window.CE.roster = (function () {
     // Row interactions: single click = select, double click = profile
     document.querySelectorAll('.ce-roster-tr').forEach(function (tr) {
       tr.addEventListener('click', function (evt) {
-        // Don't fire row-select when clicking the name hyperlink
+        // Don't fire row-select when clicking the name hyperlink OR
+        // the ★ watch star (Phase 5 Task 3) — the watch star has its
+        // own click handler that calls stopPropagation, but the name
+        // hyperlink's check below is the original safeguard.
         if (evt.target.closest('.ce-roster-name')) return;
+        if (evt.target.closest('.ce-watch-star')) return;
         var fid = parseInt(tr.getAttribute('data-fighter-id'), 10);
         state.selectedFighterId = fid;
         // Update selected class without re-render
@@ -380,8 +409,61 @@ window.CE.roster = (function () {
       });
       tr.addEventListener('dblclick', function (evt) {
         if (evt.target.closest('.ce-roster-name')) return;
+        if (evt.target.closest('.ce-watch-star')) return;
         var fid = parseInt(tr.getAttribute('data-fighter-id'), 10);
         window.CE.app.navigate('fighter_profile', { fighter_id: fid });
+      });
+    });
+
+    // Phase 5 Task 3 — ★ watch star click handler. Toggles watch state
+    // via the bridge + updates just the clicked cell in-place (no
+    // full roster re-render, per spec). stopPropagation prevents the
+    // row's select / dblclick handlers from also firing.
+    document.querySelectorAll('.ce-watch-star').forEach(function (star) {
+      function toggleWatch(evt) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        var fid = parseInt(star.getAttribute('data-fighter-id'), 10);
+        if (!fid) return;
+        var currentlyWatched = star.getAttribute('data-watched') === '1';
+        // Grey-out the star while the request is in-flight + use a
+        // local "busy" flag so double-clicks don't double-fire.
+        if (star.getAttribute('data-busy') === '1') return;
+        star.setAttribute('data-busy', '1');
+        star.style.opacity = '0.5';
+        var bridgeCall = currentlyWatched
+          ? window.CE.bridge.removeFromWatchlist(fid)
+          : window.CE.bridge.addToWatchlist(fid);
+        bridgeCall.then(function (result) {
+          if (result && result.ok) {
+            var nowWatched = !currentlyWatched;
+            star.setAttribute('data-watched', nowWatched ? '1' : '0');
+            star.classList.toggle('ce-watch-star--on', nowWatched);
+            star.classList.toggle('ce-watch-star--off', !nowWatched);
+            star.textContent = nowWatched ? '★' : '☆';
+            star.title = nowWatched ? 'Remove from watchlist' : 'Add to watchlist';
+            showRosterToast(nowWatched ? 'Added to watchlist.' : 'Removed from watchlist.', 'success');
+          } else {
+            showRosterToast(
+              'Watchlist: ' + (result && result.error ? result.error : 'unknown error'),
+              'error'
+            );
+          }
+          star.style.opacity = '';
+          star.setAttribute('data-busy', '0');
+        }).catch(function (err) {
+          showRosterToast('Watchlist: ' + err, 'error');
+          star.style.opacity = '';
+          star.setAttribute('data-busy', '0');
+        });
+      }
+      star.addEventListener('click', toggleWatch);
+      // Keyboard accessibility — Enter / Space toggles too.
+      star.addEventListener('keydown', function (evt) {
+        if (evt.key === 'Enter' || evt.key === ' ' || evt.key === 'Spacebar') {
+          evt.preventDefault();
+          toggleWatch(evt);
+        }
       });
     });
 
@@ -417,6 +499,24 @@ window.CE.roster = (function () {
   // ============================================================
   // PUBLIC API
   // ============================================================
+
+  // Phase 5 Task 3 — minimal toast helper (mirrors the pattern in
+  // fighter_profile.js's showProfileToast). Used to confirm ★ watch
+  // toggles without leaving the roster screen.
+  function showRosterToast(msg, kind) {
+    var host = document.getElementById('screen-content');
+    if (!host) return;
+    var existing = host.querySelector('.ce-toast');
+    if (existing) existing.remove();
+    var toast = document.createElement('div');
+    toast.className = 'ce-toast ce-toast--' + (kind || 'info');
+    toast.textContent = msg;
+    host.appendChild(toast);
+    setTimeout(function () {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 3500);
+  }
+
   function loadAndRender(promoId) {
     state.promoId = promoId;
     var host = document.getElementById('screen-content');

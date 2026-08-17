@@ -76,19 +76,26 @@ window.CE.fighterProfile = (function () {
   function phraseTier(phrase) {
     if (!phrase) return 'steel';
     var p = phrase.toLowerCase();
+    // Word-boundary regex match — avoids "explosive" matching
+    // "serviceable explosiveness" and "iron" matching "envIRONments".
+    function hasWord(word) {
+      var esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('\\b' + esc + '\\b', 'i').test(p);
+    }
     // Elite-tier phrases → gold
     var eliteWords = ['elite', 'world-class', 'exceptional', 'lethal', 'master',
                       'devastating', 'top-tier', 'elite-level', 'powerful',
-                      'explosive', 'iron', 'titanium', 'granite'];
+                      'explosive', 'iron', 'titanium', 'granite',
+                      'excellent', 'dominant', 'unstoppable'];
     for (var i = 0; i < eliteWords.length; i++) {
-      if (p.indexOf(eliteWords[i]) !== -1) return 'gold';
+      if (hasWord(eliteWords[i])) return 'gold';
     }
     // Weak-tier phrases → crimson
     var weakWords = ['poor', 'weak', 'fragile', 'limited', 'vulnerable',
                      'soft', 'can be rocked', 'questionable', 'shaky',
-                     'below-average', 'lacking'];
+                     'below-average', 'lacking', 'lacks', 'helpless'];
     for (var j = 0; j < weakWords.length; j++) {
-      if (p.indexOf(weakWords[j]) !== -1) return 'crimson';
+      if (hasWord(weakWords[j])) return 'crimson';
     }
     return 'steel';
   }
@@ -200,6 +207,25 @@ window.CE.fighterProfile = (function () {
       actions += '<button class="ce-btn ce-btn-primary" id="ce-fp-sign-btn" type="button">Bring Into Your Stable</button>';
     }
 
+    // Phase 5 Task 3 — ★ Watch / ★ Unwatch button. Only rendered for
+    // fighters on the player's own roster (per spec: can only watch
+    // fighters on your promotion). Gold-filled ★ when watched, grey
+    // outlined ☆ when not watched. Sits next to the name.
+    var watchBtn = '';
+    if (h.is_on_player_roster) {
+      var watched = !!h.is_watched;
+      var starChar = watched ? '★' : '☆';
+      var watchClass = watched ? 'ce-fp-watch-btn--on' : 'ce-fp-watch-btn--off';
+      var watchLabel = watched ? 'Unwatch' : 'Watch';
+      watchBtn = '' +
+        '<button class="ce-fp-watch-btn ' + watchClass + '" id="ce-fp-watch-btn" ' +
+          'type="button" data-watched="' + (watched ? '1' : '0') + '" ' +
+          'title="' + (watched ? 'Remove from watchlist' : 'Add to watchlist') + '">' +
+          '<span class="ce-fp-watch-star">' + starChar + '</span>' +
+          '<span class="ce-fp-watch-label">' + watchLabel + '</span>' +
+        '</button>';
+    }
+
     // Promo line + meta line — CR-1 (docs/CR1_4_PLAN.md §1.2):
     // show the actual promotion name (e.g. "ALPHA COMBAT FEDERATION")
     // instead of the "YOUR promotion" placeholder. Phase R §4.4 keeps
@@ -222,7 +248,10 @@ window.CE.fighterProfile = (function () {
           '<div class="ce-fp-header-topline">' +
             '<a class="ce-fp-back" href="#" id="ce-fp-back">← Back</a>' +
           '</div>' +
-          '<h2 class="ce-fp-name">' + escapeHtml(h.name) + '</h2>' +
+          '<div class="ce-fp-name-row">' +
+            '<h2 class="ce-fp-name">' + escapeHtml(h.name) + '</h2>' +
+            watchBtn +
+          '</div>' +
           (h.nickname ? '<div class="ce-fp-nick">"' + escapeHtml(h.nickname) + '"</div>' : '') +
           '<div class="ce-fp-meta">' + escapeHtml(metaLine) + '</div>' +
           '<div class="ce-fp-promo">' + escapeHtml(promoLine) + '</div>' +
@@ -927,6 +956,49 @@ window.CE.fighterProfile = (function () {
         showProfileToast('Sign failed: ' + err, 'error');
         signBtn.disabled = false;
         signBtn.textContent = 'Bring Into Your Stable';
+      });
+    });
+
+    // Phase 5 Task 3 — ★ Watch / ★ Unwatch button (player's roster
+    // fighters only). Toggles watch state via the bridge, then updates
+    // the button in-place (no full re-render) + shows a toast.
+    var watchBtn = document.getElementById('ce-fp-watch-btn');
+    if (watchBtn) watchBtn.addEventListener('click', function () {
+      if (!state.data) return;
+      var fid = state.data.fighter_id;
+      var name = state.data.header.name;
+      var currentlyWatched = watchBtn.getAttribute('data-watched') === '1';
+      // Disable while in-flight to prevent double-clicks.
+      watchBtn.disabled = true;
+      var bridgeCall = currentlyWatched
+        ? window.CE.bridge.removeFromWatchlist(fid)
+        : window.CE.bridge.addToWatchlist(fid);
+      bridgeCall.then(function (result) {
+        if (result && result.ok) {
+          // Flip the local state + re-render the button label/star.
+          var nowWatched = !currentlyWatched;
+          watchBtn.setAttribute('data-watched', nowWatched ? '1' : '0');
+          watchBtn.classList.toggle('ce-fp-watch-btn--on', nowWatched);
+          watchBtn.classList.toggle('ce-fp-watch-btn--off', !nowWatched);
+          watchBtn.querySelector('.ce-fp-watch-star').textContent = nowWatched ? '★' : '☆';
+          watchBtn.querySelector('.ce-fp-watch-label').textContent = nowWatched ? 'Unwatch' : 'Watch';
+          watchBtn.title = nowWatched ? 'Remove from watchlist' : 'Add to watchlist';
+          // Update cached state.data so a tab switch doesn't revert it.
+          if (state.data.header) state.data.header.is_watched = nowWatched;
+          showProfileToast(
+            nowWatched ? 'Added ' + name + ' to your watchlist.' : 'Removed ' + name + ' from your watchlist.',
+            'success'
+          );
+        } else {
+          showProfileToast(
+            'Watchlist: ' + (result && result.error ? result.error : 'unknown error'),
+            'error'
+          );
+        }
+        watchBtn.disabled = false;
+      }).catch(function (err) {
+        showProfileToast('Watchlist: ' + err, 'error');
+        watchBtn.disabled = false;
       });
     });
   }

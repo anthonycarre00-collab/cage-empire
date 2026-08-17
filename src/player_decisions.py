@@ -77,11 +77,20 @@ TYPE_ASSIGN_STAFF = "assign_staff"
 TYPE_SET_TICKET_PRICE = "set_ticket_price"
 TYPE_SET_MARKETING = "set_marketing"
 TYPE_NEGOTIATE_CONTRACT = "negotiate_contract"
+# Phase 5 Task 3 — Player Watchlist. 'watch' and 'unwatch' are net-
+# new decision_types added in v3.37.0 (the migration
+# _migrate_v3_37_0_relax_player_decisions_watchlist_check relaxes the
+# CHECK constraint on player_decisions.decision_type to include these
+# two values). Used by Api.add_to_watchlist / remove_from_watchlist /
+# get_watchlist in app_web.py.
+TYPE_WATCH = "watch"
+TYPE_UNWATCH = "unwatch"
 
 ALL_TYPES = frozenset({
     TYPE_SIGN, TYPE_CUT, TYPE_BOOK, TYPE_SCOUT,
     TYPE_HIRE_STAFF, TYPE_FIRE_STAFF, TYPE_ASSIGN_STAFF,
     TYPE_SET_TICKET_PRICE, TYPE_SET_MARKETING, TYPE_NEGOTIATE_CONTRACT,
+    TYPE_WATCH, TYPE_UNWATCH,
 })
 
 

@@ -163,6 +163,53 @@
 .ce-roster-name { font-size: 14px; font-weight: 600; }
 
 /* ============================================================
+   PHASE 5 TASK 3 — ★ WATCH COLUMN
+   Last column of the roster table. Header is a single ★ glyph
+   (gold, centered). Each row shows ☆ (grey, clickable) or ★ (gold,
+   clickable). Click toggles watch state via the bridge + updates the
+   cell in-place (no roster re-render). Keyboard-accessible (Enter/Space).
+   ============================================================ */
+.ce-roster-th--center {
+  text-align: center;
+}
+.ce-roster-td--watch {
+  width: 44px;
+  text-align: center;
+  /* keep the star vertically centered even on rows with long nicknames */
+  vertical-align: middle;
+}
+.ce-watch-star {
+  display: inline-block;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 6px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s, transform 0.08s;
+  outline: none;
+}
+.ce-watch-star:focus-visible {
+  box-shadow: 0 0 0 2px var(--gold, #e0a957);
+}
+.ce-watch-star:hover { transform: scale(1.15); }
+.ce-watch-star--off {
+  color: var(--text-tertiary);
+}
+.ce-watch-star--off:hover {
+  color: var(--gold, #e0a957);
+  background: var(--gold-tint, rgba(224, 169, 87, 0.10));
+}
+.ce-watch-star--on {
+  color: var(--gold, #e0a957);
+  text-shadow: 0 0 6px rgba(224, 169, 87, 0.45);
+}
+.ce-watch-star--on:hover {
+  color: var(--gold-bright, #f5c878);
+  background: var(--gold-tint, rgba(224, 169, 87, 0.12));
+}
+
+/* ============================================================
    ACTIVE DOT
    ============================================================ */
 .ce-dot {

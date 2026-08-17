@@ -2123,6 +2123,394 @@ class Api:
             return 0
 
     # ============================================================
+    # PHASE 5 TASK 3 — PLAYER WATCHLIST
+    # Minimal watchlist piggybacking on the existing player_decisions
+    # table. Two new decision_types ('watch' / 'unwatch') relax the
+    # original v3.16.0 CHECK constraint (see migration
+    # _migrate_v3_37_0_relax_player_decisions_watchlist_check in
+    # build_db.py). A fighter is "currently watched" if their most
+    # recent 'watch'/'unwatch' decision is 'watch'. Cap: 12 per promo.
+    # Voice compliance (CONVENTIONS §14): uses fighter_descriptors for
+    # momentum (label||phrase), NEVER raw attribute numbers.
+    # ============================================================
+
+    # Watchlist cap — per docs/PHASE5_UI_POLISH_PLAN.md Task 3 spec.
+    WATCHLIST_CAP = 12
+
+    def _watched_fighter_ids_for_promo(self, promo_id, limit=None):
+        """Return a list of (fighter_id, watched_since_date) tuples for
+        currently-watched fighters on `promo_id`, newest-watch-first.
+
+        "Currently watched" = the fighter's most recent 'watch'/
+        'unwatch' decision is 'watch' (i.e. there's no later 'unwatch'
+        row for the same fighter_id). Limited to `limit` rows (default
+        WATCHLIST_CAP) so the Dashboard / Fighter Profile / Roster
+        screens don't pull the entire history.
+
+        IMPORTANT: the "later" comparator is `decision_id`, NOT
+        `decision_date`. The sim clock advances one day at a time, so
+        multiple decisions taken on the same sim day share the same
+        `decision_date` string. If we compared on `decision_date`, a
+        same-day watch→unwatch pair (e.g. user toggles ★ on then off
+        without advancing the day) would look like two equal-date
+        rows + the unwatch wouldn't override the watch. Using
+        `decision_id` (AUTOINCREMENT primary key) gives a strict
+        monotonic order that matches actual insert order.
+
+        The "latest decision per fighter" sub-query (pd.decision_id =
+        MAX over watch+unwatch rows for the same fighter) ensures each
+        fighter is counted ONCE even if they have multiple 'watch'
+        rows in their history (e.g. watched, unwatched, re-watched —
+        only the latest decision matters, so we get 1 row, not 2).
+        Without this, the cap check would over-count + reject valid
+        re-watches.
+
+        Returns an empty list on any error (defensive — caller should
+        treat as "no watched fighters").
+        """
+        try:
+            if not promo_id:
+                return []
+            cap = limit if limit is not None else self.WATCHLIST_CAP
+            sql = (
+                "SELECT pd.target_fighter_id, pd.decision_date "
+                "FROM player_decisions pd "
+                "WHERE pd.decision_type = 'watch' "
+                "  AND pd.target_fighter_id IS NOT NULL "
+                "  AND pd.target_fighter_id IN ("
+                "      SELECT fighter_id FROM fighters "
+                "      WHERE current_promotion_id = ?"
+                "  ) "
+                # The fighter's LATEST decision (watch or unwatch)
+                # must be this 'watch' row — i.e. no later row of
+                # EITHER type exists for the same fighter. This
+                # correctly handles the same-day watch→unwatch→watch
+                # cycle (only the most recent watch counts) AND
+                # avoids duplicate rows when a fighter has been
+                # watched multiple times in their history.
+                "  AND NOT EXISTS ("
+                "      SELECT 1 FROM player_decisions pd2 "
+                "      WHERE pd2.target_fighter_id = pd.target_fighter_id "
+                "        AND pd2.decision_type IN ('watch','unwatch') "
+                "        AND pd2.decision_id > pd.decision_id"
+                "  ) "
+                "ORDER BY pd.decision_date DESC, pd.decision_id DESC "
+                "LIMIT ?"
+            )
+            rows = self.conn.execute(sql, (int(promo_id), int(cap))).fetchall()
+            return [(r[0], r[1]) for r in rows]
+        except Exception as e:
+            print(f"[api._watched_fighter_ids_for_promo] {e}", flush=True)
+            return []
+
+    def _is_fighter_currently_watched(self, fighter_id):
+        """Return True if `fighter_id` has a 'watch' decision with no
+        later 'unwatch' decision. Used by get_fighter_profile_data to
+        populate the `is_watched` header field without re-querying the
+        full watchlist.
+
+        Uses `decision_id` (AUTOINCREMENT) as the "later" comparator
+        instead of `decision_date` — see the docstring on
+        _watched_fighter_ids_for_promo for the same-day rationale.
+
+        The check is "the fighter's latest decision is a watch" — so
+        a watch→unwatch→watch cycle (all on the same sim day) leaves
+        the fighter watched, and a watch→unwatch leaves them not
+        watched. Multiple consecutive watch rows (no unwatch between)
+        are collapsed to a single "watched" result."""
+        try:
+            fid = int(fighter_id)
+            # Find the fighter's latest 'watch' or 'unwatch' decision
+            # by decision_id. If it's a 'watch', they're currently
+            # watched. (This is one row + one comparison, faster than
+            # the NOT EXISTS pattern when called per-fighter.)
+            row = self.conn.execute(
+                "SELECT decision_type FROM player_decisions "
+                "WHERE target_fighter_id = ? "
+                "  AND decision_type IN ('watch','unwatch') "
+                "ORDER BY decision_id DESC LIMIT 1",
+                (fid,),
+            ).fetchone()
+            return bool(row) and row[0] == 'watch'
+        except Exception:
+            return False
+
+    def add_to_watchlist(self, fighter_id, reason='manual'):
+        """Add `fighter_id` to the player's watchlist.
+
+        Validates:
+          - fighter_id exists in the fighters table
+          - fighter is currently on the player's promotion (you can
+            only watch your own roster)
+          - the watchlist cap (12 per promo) isn't already met — i.e.
+            there are fewer than 12 currently-watched fighters on the
+            player's promo. If the cap is met, returns
+            {ok: false, error: "Watchlist full (max 12)"}.
+
+        On success, INSERTs a 'watch' row into player_decisions with
+        context_json = {"reason": <reason>, "added_at": <sim_date>}.
+
+        Idempotency: this method does NOT check whether the fighter is
+        already watched. If called twice in a row, two 'watch' rows
+        are inserted — but _is_fighter_currently_watched + get_watchlist
+        only consider the LATEST 'watch'/'unwatch' pair, so the second
+        call is effectively a no-op from the player's POV. (The cap
+        check counts only currently-watched fighters, so a double-add
+        won't push the count over 12.)
+        """
+        try:
+            fid = int(fighter_id)
+            player_promo = self.get_player_promotion()
+            if not player_promo:
+                return {"ok": False,
+                        "error": "No promotion selected — pick a promotion first."}
+
+            # 1. Validate fighter exists + is on the player's promo.
+            f = self.conn.execute(
+                "SELECT current_promotion_id FROM fighters WHERE fighter_id=?",
+                (fid,),
+            ).fetchone()
+            if not f:
+                return {"ok": False,
+                        "error": f"Fighter {fid} not found"}
+            if f[0] != player_promo:
+                return {"ok": False,
+                        "error": "Can only watch fighters on your promotion"}
+
+            # 2. Cap check — count currently-watched fighters on this
+            # promo (the fighter about to be watched doesn't count
+            # toward the cap yet, but if they're already watched this
+            # call is a re-affirmation, so we permit it through).
+            already_watched = self._is_fighter_currently_watched(fid)
+            if not already_watched:
+                current_count = len(
+                    self._watched_fighter_ids_for_promo(player_promo)
+                )
+                if current_count >= self.WATCHLIST_CAP:
+                    return {"ok": False,
+                            "error": f"Watchlist full (max {self.WATCHLIST_CAP})"}
+
+            # 3. Determine decision_date from sim clock.
+            clock = get_clock(self.conn)
+            sim_date = clock[0] if clock else None
+            if not sim_date:
+                return {"ok": False,
+                        "error": "Simulation clock is missing — cannot log watch decision"}
+
+            # 4. INSERT the 'watch' row.
+            context = {
+                "reason": str(reason or "manual"),
+                "added_at": sim_date,
+                "promo_id": int(player_promo),
+            }
+            from player_decisions import log_decision, TYPE_WATCH
+            decision_id = log_decision(
+                self.conn,
+                decision_type=TYPE_WATCH,
+                target_fighter_id=fid,
+                target_promo_id=int(player_promo),
+                context=context,
+                decision_date=sim_date,
+            )
+            if not decision_id:
+                return {"ok": False,
+                        "error": "Failed to insert watch decision (see server log)"}
+            self.conn.commit()
+            return {"ok": True, "fighter_id": fid}
+        except Exception as e:
+            print(f"[api.add_to_watchlist] {e}\n{traceback.format_exc()}",
+                  flush=True)
+            return {"ok": False, "error": str(e)}
+
+    def remove_from_watchlist(self, fighter_id, reason='manual'):
+        """Remove `fighter_id` from the player's watchlist.
+
+        Validates: fighter_id exists (we don't check promo — removing
+        a fighter that's already not watched is a no-op per the spec's
+        idempotency requirement).
+
+        On success, INSERTs an 'unwatch' row into player_decisions
+        with context_json = {"reason": <reason>}. This OVERRIDES any
+        prior 'watch' row for the same fighter (the
+        _is_fighter_currently_watched helper checks for a later
+        'unwatch' decision).
+
+        Idempotency: per the spec, this method does NOT error if the
+        fighter wasn't currently watched. It just adds an 'unwatch'
+        row, which is a no-op if there's no prior 'watch'.
+        """
+        try:
+            fid = int(fighter_id)
+
+            # 1. Validate fighter exists.
+            f = self.conn.execute(
+                "SELECT fighter_id FROM fighters WHERE fighter_id=?",
+                (fid,),
+            ).fetchone()
+            if not f:
+                return {"ok": False,
+                        "error": f"Fighter {fid} not found"}
+
+            # 2. Determine decision_date from sim clock.
+            clock = get_clock(self.conn)
+            sim_date = clock[0] if clock else None
+            if not sim_date:
+                return {"ok": False,
+                        "error": "Simulation clock is missing — cannot log unwatch decision"}
+
+            # 3. INSERT the 'unwatch' row (idempotent — always inserts
+            # a new row, even if the fighter wasn't currently watched).
+            player_promo = self.get_player_promotion()
+            context = {"reason": str(reason or "manual")}
+            if player_promo:
+                context["promo_id"] = int(player_promo)
+            from player_decisions import log_decision, TYPE_UNWATCH
+            decision_id = log_decision(
+                self.conn,
+                decision_type=TYPE_UNWATCH,
+                target_fighter_id=fid,
+                target_promo_id=int(player_promo) if player_promo else None,
+                context=context,
+                decision_date=sim_date,
+            )
+            if not decision_id:
+                return {"ok": False,
+                        "error": "Failed to insert unwatch decision (see server log)"}
+            self.conn.commit()
+            return {"ok": True, "fighter_id": fid}
+        except Exception as e:
+            print(f"[api.remove_from_watchlist] {e}\n{traceback.format_exc()}",
+                  flush=True)
+            return {"ok": False, "error": str(e)}
+
+    def get_watchlist(self, promo_id=None):
+        """Return the currently-watched fighters for `promo_id`.
+
+        If `promo_id` is None, uses the player's selected promotion.
+
+        Returns a list of up to 12 dicts (one per currently-watched
+        fighter), each shaped like:
+            {
+                "fighter_id": 5,
+                "name": "John Smith",
+                "weight_class_name": "Heavyweight",
+                "portrait_b64": "<b64 string>" or null,
+                "momentum_phrase": "riding a hot streak",
+                "momentum_label": "very_high",
+                "record": "15-2-0",
+                "is_champion": false,
+                "watched_since": "2026-08-17"
+            }
+
+        Voice compliance (CONVENTIONS §14): momentum_phrase + label
+        come from fighter_descriptors (decoded via _decode_phrase /
+        _decode_label). NO raw attribute numbers are returned.
+
+        Returns an empty list if the promo has no watched fighters,
+        if the promo_id is invalid, or if no player promotion is
+        selected (when promo_id=None).
+        """
+        try:
+            if promo_id is None:
+                pid = self.get_player_promotion()
+            else:
+                pid = int(promo_id)
+            if not pid:
+                return []
+
+            # 1. Pull the currently-watched fighter_ids (capped at
+            # WATCHLIST_CAP) — newest watch first.
+            watched = self._watched_fighter_ids_for_promo(pid)
+            if not watched:
+                return []
+
+            watched_map = {fid: since for fid, since in watched}
+            fid_list = list(watched_map.keys())
+
+            # 2. Champion fighter_ids for this promo (used to populate
+            # is_champion without a per-fighter sub-query).
+            champ_ids = set()
+            for r in self.conn.execute(
+                "SELECT current_champion_fighter_id FROM titles "
+                "WHERE promotion_id=? AND is_vacant=0 "
+                "  AND current_champion_fighter_id IS NOT NULL",
+                (pid,),
+            ).fetchall():
+                champ_ids.add(r[0])
+
+            # 3. Bulk-fetch fighter + descriptor data for all watched
+            # fighter_ids in one query (avoids N+1 pattern).
+            placeholders = ",".join(["?"] * len(fid_list))
+            rows = self.conn.execute(
+                "SELECT f.fighter_id, f.first_name, f.last_name, "
+                "  f.portrait_path, "
+                "  wc.name AS wc_name, "
+                "  fd.momentum, fd.momentum_short, "
+                "  fc.record_wins, fc.record_losses, fc.record_draws "
+                "FROM fighters f "
+                "LEFT JOIN weight_classes wc "
+                "  ON wc.weight_class_id = f.weight_class_id "
+                "LEFT JOIN fighter_descriptors fd "
+                "  ON fd.fighter_id = f.fighter_id "
+                "LEFT JOIN fighter_career fc "
+                "  ON fc.fighter_id = f.fighter_id "
+                "WHERE f.fighter_id IN (" + placeholders + ")",
+                fid_list,
+            ).fetchall()
+
+            # 4. Build the response list, preserving watch-order (newest
+            # watch first — watched_map was built in that order).
+            #
+            # SELECT column → row index map:
+            #   0 fighter_id        1 first_name         2 last_name
+            #   3 portrait_path     4 wc_name            5 momentum (LONG)
+            #   6 momentum_short    7 record_wins        8 record_losses
+            #   9 record_draws
+            by_id = {}
+            for r in rows:
+                fid = r[0]
+                # Label from LONG form (canonical momentum tier) —
+                # falls back to SHORT label if LONG is NULL.
+                momentum_label = (_decode_label(r[5]) if r[5]
+                                  else (_decode_label(r[6]) if r[6] else ""))
+                # Phrase prefers LONG (descriptive) — matches the
+                # Fighter Watch card voice style on the Dashboard.
+                momentum_phrase = (_decode_phrase(r[5]) if r[5]
+                                   else (_decode_phrase(r[6]) if r[6] else ""))
+                record_str = f"{r[7] or 0}-{r[8] or 0}-{r[9] or 0}"
+
+                # Portrait — reuse the cached loader (in-memory cache
+                # survives across calls in the same Api instance).
+                portrait_b64 = None
+                if r[3]:  # portrait_path
+                    p = self.get_fighter_portrait_b64(fid)
+                    if p and p.get("has_portrait"):
+                        portrait_b64 = p.get("portrait_b64")
+
+                by_id[fid] = {
+                    "fighter_id": fid,
+                    "name": f"{r[1]} {r[2]}",
+                    "weight_class_name": r[4] or "—",
+                    "portrait_b64": portrait_b64,
+                    "momentum_phrase": momentum_phrase,
+                    "momentum_label": momentum_label,
+                    "record": record_str,
+                    "is_champion": fid in champ_ids,
+                    "watched_since": watched_map.get(fid, ""),
+                }
+
+            # Preserve the watched order (newest first).
+            out = []
+            for fid in fid_list:
+                if fid in by_id:
+                    out.append(by_id[fid])
+            return out
+        except Exception as e:
+            print(f"[api.get_watchlist] {e}\n{traceback.format_exc()}",
+                  flush=True)
+            return []
+
+    # ============================================================
     # HW2.4 — WORLD HEALTH STATUS (W27)
     # ============================================================
 
@@ -2539,6 +2927,226 @@ class Api:
             total_wcs = conn.execute(
                 "SELECT COUNT(DISTINCT weight_class_id) FROM weight_classes").fetchone()[0] or 8
 
+            # 8b. Phase 5 Task 2 — cash_history + yesterday_cash for the
+            # SVG sparkline + trend arrow on the cash stat tile.
+            # We walk the 7 most-recent finance_transactions for this
+            # promo FORWARD from oldest to newest, accumulating the
+            # amount to derive the running balance AFTER each
+            # transaction. The starting balance (before the oldest of
+            # the 7) is `current_cash - sum(amounts)`, returned as
+            # `yesterday_cash` for the trend arrow delta.
+            #
+            # If fewer than 7 transactions exist (new promo), we pad
+            # forward with the current cash so the sparkline still
+            # renders 7 points (a flat line, no trend). If no
+            # transactions at all, cash_history = [cash]*7.
+            tx_rows = conn.execute("""SELECT transaction_id, amount
+                FROM finance_transactions WHERE promotion_id=?
+                ORDER BY transaction_id DESC LIMIT 7""", (pid,)).fetchall()
+            # tx_rows is newest-first; we want oldest-first for the walk.
+            tx_oldest_first = list(reversed(tx_rows))
+            sum_amounts = sum(float(tr[1] or 0) for tr in tx_oldest_first)
+            starting_balance = cash - sum_amounts  # balance before oldest tx
+            cash_history = []
+            running = starting_balance
+            for tr in tx_oldest_first:
+                running += float(tr[1] or 0)
+                cash_history.append(round(running, 2))
+            # Pad to 7 points if fewer than 7 transactions (pad at the
+            # front with the starting balance so the sparkline trends
+            # up to the current cash).
+            while len(cash_history) < 7:
+                cash_history.insert(0, round(starting_balance, 2))
+            yesterday_cash = round(starting_balance, 2)
+
+            # 9. Phase 5 Task 2 — "What Changed" section data.
+            # Three streams of recent activity: finance_transactions,
+            # fighter_signing news_items (this promo), and active
+            # injuries (this promo's fighters). Each capped to 7/5/5
+            # rows. The JS layer composes them into a single section.
+            recent_tx_rows = conn.execute("""SELECT transaction_date, transaction_type,
+                amount, description FROM finance_transactions
+                WHERE promotion_id=?
+                ORDER BY transaction_id DESC LIMIT 7""", (pid,)).fetchall()
+            recent_transactions = [{
+                "date": r[0] or "",
+                "type": r[1] or "transaction",
+                "amount": float(r[2] or 0),
+                "description": r[3] or "",
+            } for r in recent_tx_rows]
+
+            signing_rows = conn.execute("""SELECT headline, published_at, fighter_id
+                FROM news_items
+                WHERE promotion_id=? AND topic='fighter_signing'
+                ORDER BY published_at DESC LIMIT 5""", (pid,)).fetchall()
+            recent_signings = [{
+                "headline": r[0] or "",
+                "published_at": r[1] or "",
+                "fighter_id": r[2],
+            } for r in signing_rows]
+
+            injury_rows = conn.execute("""SELECT f.first_name, f.last_name,
+                i.injury_type, i.start_date, i.projected_return_date
+                FROM injuries i
+                JOIN fighters f ON f.fighter_id=i.fighter_id
+                WHERE i.is_active=1 AND f.current_promotion_id=?
+                ORDER BY i.start_date DESC LIMIT 5""", (pid,)).fetchall()
+            recent_injuries = [{
+                "fighter_name": f"{r[0]} {r[1]}",
+                "injury_type": r[2] or "undisclosed",
+                "start_date": r[3] or "",
+                "projected_return_date": r[4] or "",
+            } for r in injury_rows]
+
+            # 10. Phase 5 Task 2 — "Threats" section.
+            # Composite scan of risk surfaces, sorted by severity.
+            # Each threat is a {kind, severity, message, fighter_id?} dict.
+            # Severity is 'high' (action needed now), 'medium' (this week),
+            # or 'low' (heads-up).
+            threats = []
+
+            # 10a. Injured champions (highest-severity threat — your
+            # title picture is in flux).
+            champ_ids_set = {c["fighter_id"] for c in champions}
+            if champ_ids_set:
+                ph = ",".join(["?"] * len(champ_ids_set))
+                inj_champ_rows = conn.execute(
+                    "SELECT fighter_id, injury_type, start_date, "
+                    "projected_return_date FROM injuries "
+                    "WHERE is_active=1 AND fighter_id IN (" + ph + ")",
+                    list(champ_ids_set)).fetchall()
+                champ_name_map = {c["fighter_id"]: c["name"] for c in champions}
+                champ_wc_map = {c["fighter_id"]: c["weight_class"] for c in champions}
+                for r in inj_champ_rows:
+                    fid = r[0]
+                    cname = champ_name_map.get(fid, "your champion")
+                    wc = champ_wc_map.get(fid, "title")
+                    threats.append({
+                        "kind": "injured_champion",
+                        "severity": "high",
+                        "message": f"{cname} ({wc}) is out with {r[1] or 'an injury'} — expected back {r[3] or 'soon'}.",
+                        "fighter_id": fid,
+                    })
+
+            # 10b. Expiring contracts (next 30 sim days).
+            expiry_rows = conn.execute("""SELECT c.end_date, c.salary,
+                fc.fighter_id, f.first_name, f.last_name
+                FROM contracts c
+                JOIN fighter_contracts fc ON fc.contract_id=c.contract_id
+                JOIN fighters f ON f.fighter_id=fc.fighter_id
+                WHERE c.status='active' AND f.current_promotion_id=?
+                  AND c.end_date >= ? AND c.end_date <= date(?, '+30 days')
+                ORDER BY c.end_date LIMIT 5""", (pid, sim_date, sim_date)).fetchall()
+            for r in expiry_rows:
+                threats.append({
+                    "kind": "expiring_contract",
+                    "severity": "medium",
+                    "message": f"{r[3]} {r[4]}'s contract expires {r[0]}.",
+                    "fighter_id": r[2],
+                })
+
+            # 10c. Low cash warning (cash < $500K = high, < $2M = medium).
+            if cash < 500_000:
+                threats.append({
+                    "kind": "low_cash",
+                    "severity": "high",
+                    "message": f"War chest is down to ${cash:,.0f}. Cancel a card or sign cheaper talent.",
+                })
+            elif cash < 2_000_000:
+                threats.append({
+                    "kind": "low_cash",
+                    "severity": "medium",
+                    "message": f"War chest is at ${cash:,.0f}. Watch your spending.",
+                })
+
+            # 10d. Low fan trust / reputation.
+            if fan_trust < 30:
+                threats.append({
+                    "kind": "low_fan_trust",
+                    "severity": "high" if fan_trust < 15 else "medium",
+                    "message": f"Fan trust is at {fan_trust}%. The fans are restless — book a crowd-pleaser.",
+                })
+            if rep < 30:
+                threats.append({
+                    "kind": "low_reputation",
+                    "severity": "high" if rep < 15 else "medium",
+                    "message": f"Your promotion's standing is at {rep}%. You need a marquee moment.",
+                })
+
+            # 11. Phase 5 Task 2 — "Opportunities" section.
+            # Composite scan of upside surfaces.
+            opportunities = []
+
+            # 11a. High-heat rivalries involving a promo fighter.
+            heat_rows = conn.execute("""SELECT r.rivalry_heat, r.rivalry_type,
+                r.fighter_a_id, r.fighter_b_id,
+                fa.first_name, fa.last_name,
+                fb.first_name, fb.last_name
+                FROM rivalries r
+                JOIN fighters fa ON fa.fighter_id=r.fighter_a_id
+                JOIN fighters fb ON fb.fighter_id=r.fighter_b_id
+                WHERE r.is_active=1 AND r.rivalry_heat >= 60
+                  AND (fa.current_promotion_id=? OR fb.current_promotion_id=?)
+                ORDER BY r.rivalry_heat DESC LIMIT 3""",
+                (pid, pid)).fetchall()
+            for r in heat_rows:
+                opportunities.append({
+                    "kind": "high_heat_rivalry",
+                    "severity": "high" if r[0] >= 75 else "medium",
+                    "message": f"{r[4]} {r[5]} vs {r[6]} {r[7]} — heat at {r[0]}%. Book the rematch.",
+                    "fighter_id": r[2] if r[2] else r[3],
+                })
+
+            # 11b. Vacant titles on this promo (free belts to capture).
+            vacant_rows = conn.execute("""SELECT wc.name
+                FROM titles t
+                JOIN weight_classes wc ON wc.weight_class_id=t.weight_class_id
+                WHERE t.promotion_id=? AND t.is_vacant=1
+                ORDER BY COALESCE(wc.display_order, wc.weight_class_id) LIMIT 5""",
+                (pid,)).fetchall()
+            for r in vacant_rows:
+                opportunities.append({
+                    "kind": "vacant_title",
+                    "severity": "medium",
+                    "message": f"The {r[0]} title is vacant. Crown a champion.",
+                })
+
+            # 11c. Top free agent targets (top 3 by record wins — voice
+            # only, no raw attribute numbers).
+            fa_rows = conn.execute("""SELECT f.fighter_id, f.first_name, f.last_name,
+                fc.record_wins, fc.record_losses, fc.record_draws, wc.name
+                FROM fighters f
+                LEFT JOIN fighter_career fc ON fc.fighter_id=f.fighter_id
+                LEFT JOIN weight_classes wc ON wc.weight_class_id=f.weight_class_id
+                WHERE f.is_active=1 AND f.current_promotion_id IS NULL
+                ORDER BY COALESCE(fc.record_wins, 0) DESC, f.fighter_id
+                LIMIT 3""").fetchall()
+            for r in fa_rows:
+                w = r[3] or 0; l = r[4] or 0; d = r[5] or 0
+                opportunities.append({
+                    "kind": "free_agent_target",
+                    "severity": "low",
+                    "message": f"{r[1]} {r[2]} ({r[6] or '—'}) is a free agent with a {w}-{l}-{d} record.",
+                    "fighter_id": r[0],
+                })
+
+            # 12. Phase 5 Task 2 — "World Stories" section.
+            # Top 5 most-recent news items from RIVAL promos (promo_id
+            # != player's pid), with the rival promo name resolved.
+            world_rows = conn.execute("""SELECT n.headline, n.topic, n.published_at,
+                n.fighter_id, p.name AS promo_name
+                FROM news_items n
+                JOIN promotions p ON p.promotion_id=n.promotion_id
+                WHERE n.promotion_id IS NOT NULL AND n.promotion_id != ?
+                ORDER BY n.published_at DESC LIMIT 5""", (pid,)).fetchall()
+            world_stories = [{
+                "headline": r[0] or "",
+                "topic": r[1] or "wire",
+                "published_at": r[2] or "",
+                "fighter_id": r[3],
+                "promo_name": r[4] or "",
+            } for r in world_rows]
+
             # Logo (base64 embed for offline use)
             logo_b64 = _load_logo_b64(pid)
 
@@ -2550,6 +3158,9 @@ class Api:
                 "month_name": month_name,
                 "year": year,
                 "cash": cash,
+                # Phase 5 Task 2 — sparkline + trend arrow data
+                "cash_history": cash_history,
+                "yesterday_cash": yesterday_cash,
                 "reputation": rep,
                 "reputation_phrase": _reputation_phrase(rep),
                 "fan_trust": fan_trust,
@@ -2572,6 +3183,15 @@ class Api:
                 "champions": champions,
                 "recent_results": recent_results,
                 "recent_news": recent_news,
+                # Phase 5 Task 2 — new sections (What Changed, Threats,
+                # Opportunities, World Stories). All additive — no
+                # existing fields renamed or removed.
+                "recent_transactions": recent_transactions,
+                "recent_signings": recent_signings,
+                "recent_injuries": recent_injuries,
+                "threats": threats,
+                "opportunities": opportunities,
+                "world_stories": world_stories,
             }
         except Exception as e:
             print(f"[api.get_dashboard_data] {e}\n{traceback.format_exc()}",
@@ -2874,6 +3494,16 @@ class Api:
             ).fetchall():
                 champ_ids.add(r[0])
 
+            # ----- Phase 5 Task 3: currently-watched fighter_ids -----
+            # One batched query for the whole promo (avoids N+1). The
+            # ★ column on the roster table reads `is_watched` per row.
+            # Note: the roster screen is the PLAYER's promo by spec, so
+            # the watchlist here is always the player's own watchlist.
+            watched_id_set = set(
+                fid for (fid, _since)
+                in self._watched_fighter_ids_for_promo(pid)
+            )
+
             # ----- Main query — 20 rows -----
             rows = conn.execute(
                 "SELECT f.fighter_id, f.first_name, f.last_name, f.nickname, "
@@ -2924,6 +3554,8 @@ class Api:
                     "is_injured": (r[16] or 0) > 0,
                     "is_suspended": (r[17] or 0) > 0,
                     "is_champion": fid in champ_ids,
+                    # Phase 5 Task 3 — drives the ★ column state.
+                    "is_watched": fid in watched_id_set,
                 })
 
             # ----- Weight class distribution viz -----
@@ -4039,6 +4671,14 @@ class Api:
                     "is_champion": is_champion,
                     "is_on_player_roster": is_on_player_roster,
                     "is_free_agent": is_free_agent,
+                    # Phase 5 Task 3: is_watched drives the ★ Watch /
+                    # ★ Unwatch button state in the fighter profile
+                    # header. Computed via the player_decisions watch/
+                    # unwatch pattern (latest decision wins). Always
+                    # False for fighters not on the player's promo
+                    # (you can only watch your own roster).
+                    "is_watched": (is_on_player_roster
+                                   and self._is_fighter_currently_watched(fid)),
                     "overall_desc": overall_desc,
                     "career_health_desc": career_health_desc,
                     "identity_strip": identity_strip,

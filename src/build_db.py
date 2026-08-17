@@ -605,7 +605,7 @@ DB_PATH = Path(os.environ.get("CAGE_EMPIRE_DB_PATH", str(_DEFAULT_DB_PATH)))
 # both changes; the migration functions are no-ops (per CONVENTIONS
 # §16.4) but the migration_names are still recorded in
 # schema_migrations for audit-trail consistency.
-CODE_SCHEMA_VERSION = "3.36.0"
+CODE_SCHEMA_VERSION = "3.37.0"
 
 
 # HW2.3 (docs/Hardening_Phase.md §HW2.3 / W5) — the formal sim-start
@@ -3182,7 +3182,8 @@ CREATE TABLE IF NOT EXISTS player_decisions (
     decision_type      TEXT NOT NULL CHECK (decision_type IN (
         'sign', 'cut', 'book', 'scout',
         'hire_staff', 'fire_staff', 'assign_staff',
-        'set_ticket_price', 'set_marketing', 'negotiate_contract'
+        'set_ticket_price', 'set_marketing', 'negotiate_contract',
+        'watch', 'unwatch'
     )),
     target_fighter_id  INTEGER,        -- nullable (NULL for staff decisions)
     target_staff_id    INTEGER,        -- nullable
@@ -6727,6 +6728,104 @@ def _migrate_v3_36_0_expand_memory_link_types_tier3(conn):
     """)
 
 
+def _migrate_v3_37_0_relax_player_decisions_watchlist_check(conn):
+    """Phase 5 Task 3 (Player Watchlist) — relax the CHECK constraint
+    on `player_decisions.decision_type` to include the two new
+    decision_types 'watch' and 'unwatch'.
+
+    Background: the original v3.16.0 schema (this migration's precursor)
+    defined `decision_type` with a CHECK constraint enumerating 10
+    player-action types (sign / cut / book / scout / hire_staff /
+    fire_staff / assign_staff / set_ticket_price / set_marketing /
+    negotiate_contract). The Phase 5 UI Polish plan (docs/
+    PHASE5_UI_POLISH_PLAN.md Task 3) calls for a Player Watchlist
+    feature that piggybacks on this table with two new decision types
+    ('watch' = fighter added to watchlist, 'unwatch' = fighter removed
+    from watchlist). The plan author incorrectly believed the column
+    had no CHECK constraint; the constraint actually exists, so this
+    migration is unavoidable to honor the spec's intent (use the
+    player_decisions table for the watchlist rather than spawning a
+    new table — which the spec forbids).
+
+    Per CONVENTIONS §16.6, SQLite cannot ALTER a CHECK constraint in
+    place — the only way to expand the enum is a table rebuild
+    (rename → recreate → copy → drop). Idempotent via
+    `_has_check_constraint` guard so re-runs are a no-op.
+
+    The new CHECK enum (12 values total — was 10 before v3.37.0):
+      'sign', 'cut', 'book', 'scout',
+      'hire_staff', 'fire_staff', 'assign_staff',
+      'set_ticket_price', 'set_marketing', 'negotiate_contract',
+      'watch'        (new — Phase 5 Task 3 Player Watchlist)
+      'unwatch'      (new — Phase 5 Task 3 Player Watchlist)
+
+    Migration name: v3_37_0_relax_player_decisions_watchlist_check. On
+    --fresh builds, SCHEMA_SQL already includes the expanded CHECK
+    (the migration function is a no-op via the
+    `_has_check_constraint` guard, but the migration_name is still
+    recorded in schema_migrations per §16.4 — same idempotency
+    pattern as every other migration).
+    """
+    # Idempotency guard: if the existing table's CHECK already includes
+    # "'watch'" (as a quoted literal in the table's SQL definition),
+    # the migration has already been applied. We probe for the literal
+    # `'watch'` (with surrounding single quotes) so we don't get a
+    # false-positive match on the column name `decision_type`.
+    if _has_check_constraint(conn, "player_decisions", "'watch'"):
+        return
+
+    # Defensive: only attempt the rebuild if player_decisions exists.
+    # (On a fresh DB, SCHEMA_SQL creates it with the expanded CHECK,
+    # so we never reach this branch.)
+    if not _has_table(conn, "player_decisions"):
+        return
+
+    # SQLite table-rebuild pattern (CONVENTIONS §16.6). The new CHECK
+    # is a SUPERSET of the old one, so every existing row is still
+    # valid (no row transformation needed). The 3 indexes are recreated
+    # by `CREATE INDEX IF NOT EXISTS` calls below.
+    conn.executescript("""
+        ALTER TABLE player_decisions RENAME TO player_decisions_old_v3_37;
+    """)
+    conn.executescript("""
+        CREATE TABLE player_decisions (
+            decision_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_type      TEXT NOT NULL CHECK (decision_type IN (
+                'sign', 'cut', 'book', 'scout',
+                'hire_staff', 'fire_staff', 'assign_staff',
+                'set_ticket_price', 'set_marketing', 'negotiate_contract',
+                'watch', 'unwatch'
+            )),
+            target_fighter_id  INTEGER,
+            target_staff_id    INTEGER,
+            target_event_id    INTEGER,
+            target_promo_id    INTEGER,
+            decision_date      TEXT NOT NULL,
+            context_json       TEXT,
+            created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO player_decisions
+            (decision_id, decision_type, target_fighter_id, target_staff_id,
+             target_event_id, target_promo_id, decision_date, context_json,
+             created_at)
+        SELECT decision_id, decision_type, target_fighter_id, target_staff_id,
+               target_event_id, target_promo_id, decision_date, context_json,
+               created_at
+        FROM player_decisions_old_v3_37;
+        DROP TABLE player_decisions_old_v3_37;
+    """)
+    # Recreate the 3 indexes (CREATE INDEX IF NOT EXISTS is idempotent —
+    # safe even if they already exist from the rebuild).
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_player_decisions_type
+            ON player_decisions(decision_type);
+        CREATE INDEX IF NOT EXISTS idx_player_decisions_date
+            ON player_decisions(decision_date);
+        CREATE INDEX IF NOT EXISTS idx_player_decisions_fighter
+            ON player_decisions(target_fighter_id);
+    """)
+
+
 MIGRATIONS = [
     ("v2_2_0_add_fighter_depth",   "2.2.0", _migrate_v2_2_0_add_fighter_depth),
     ("v2_3_0_add_beat_engine_depth","2.3.0", _migrate_v2_3_0_add_beat_engine_depth),
@@ -6804,6 +6903,8 @@ MIGRATIONS = [
         _migrate_v3_36_0_add_provenance_metadata),
     ("v3_36_0_expand_memory_link_types_tier3", "3.36.0",
         _migrate_v3_36_0_expand_memory_link_types_tier3),
+    ("v3_37_0_relax_player_decisions_watchlist_check", "3.37.0",
+        _migrate_v3_37_0_relax_player_decisions_watchlist_check),
 ]
 
 

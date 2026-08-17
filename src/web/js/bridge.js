@@ -214,6 +214,30 @@ window.CE.bridge = (function () {
     },
     cutFighter: function (fighterId) { return callPython('cut_fighter', [Number(fighterId)]); },
 
+    // Phase 5 Task 3 — Player Watchlist.
+    // add_to_watchlist INSERTs a 'watch' row in player_decisions
+    // (target_fighter_id, decision_date = sim today). Validates the
+    // fighter is on the player's promo + enforces the 12-per-promo cap.
+    // Returns {ok: true, fighter_id} on success, {ok: false, error} on
+    // failure (cap exceeded / wrong promo / missing clock).
+    addToWatchlist: function (fighterId) {
+      return callPython('add_to_watchlist', [Number(fighterId)]);
+    },
+    // remove_from_watchlist INSERTs an 'unwatch' row (idempotent —
+    // always returns ok:true even if the fighter wasn't currently
+    // watched, per spec).
+    removeFromWatchlist: function (fighterId) {
+      return callPython('remove_from_watchlist', [Number(fighterId)]);
+    },
+    // get_watchlist returns the up-to-12 currently-watched fighters
+    // for the given promo (or the player's promo if promoId omitted).
+    // Each row carries voice phrases (momentum_phrase/label) — never
+    // raw attribute numbers (CONVENTIONS §14).
+    getWatchlist: function (promoId) {
+      var args = [promoId == null ? null : Number(promoId)];
+      return callPython('get_watchlist', args);
+    },
+
     // Phase M3.2 — Bidding Wars API.
     // get_bidding_alerts returns the list of active SIGNING_INTENT
     // alerts the player can counter-offer against.

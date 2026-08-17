@@ -134,6 +134,80 @@
   letter-spacing: 0.01em;
   line-height: 1.1;
 }
+
+/* ============================================================
+   PHASE 5 TASK 3 — ★ WATCH / ★ UNWATCH BUTTON
+   Sits next to the fighter name in the header. Gold star when the
+   fighter is currently watched; grey outlined star otherwise.
+   Only rendered for fighters on the player's own roster (see
+   renderHeader in fighter_profile.js). Clicking toggles watch state
+   via the bridge + shows a brief toast.
+   ============================================================ */
+.ce-fp-name-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ce-fp-watch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: var(--r-sm, 4px);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.08s;
+  user-select: none;
+  line-height: 1.2;
+}
+.ce-fp-watch-btn:hover { transform: translateY(-1px); }
+.ce-fp-watch-btn:disabled { opacity: 0.55; cursor: wait; transform: none; }
+.ce-fp-watch-btn:active { transform: translateY(0); }
+
+/* Star glyph — large + leading */
+.ce-fp-watch-star {
+  font-size: 18px;
+  line-height: 1;
+  font-family: var(--font-display);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* OFF state (not watched) — outlined star, grey tint */
+.ce-fp-watch-btn--off {
+  color: var(--text-tertiary);
+  border-color: var(--border-subtle);
+}
+.ce-fp-watch-btn--off .ce-fp-watch-star { color: var(--text-tertiary); }
+.ce-fp-watch-btn--off:hover {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: var(--gold-tint, rgba(224, 169, 87, 0.08));
+}
+.ce-fp-watch-btn--off:hover .ce-fp-watch-star { color: var(--gold); }
+
+/* ON state (watched) — filled gold star, gold border */
+.ce-fp-watch-btn--on {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: var(--gold-tint, rgba(224, 169, 87, 0.10));
+  box-shadow: 0 0 8px rgba(224, 169, 87, 0.18);
+}
+.ce-fp-watch-btn--on .ce-fp-watch-star {
+  color: var(--gold);
+  text-shadow: 0 0 6px rgba(224, 169, 87, 0.55);
+}
+.ce-fp-watch-btn--on:hover {
+  background: var(--gold-tint-strong, rgba(224, 169, 87, 0.18));
+  color: var(--gold-bright, #f5c878);
+}
+.ce-fp-watch-btn--on:hover .ce-fp-watch-star { color: var(--gold-bright, #f5c878); }
 .ce-fp-nick {
   font-family: var(--font-serif);
   font-size: 16px;

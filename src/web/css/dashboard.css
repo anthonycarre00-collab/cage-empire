@@ -647,3 +647,354 @@
     align-items: center;
   }
 }
+
+/* ============================================================
+   PHASE 5 TASK 2 — VISUAL RICHNESS EXTENSIONS
+   ============================================================
+   New component classes for the redesigned Dashboard per ChatGPT
+   §13 sports newsroom hierarchy. All additive — no existing classes
+   renamed or removed.
+   ============================================================ */
+
+/* ----- 1. GRADIENT BANNER — 135deg diagonal gold→bg-card ----- */
+/* Applied alongside .ce-grad-header (which has the existing 90deg
+   gradient + chain-link overlay). This class adds the diagonal
+   gold→card overlay the §13 spec calls for. */
+.ce-gradient-header {
+  background:
+    linear-gradient(135deg,
+      var(--gold) 0%,
+      rgba(224, 169, 87, 0.55) 40%,
+      var(--bg-card) 100%),
+    var(--bg-card);
+  border: 1px solid rgba(224, 169, 87, 0.35);
+  box-shadow:
+    0 2px 8px rgba(224, 169, 87, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ----- 2. SPARKLINE — already styled in components.css ----- */
+/* The .ce-sparkline svg selector in components.css handles the
+   width:100% + height:32px. We add a slight shadow so the line
+   reads against the cash stat tile background. */
+.ce-sparkline svg polyline {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.3));
+}
+
+/* ----- 3. TREND ARROW + SIGNED DELTA ----- */
+/* The .ce-trend wrapper + .ce-trend-up/down/val are in components.css.
+   We add .ce-trend-flat (the ● no-change state) + the .ce-trend-arrow
+   span (the ▲▼● character). */
+.ce-trend-arrow {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ce-trend-flat {
+  color: var(--text-tertiary);
+}
+.ce-trend-val.ce-trend-up { color: var(--green); }
+.ce-trend-val.ce-trend-down { color: var(--crimson); }
+
+/* ----- 4. CSS-ANIMATED STAT BAR FILL ----- */
+/* The .ce-stat-bar-fill base class is in components.css (height + border-radius).
+   We add the transition here so width changes (e.g., on re-render after
+   Advance Day) animate smoothly instead of jumping. */
+.ce-stat-bar-fill {
+  transition: width 400ms ease-out;
+}
+
+/* ----- 5. FORM METER W/L BLOCKS — 16×16px modifier classes ----- */
+/* Per the spec, the dashboard form meter uses --win/--loss/--draw
+   modifier classes (16×16px). The existing .ce-form-w/-l/-d classes
+   in components.css use 28×28px (used elsewhere). We add the smaller
+   variant here for the Dashboard. */
+.ce-form-block.ce-form-block--win,
+.ce-form-block.ce-form-block--loss,
+.ce-form-block.ce-form-block--draw,
+.ce-form-block.ce-form-block--none {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  border-radius: 3px;
+}
+.ce-form-block--win   { background: var(--gold); color: var(--bg-base); }
+.ce-form-block--loss  { background: var(--crimson); color: #fff; }
+.ce-form-block--draw  { background: var(--text-tertiary); color: var(--bg-base); }
+.ce-form-block--none  { background: var(--bg-card-elevated); color: var(--text-tertiary); border: 1px dashed var(--border-subtle); }
+
+/* ----- 6. CSS-ANIMATED MOMENTUM RING (SVG <circle> + transition) ----- */
+/* Replaces the old conic-gradient .ce-mom-ring approach. The SVG has
+   two circles: a track (dark grey) + a progress circle (gold/crimson).
+   The progress circle's stroke-dasharray + stroke-dashoffset gives
+   the partial-fill effect. The 600ms ease transition fires when the
+   dashoffset changes (from circumference=empty to target=fill).
+   The .ce-momentum-ring-progress element gets its target offset
+   applied via JS (animateMomentumRings) on the next frame after
+   initial render, so the ring fills smoothly instead of jumping. */
+.ce-momentum-ring {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ce-momentum-ring svg {
+  display: block;
+}
+.ce-momentum-ring-progress {
+  transition: stroke-dashoffset 600ms ease;
+}
+.ce-momentum-ring-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* ----- 7. VOICE ITALIC PHRASE UNDER FIGHTER NAME ----- */
+/* The .ce-watch-phrase class already exists in dashboard.css (italic,
+   secondary color, 2-line clamp). We add .descriptor-small as an alias
+   to satisfy the §13 spec's class naming convention (used alongside
+   .ce-watch-phrase on the same element). */
+.descriptor-small {
+  font-style: italic;
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/* ----- 8. WATCHLIST SECTION ----- */
+/* The Watchlist reuses .ce-watch-card layout but with a few
+   differences: the header shows the fighter name (link) + a
+   "☆ Remove" link (instead of the "TOP PROSPECT" label + icon).
+   The card is the same width as the Important Fighters cards. */
+.ce-watchlist-grid {
+  /* Same as .ce-watch-grid (3-col) but we cap to 6 cards. */
+  grid-template-columns: repeat(3, 1fr);
+}
+.ce-watch-card--list .ce-watch-header {
+  /* Stack the name + remove link horizontally, not space-between. */
+  justify-content: flex-start;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.ce-watch-card--list .ce-watch-name {
+  font-size: 14px;
+  margin: 0;
+}
+.ce-watch-card--list .ce-watch-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.ce-watch-remove {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-decoration: none;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: color 0.15s;
+  cursor: pointer;
+}
+.ce-watch-remove:hover {
+  color: var(--crimson);
+  text-decoration: underline;
+}
+.ce-watch-card--removing {
+  opacity: 0.4;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+.ce-watch-overflow {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: right;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ----- 9. "WHAT CHANGED" SECTION ----- */
+.ce-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-change-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-change-item:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--border-strong);
+}
+.ce-change-signing { border-left-color: var(--gold); }
+.ce-change-injury { border-left-color: var(--crimson); }
+.ce-change-transaction { border-left-color: var(--text-tertiary); }
+.ce-change-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.ce-change-date {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+.ce-change-body {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin: 0;
+}
+.ce-change-body .ce-mono {
+  font-size: 12px;
+  color: var(--gold);
+  font-weight: 600;
+}
+
+/* ----- 10. "THREATS" SECTION ----- */
+.ce-threat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-threat-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(214, 58, 63, 0.25);
+  border-left: 4px solid var(--crimson);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-threat-card:hover {
+  background: var(--bg-card-elevated);
+  border-color: rgba(214, 58, 63, 0.4);
+}
+.ce-threat-card--high {
+  border-left-color: var(--crimson);
+  background: rgba(214, 58, 63, 0.06);
+}
+.ce-threat-card--medium {
+  border-left-color: #f59e0b;
+}
+.ce-threat-card--low {
+  border-left-color: var(--text-tertiary);
+}
+.ce-threat-top {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.ce-threat-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ----- 11. "OPPORTUNITIES" SECTION ----- */
+.ce-opp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-opp-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(224, 169, 87, 0.25);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-opp-card:hover {
+  background: var(--bg-card-elevated);
+  border-color: rgba(224, 169, 87, 0.4);
+}
+.ce-opp-card--high {
+  border-left-color: var(--gold);
+  background: rgba(224, 169, 87, 0.06);
+}
+.ce-opp-card--medium {
+  border-left-color: var(--green);
+}
+.ce-opp-card--low {
+  border-left-color: var(--text-tertiary);
+}
+.ce-opp-top {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.ce-opp-message {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ----- 12. "WORLD STORIES" SECTION ----- */
+.ce-world-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ce-world-story {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--text-tertiary);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ce-world-story:hover {
+  background: var(--bg-card-elevated);
+  border-color: var(--border-strong);
+}
+.ce-world-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+/* ----- RESPONSIVE — new sections collapse on narrow windows ----- */
+@media (max-width: 1100px) {
+  .ce-watchlist-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 760px) {
+  .ce-watchlist-grid { grid-template-columns: 1fr; }
+  .ce-change-list,
+  .ce-threat-list,
+  .ce-opp-list,
+  .ce-world-list { gap: 6px; }
+}
