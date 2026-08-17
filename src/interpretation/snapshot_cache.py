@@ -176,7 +176,22 @@ import sqlite3
 # the G.4 acceptance: the cache will rebuild on the next daily pass
 # after the v3.20.0 migration runs, regenerating attribute_descriptors
 # from the freshly-lowered attribute values.
-ENGINE_VERSION = "1.9.0"
+#
+# PHASE6-A1 (Gym Identity Engine, 2026-08-17 — see docs/PHASE6_PLAN.md
+# Task A1): bumped 1.9.0 → 1.10.0 to force a full cache rebuild on the
+# next daily pass. The gym_identity_engine has LANDED — it populates
+# the gym_descriptors cache table (previously 0 rows) with 5 voice-
+# phrase fields per gym (identity_label, known_for, produces,
+# weakness, development_rating_desc). Without this bump, the version-
+# mismatch rebuild logic won't trigger + the gym_descriptors table
+# stays empty (Fix #4 — gyms screen HIGH violation — can't ship until
+# the cache is populated). The bump also rebuilds the fighter_descriptors
+# cache (already populated — the rebuild is idempotent + correct),
+# regenerating any descriptors derived from gym identity (none today,
+# but future engine revisions may add such cross-references). No
+# schema change required — gym_descriptors was created in v3.10.0
+# (Task 2.1) + has just been empty until now.
+ENGINE_VERSION = "1.10.0"
 
 
 # ----------------------------------------------------------------
@@ -802,30 +817,73 @@ def _interpret_fighters(conn, current_date):
 
 
 def _interpret_gyms(conn, current_date):
-    """Compute gym identity summaries.
+    """Compute gym identity summaries via the gym_identity_engine.
 
-    Skeleton (Task 2.1): no-op. The gym_descriptors table stays empty
-    until Task 2.8 (gym_identity_engine) lands.
+    Populates `gym_descriptors` with 5 voice-phrase fields per gym
+    (identity_label, known_for, produces, weakness,
+    development_rating_desc) derived from the `gyms` simulation
+    table's raw 0-100 ratings + the gym's name (used to infer a
+    pseudo-specialty — striking/grappling/wrestling/mixed).
+
+    Phase 6 Task A1 (2026-08-17): the gym_identity_engine has
+    LANDED. The previous skeleton's `try/except ImportError` guard
+    is removed — the engine is now a hard dependency. If the import
+    fails, it's a real bug (the file is missing or broken), not a
+    "task not landed yet" state.
+
+    Per CONVENTIONS §17.1: the engine writes ONLY to
+    gym_descriptors (a cache table). It NEVER writes to the `gyms`
+    simulation table.
+
+    Per CONVENTIONS §17.5: uses the bulk-load pattern (ONE SELECT +
+    Python loop + ONE executemany INSERT OR REPLACE) — target <50ms
+    for ~329 gyms. Idempotent: safe to re-run on the same date or
+    across daily passes.
+
+    Args:
+        conn:         sqlite3.Connection.
+        current_date: ISO date string (unused — gym identity doesn't
+                      depend on the sim date. Kept for API symmetry
+                      with the other interpretation sub-engines which
+                      DO take current_date: context_engine, career_
+                      phase_engine, etc.).
     """
-    try:
-        from interpretation.gym_identity_engine import compute_all_gym_descriptors
-    except ImportError:
-        return  # Task 2.8 not landed yet — skeleton no-op.
+    from interpretation.gym_identity_engine import compute_all_gym_descriptors
     compute_all_gym_descriptors(conn, current_date)
 
 
 def _interpret_promotions(conn, current_date):
-    """Compute promotion summaries.
+    """Compute promotion summaries via the promotion_engine.
 
-    Skeleton (Task 2.1): no-op. The promotion_descriptors table stays
-    empty until the promotion-descriptor sub-engine lands (no task
-    explicitly assigned — may ship as part of Task 2.6 or as a
-    follow-up).
+    Populates `promotion_descriptors` with 3 voice-phrase fields per
+    promotion (prestige_desc, market_position_desc, roster_quality_
+    desc) derived from the `promotions` table's reputation + broadcast
+    tier + ownership_type + size_tier + the average roster quality
+    (joined from `fighter_descriptors.overall_desc`).
+
+    Phase 6 Task A2 (2026-08-17): the promotion_engine has LANDED.
+    The previous skeleton's `try/except ImportError` guard is removed
+    — the engine is now a hard dependency. If the import fails, it's
+    a real bug (the file is missing or broken), not a "task not landed
+    yet" state.
+
+    Per CONVENTIONS §17.1: the engine writes ONLY to
+    promotion_descriptors (a cache table). It NEVER writes to the
+    `promotions` simulation table.
+
+    Per CONVENTIONS §17.5: uses the bulk-load pattern (ONE SELECT +
+    Python loop + ONE executemany INSERT OR REPLACE) — target <50ms
+    for ~10 promotions. Idempotent: safe to re-run on the same date
+    or across daily passes.
+
+    Args:
+        conn:         sqlite3.Connection.
+        current_date: ISO date string (unused — promotion descriptors
+                      don't depend on the sim date. Kept for API
+                      symmetry with the other interpretation sub-
+                      engines which DO take current_date).
     """
-    try:
-        from interpretation.promotion_engine import compute_all_promotion_descriptors
-    except ImportError:
-        return  # sub-engine not landed yet — skeleton no-op.
+    from interpretation.promotion_engine import compute_all_promotion_descriptors
     compute_all_promotion_descriptors(conn, current_date)
 
 
