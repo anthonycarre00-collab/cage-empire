@@ -332,7 +332,7 @@ window.CE.fighterProfile = (function () {
       '</div>' +
       '<div class="ce-fp-stat-tile">' +
         '<div class="ce-fp-stat-label">' + LBL_CAREER_HEALTH + '</div>' +
-        '<div class="ce-fp-stat-val ce-mono">' + cs.career_health + '</div>' +
+        '<div class="ce-fp-stat-val descriptor">' + escapeHtml(h.career_health_desc || 'unknown') + '</div>' +
         '<div class="ce-stat-bar"><div class="ce-stat-bar-fill ce-stat-bar-gold" style="width:' + Math.max(0, Math.min(100, cs.career_health)) + '%"></div></div>' +
       '</div>' +
       '<div class="ce-fp-stat-tile">' +

@@ -234,8 +234,7 @@ window.CE.rivalries = (function () {
     var heatLabel = '' +
       '<span class="ce-riv__heat-phrase ce-riv__heat-phrase--' + heatClass + '">' +
         escapeHtml((riv.heat_phrase || '').toUpperCase()) +
-      '</span>' +
-      '<span class="ce-riv__heat-val ce-mono">' + riv.rivalry_heat + '</span>';
+      '</span>';
 
     var footerDate = riv.is_active
       ? (riv.last_escalation_date

@@ -114,6 +114,24 @@
   font-style: italic;
 }
 
+/* Phase 6 / Task B8 — thin progress bar under each voice phrase row.
+   The bar width uses the raw reputation/fan_trust int (§17.4 carve-out)
+   but the player never sees the int as text. */
+.ce-rival-card__phrase-bar-track {
+  grid-column: 1 / -1;
+  height: 3px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.ce-rival-card__phrase-bar {
+  height: 100%;
+  background: var(--gold);
+  opacity: 0.6;
+  transition: width 0.2s ease;
+}
+
 /* Stat row — fighter count + champion count (mono numbers). */
 .ce-rival-card__stats {
   display: flex;

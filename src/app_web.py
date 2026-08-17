@@ -36,6 +36,7 @@ Launch:
 
 import sys
 import os
+import re
 import sqlite3
 import base64
 import calendar
@@ -821,6 +822,82 @@ _FIGHTER_ATTR_COLUMNS = [
     "cage_wrestling", "recovery_rate", "speed_explosiveness",
     "strength", "durability", "flexibility", "adaptability",
 ]
+
+
+# Phase 6 / Task B1 — voice-phrase → tier pct mapping.
+# Mirrors the phraseTier() helper in src/web/js/fighter_profile.js:75-101
+# (Phase 5 Task 2.5) so the radar chart polygon coordinates derive from
+# voice tiers rather than raw 0-100 attribute ints. This keeps the
+# "how strong is this fighter?" answer in voice territory (§14) while
+# still letting the polygon shapes convey relative magnitudes.
+_PHRASE_TIER_GOLD = 100   # elite / world-class / exceptional / lethal / ...
+_PHRASE_TIER_STEEL = 60   # default (no elite/weak keyword matched)
+_PHRASE_TIER_CRIMSON = 25  # poor / weak / fragile / limited / ...
+_PHRASE_ELITE_WORDS = (
+    "elite", "world-class", "exceptional", "lethal", "master",
+    "devastating", "top-tier", "elite-level", "powerful",
+    "explosive", "iron", "titanium", "granite",
+    "excellent", "dominant", "unstoppable",
+)
+_PHRASE_WEAK_WORDS = (
+    "poor", "weak", "fragile", "limited", "vulnerable",
+    "soft", "can be rocked", "questionable", "shaky",
+    "below-average", "lacking", "lacks", "helpless",
+)
+
+
+def _phrase_tier_pct(phrase):
+    """Map a voice phrase to a tier pct for radar-chart polygon points.
+
+    Mirrors phraseTier() in src/web/js/fighter_profile.js:75-101.
+    Returns 100 (gold), 25 (crimson), or 60 (steel default).
+
+    Per Phase 6 / Task B1: the radar chart in matchmaking.js previously
+    averaged raw 0-100 attribute ints (a §14 violation). The polygon
+    now uses tier pct values so the player sees "elite vs elite" /
+    "weak vs elite" relative magnitudes, not raw attribute numbers.
+    """
+    if not phrase:
+        return _PHRASE_TIER_STEEL
+    p = str(phrase).lower()
+    for word in _PHRASE_ELITE_WORDS:
+        if re.search(r"\b" + re.escape(word) + r"\b", p):
+            return _PHRASE_TIER_GOLD
+    for word in _PHRASE_WEAK_WORDS:
+        if re.search(r"\b" + re.escape(word) + r"\b", p):
+            return _PHRASE_TIER_CRIMSON
+    return _PHRASE_TIER_STEEL
+
+
+def _attribute_phrase_dicts(conn, fighter_id):
+    """Return (phrases_dict, tiers_dict) for a fighter's 26 attributes.
+
+    phrases_dict: {attr_name: voice_phrase}
+    tiers_dict: {attr_name: tier_pct (100/60/25)}
+
+    Reads from fighter_descriptors.attribute_descriptors JSON
+    (Phase 6 / Task B1). Falls back to ('', 60) per attribute when
+    the JSON is missing or the fighter row doesn't exist.
+    """
+    if not fighter_id:
+        return ({}, {})
+    row = conn.execute(
+        "SELECT attribute_descriptors FROM fighter_descriptors "
+        "WHERE fighter_id=?",
+        (fighter_id,),
+    ).fetchone()
+    raw = row[0] if row else None
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        parsed = {}
+    phrases = {}
+    tiers = {}
+    for col in _FIGHTER_ATTR_COLUMNS:
+        ph = parsed.get(col, "") or ""
+        phrases[col] = ph
+        tiers[col] = _phrase_tier_pct(ph)
+    return (phrases, tiers)
 
 
 def _compute_attribute_trajectory(conn, fighter_id, sim_date=None):
@@ -3505,6 +3582,21 @@ class Api:
             )
 
             # ----- Main query — 20 rows -----
+            # Phase 6 / Task C1 — replaced the two correlated
+            # subqueries for injury_count + susp_count with LEFT
+            # JOINs to injuries + suspensions (filtered to is_active=1)
+            # and COUNT(DISTINCT ...) over GROUP BY f.fighter_id. The
+            # correlated-subquery pattern ran 2 subqueries per row →
+            # 40 subqueries for a 20-row page. The JOIN+GROUP BY
+            # pattern computes both counts in a single query.
+            #
+            # Important: the LEFT JOIN conditions put the `is_active=1`
+            # filter in the JOIN clause (not the WHERE clause) so that
+            # fighters with no active injuries/suspensions still appear
+            # in the result set (COUNT(*) returns 0 for them). Putting
+            # `i.is_active=1` in WHERE would convert the LEFT JOIN to
+            # an effective INNER JOIN and drop fighters with no
+            # matching injuries.
             rows = conn.execute(
                 "SELECT f.fighter_id, f.first_name, f.last_name, f.nickname, "
                 "f.date_of_birth, f.weight_class_id, "
@@ -3513,15 +3605,20 @@ class Api:
                 "fc.record_wins, fc.record_losses, fc.record_draws, "
                 "g.name AS gym_name, "
                 "n.name AS nation_name, n.nation_id, "
-                "(SELECT COUNT(*) FROM injuries i WHERE i.fighter_id=f.fighter_id AND i.is_active=1) AS injury_count, "
-                "(SELECT COUNT(*) FROM suspensions s WHERE s.fighter_id=f.fighter_id AND s.is_active=1) AS susp_count "
+                "COUNT(DISTINCT i.injury_id) AS injury_count, "
+                "COUNT(DISTINCT s.suspension_id) AS susp_count "
                 "FROM fighters f "
                 "LEFT JOIN fighter_descriptors fd ON fd.fighter_id = f.fighter_id "
                 "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
                 "LEFT JOIN weight_classes wc ON wc.weight_class_id = f.weight_class_id "
                 "LEFT JOIN gyms g ON g.gym_id = f.current_gym_id "
                 "LEFT JOIN nations n ON n.nation_id = f.birth_nation_id "
+                "LEFT JOIN injuries i ON i.fighter_id = f.fighter_id "
+                "  AND i.is_active = 1 "
+                "LEFT JOIN suspensions s ON s.fighter_id = f.fighter_id "
+                "  AND s.is_active = 1 "
                 "WHERE " + where_sql + " "
+                "GROUP BY f.fighter_id "
                 "ORDER BY " + sort_expr + ", f.fighter_id ASC "
                 "LIMIT ? OFFSET ?",
                 params + [per_page, offset],
@@ -3880,11 +3977,20 @@ class Api:
         other promos look like — roster size, champion count,
         reputation phrase, fan trust phrase. Read-only.
 
+        Phase 6 / Task B8 — LEFT JOINs `promotion_descriptors` (the
+        cache table populated by Task A2's promotion_engine; 10 rows).
+        The raw `reputation` / `fan_trust` / `current_cash` ints are
+        KEPT in the response for bar-fill widths (§17.4 carve-out),
+        but the JS layer should display the voice phrases
+        (`prestige_desc`, `market_position_desc`, `roster_quality_desc`)
+        instead of the raw ints.
+
         Returns: [
             { promotion_id, name, size_tier, broadcast_tier,
               reputation, reputation_phrase, fan_trust,
               fan_trust_phrase, current_cash, roster_count,
-              champ_count, logo_b64 }
+              champ_count, logo_b64,
+              prestige_desc, market_position_desc, roster_quality_desc }
         ]
         """
         try:
@@ -3897,8 +4003,12 @@ class Api:
                             AND f.is_active=1) AS roster_count,
                        (SELECT COUNT(*) FROM titles t
                           WHERE t.promotion_id=p.promotion_id
-                            AND t.is_vacant=0) AS champ_count
+                            AND t.is_vacant=0) AS champ_count,
+                       pd.prestige_desc, pd.market_position_desc,
+                       pd.roster_quality_desc
                 FROM promotions p
+                LEFT JOIN promotion_descriptors pd
+                  ON pd.promotion_id = p.promotion_id
                 WHERE p.promotion_id != ?
                 ORDER BY p.size_tier DESC, p.reputation DESC
             """, (pid,)).fetchall()
@@ -3907,6 +4017,9 @@ class Api:
                 "name": r[1],
                 "size_tier": (r[2] or "").upper(),
                 "broadcast_tier": (r[3] or "").upper(),
+                # Phase 6 / Task B8 — raw ints KEPT in JSON for bar
+                # widths (§17.4 carve-out). The JS should NOT display
+                # these as text — use the *_desc voice phrases below.
                 "reputation": r[4] or 0,
                 "reputation_phrase": _reputation_phrase(r[4] or 0),
                 "fan_trust": r[5] or 0,
@@ -3915,6 +4028,11 @@ class Api:
                 "roster_count": r[7],
                 "champ_count": r[8],
                 "logo_b64": _load_logo_b64(r[0]),
+                # Phase 6 / Task B8 — voice phrases from the
+                # promotion_descriptors cache table (§17.1).
+                "prestige_desc": r[9] or "",
+                "market_position_desc": r[10] or "",
+                "roster_quality_desc": r[11] or "",
             } for r in rows]
         except Exception as e:
             print(f"[api.get_rival_promotions] {e}\n{traceback.format_exc()}",
@@ -4958,17 +5076,26 @@ class Api:
             # Voice-compliant: never returns raw potential. The roster
             # screen has the full attributes; the event builder just
             # needs a count + a sample for "who can headline this card".
+            #
+            # Phase 6 / Task B3 — LEFT JOIN fighter_career ONCE for the
+            # whole roster (was: per-fighter SUM(...) FROM fight_history
+            # subquery → N+1). fighter_career already maintains the
+            # record_wins/losses/draws columns; reading them is cheaper
+            # than re-aggregating fight_history per row.
             clock = get_clock(conn)
             sim_date = clock[0] if clock else None
             f_rows = conn.execute(
                 "SELECT f.fighter_id, f.first_name, f.last_name, "
                 "f.date_of_birth, f.weight_class_id, wc.name, "
-                "fd.career_phase_short, fd.momentum_short "
+                "fd.career_phase_short, fd.momentum_short, "
+                "fc.record_wins, fc.record_losses, fc.record_draws "
                 "FROM fighters f "
                 "LEFT JOIN weight_classes wc "
                 "  ON wc.weight_class_id = f.weight_class_id "
                 "LEFT JOIN fighter_descriptors fd "
                 "  ON fd.fighter_id = f.fighter_id "
+                "LEFT JOIN fighter_career fc "
+                "  ON fc.fighter_id = f.fighter_id "
                 "WHERE f.current_promotion_id=? AND f.is_active=1 "
                 "  AND f.is_retired=0 "
                 "ORDER BY wc.gender, COALESCE(wc.display_order, "
@@ -4977,18 +5104,13 @@ class Api:
             ).fetchall()
             fighters_by_wc = {}
             for r in f_rows:
-                fid, fn, ln, dob, wc_id, wc_name, stage_short, mom_short = r
+                (fid, fn, ln, dob, wc_id, wc_name, stage_short, mom_short,
+                 cwins, closses, cdraws) = r
                 age = _compute_age(dob, sim_date)
-                # Win-loss record (compact)
-                rec_row = conn.execute(
-                    "SELECT "
-                    "SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END), "
-                    "SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END), "
-                    "SUM(CASE WHEN outcome='draw' THEN 1 ELSE 0 END) "
-                    "FROM fight_history WHERE fighter_id=?",
-                    (fid,),
-                ).fetchone()
-                w, l, d = (rec_row[0] or 0), (rec_row[1] or 0), (rec_row[2] or 0)
+                # Win-loss record from fighter_career (Phase 6 / B3 —
+                # was previously a per-fighter SUM() subquery on
+                # fight_history).
+                w, l, d = (cwins or 0), (closses or 0), (cdraws or 0)
                 record_str = f"{w}-{l}" + (f"-{d}" if d else "")
                 wc_key = wc_id or 0
                 if wc_key not in fighters_by_wc:
@@ -6435,6 +6557,8 @@ class Api:
                 print(f"[api.get_matchmaking_data] available fighters: {e}",
                       flush=True)
                 available = []
+                clock = get_clock(conn)
+            sim_date_for_age = clock[0] if clock else None
 
             # Get the set of fighter_ids already booked on this card so
             # we exclude them from the eligible list.
@@ -6455,14 +6579,21 @@ class Api:
                 for f in available
             }
 
-            # Fetch full fighter info for each eligible fighter (name,
-            # nickname, wc_name, ranking, record_str, momentum_short).
+            # Phase 6 / Task B2 — batched brief lookup (was: per-fighter
+            # call to _fighter_brief → 4+ subqueries each → 400+ queries
+            # for a 100-fighter roster). _fighter_briefs_batched runs
+            # 4 queries total (main JOIN, rank window, recent_form
+            # window, titles JOIN) and returns a {fid: brief} map.
+            eligible_ids = [
+                f['fighter_id'] for f in available
+                if f['fighter_id'] not in booked_ids
+            ]
+            briefs_by_fid = self._fighter_briefs_batched(
+                conn, eligible_ids, sim_date=sim_date_for_age,
+            )
             eligible = []
-            for f in available:
-                fid = f['fighter_id']
-                if fid in booked_ids:
-                    continue
-                info = self._fighter_brief(conn, fid)
+            for fid in eligible_ids:
+                info = briefs_by_fid.get(fid)
                 if info:
                     # MM3.2 — attach camp_status to the brief so the
                     # JS roster browser can render the chip.
@@ -7227,8 +7358,278 @@ class Api:
                     "total": 0, "total_pages": 1, "filters": {},
                     "error": str(e)}
 
+    def _fighter_briefs_batched(self, conn, fighter_ids, sim_date=None):
+        """Return {fighter_id: brief_dict} for a batch of fighters.
+
+        Phase 6 / Task B2 — replaces the N+1 pattern where
+        ``get_matchmaking_data`` called ``_fighter_brief`` per fighter
+        (4+ subqueries each → 400+ queries for a 100-fighter roster).
+        This batched helper runs 4 queries total:
+
+          1. Main brief — fighters JOINed to weight_classes +
+             fighter_career + fighter_descriptors + rankings +
+             style_archetypes.
+          2. Rank — ``RANK() OVER (PARTITION BY weight_class_id,
+             promotion_id ORDER BY rating DESC, fighter_id ASC)`` so
+             each fighter's #1-15 (or Unranked) is computed in one
+             window-function pass.
+          3. Recent form — ``ROW_NUMBER() OVER (PARTITION BY
+             fighter_id ORDER BY fight_history_id DESC)`` filtered to
+             rn <= 5 so we get the last 5 fights per fighter in one
+             query (was: per-fighter ``ORDER BY fight_history_id DESC
+             LIMIT 5``).
+          4. Titles — single JOIN to titles (is_vacant=0) for the
+             batch — was per-fighter query.
+
+        The returned brief dicts have the SAME shape as
+        ``_fighter_brief()`` so the JS layer (matchmaking.js) requires
+        no changes.
+
+        Args:
+          fighter_ids: list of ints (eligible fighter_ids). Empty list
+                       is OK — returns ``{}``.
+          sim_date:    str YYYY-MM-DD (from get_clock — fetched ONCE
+                       by the caller, not per fighter). When None,
+                       age computation is skipped (``age=None``).
+
+        Returns:
+          ``{fighter_id: brief_dict}`` — missing fighter_ids are
+          simply absent from the dict (caller treats missing as
+          "skip this fighter", same as ``_fighter_brief`` returning
+          None).
+        """
+        if not fighter_ids:
+            return {}
+        if not sim_date:
+            clock = get_clock(conn)
+            sim_date = clock[0] if clock else None
+
+        placeholders = ",".join("?" * len(fighter_ids))
+        params = list(fighter_ids)
+
+        # --- (1) Main brief fields (single JOINed query) ---
+        main_rows = conn.execute(
+            "SELECT f.fighter_id, f.first_name, f.last_name, f.nickname, "
+            "f.weight_class_id, f.gender, f.marketability, "
+            "f.height_cm, f.reach_cm, f.stance, f.portrait_path, "
+            "f.date_of_birth, "
+            "wc.name AS wc_name, "
+            "fc.record_wins, fc.record_losses, fc.record_draws, "
+            "fc.win_streak, fc.loss_streak, "
+            "fd.career_phase_short, fd.momentum_short, "
+            "r.rating, r.wins AS r_wins, r.losses AS r_losses, "
+            "sa.name AS style_archetype_name "
+            "FROM fighters f "
+            "LEFT JOIN weight_classes wc "
+            "  ON wc.weight_class_id = f.weight_class_id "
+            "LEFT JOIN fighter_career fc ON fc.fighter_id = f.fighter_id "
+            "LEFT JOIN fighter_descriptors fd "
+            "  ON fd.fighter_id = f.fighter_id "
+            "LEFT JOIN rankings r "
+            "  ON r.fighter_id = f.fighter_id "
+            "  AND r.weight_class_id = f.weight_class_id "
+            "  AND r.promotion_id = f.current_promotion_id "
+            "LEFT JOIN style_archetypes sa "
+            "  ON sa.style_archetype_id = f.fight_style_archetype_id "
+            f"WHERE f.fighter_id IN ({placeholders})",
+            params,
+        ).fetchall()
+
+        # --- (2) Rank via window function (single query) ---
+        # RANK() OVER (PARTITION BY weight_class_id, promotion_id
+        # ORDER BY rating DESC, fighter_id ASC) — matches the
+        # ORDER BY used in get_rankings_data (P4.2 tiebreaker).
+        #
+        # IMPORTANT: we must compute the rank over the FULL partition
+        # (all rankings rows sharing the fighter's WC + promo), NOT
+        # just the eligible fighters. The WHERE clause inside the
+        # subquery selects rankings rows whose (weight_class_id,
+        # promotion_id) match the eligible fighters' (WC, promo) —
+        # then the outer filter keeps only the eligible fighters'
+        # rank rows. (Mirrors the OLD _fighter_brief's "COUNT(*)
+        # FROM rankings r2 WHERE r2.weight_class_id=? AND
+        # r2.promotion_id=? AND r2.rating > ?" semantics.)
+        rank_rows = conn.execute(
+            "SELECT fighter_id, rank_num FROM ("
+            "  SELECT r.fighter_id, "
+            "    RANK() OVER (PARTITION BY r.weight_class_id, "
+            "                 r.promotion_id "
+            "                 ORDER BY r.rating DESC, "
+            "                 r.fighter_id ASC) AS rank_num "
+            "  FROM rankings r "
+            "  WHERE (r.weight_class_id, r.promotion_id) IN ("
+            "    SELECT f.weight_class_id, f.current_promotion_id "
+            "    FROM fighters f "
+            f"    WHERE f.fighter_id IN ({placeholders})"
+            "  )"
+            f") WHERE fighter_id IN ({placeholders})",
+            params + params,
+        ).fetchall()
+        rank_by_fid = {int(fid): int(rn) for (fid, rn) in rank_rows}
+
+        # --- (3) Recent form (last 5 fights per fighter, single query) ---
+        form_rows = conn.execute(
+            "SELECT fighter_id, outcome, result_type, "
+            "finish_round, event_date FROM ("
+            "  SELECT fh.fighter_id, fh.outcome, fh.result_type, "
+            "    fh.finish_round, fh.event_date, "
+            "    ROW_NUMBER() OVER (PARTITION BY fh.fighter_id "
+            "                       ORDER BY fh.fight_history_id DESC) AS rn "
+            f"  FROM fight_history fh "
+            f"  WHERE fh.fighter_id IN ({placeholders})"
+            ") WHERE rn <= 5",
+            params,
+        ).fetchall()
+        # Group per fighter; fight_history_id DESC means newest first —
+        # we reverse per-fighter so oldest is leftmost (matches
+        # _recent_form's WMMA5 convention).
+        form_by_fid = {fid: [] for fid in fighter_ids}
+        for (fid, outcome, rtype, rnd, ev_date) in form_rows:
+            form_by_fid.setdefault(fid, []).append({
+                "outcome": outcome or "",
+                "result_type": rtype or "",
+                "finish_round": rnd,
+                "event_date": ev_date or "",
+            })
+        for fid in form_by_fid:
+            form_by_fid[fid].reverse()
+
+        # --- (4) Titles (single query) ---
+        # First non-vacant title per fighter (matches _title_chip's
+        # "ORDER BY title_id ASC LIMIT 1" behavior).
+        title_rows = conn.execute(
+            "SELECT t.current_champion_fighter_id, t.weight_class_id, "
+            "wc.name "
+            "FROM titles t "
+            "JOIN weight_classes wc ON wc.weight_class_id=t.weight_class_id "
+            f"WHERE t.is_vacant=0 "
+            f"  AND t.current_champion_fighter_id IN ({placeholders}) "
+            "ORDER BY t.title_id ASC",
+            params,
+        ).fetchall()
+        title_by_fid = {}  # fid -> {weight_class_id, weight_class_name}
+        for (fid, wc_id, wc_name) in title_rows:
+            # Surface the first non-vacant title per fighter.
+            if fid not in title_by_fid:
+                title_by_fid[fid] = {
+                    "weight_class_id": wc_id,
+                    "weight_class_name": wc_name,
+                }
+
+        # --- Assemble brief dicts (in-memory, no further SQL) ---
+        briefs = {}
+        for row in main_rows:
+            (fid2, fn, ln, nick, wc_id, gender, mkt,
+             height_cm, reach_cm, stance, portrait_path,
+             dob, wc_name,
+             cwins, closses, cdraws, ws, ls,
+             stage_short, mom_short, rating, r_wins, r_losses,
+             style_archetype_name) = row
+            w = cwins or 0; l = closses or 0; d = cdraws or 0
+            record_str = f"{w}-{l}" + (f"-{d}" if d else "")
+            # Rank within WC (1-15 → #N, else 0/"Unranked").
+            rank_int = rank_by_fid.get(fid2, 0)
+            rank_num = rank_int if 1 <= rank_int <= 15 else 0
+            rank_str = f"#{rank_int}" if 1 <= rank_int <= 15 else "Unranked"
+            # Streak phrase (matches _fighter_brief's logic verbatim).
+            if ws and ws >= 3:
+                streak_phrase = f"{ws}-fight win streak"
+            elif ls and ls >= 3:
+                streak_phrase = f"{ls}-fight skid"
+            elif ws and ws >= 1:
+                streak_phrase = f"won {ws} straight"
+            elif ls and ls >= 1:
+                streak_phrase = f"dropped {ls} in a row"
+            else:
+                streak_phrase = ""
+            # Age (computed from the once-fetched sim_date — was:
+            # per-fighter simulation_clock query).
+            age = None
+            if dob and sim_date:
+                try:
+                    dob_dt = datetime.strptime(dob, "%Y-%m-%d")
+                    ref_dt = datetime.strptime(sim_date, "%Y-%m-%d")
+                    age = ref_dt.year - dob_dt.year
+                    if (ref_dt.month, ref_dt.day) < (dob_dt.month, dob_dt.day):
+                        age -= 1
+                except (ValueError, TypeError):
+                    pass
+            # Title chip (matches _title_chip's shape).
+            title_info = title_by_fid.get(fid2)
+            if title_info:
+                short = _short_wc(title_info["weight_class_name"])
+                title_chip = {
+                    "holds_title": True,
+                    "title_label": f"{short} Champion",
+                    "weight_class_name": title_info["weight_class_name"],
+                    "weight_class_id": title_info["weight_class_id"],
+                }
+            else:
+                title_chip = {"holds_title": False, "title_label": "—",
+                              "weight_class_name": None,
+                              "weight_class_id": None}
+            champion_tier = "champion" if title_chip["holds_title"] else (
+                "top5" if 1 <= rank_num <= 5 else "steel")
+            # Recent form — convert raw rows to the block shape with
+            # letter + outcome + result_type + finish_round + event_date.
+            raw_form = form_by_fid.get(fid2, [])
+            recent_form = []
+            for fr in raw_form:
+                outcome = fr.get("outcome", "")
+                letter = 'W' if outcome == 'win' else (
+                    'L' if outcome == 'loss' else (
+                        'D' if outcome == 'draw' else 'N'))
+                recent_form.append({
+                    "letter": letter,
+                    "outcome": outcome,
+                    "result_type": fr.get("result_type", ""),
+                    "finish_round": fr.get("finish_round"),
+                    "event_date": fr.get("event_date", ""),
+                })
+            briefs[fid2] = {
+                "fighter_id": fid2,
+                "name": f"{fn} {ln}".strip(),
+                "nickname": nick or "",
+                "display_name": (f'{fn} "{nick}" {ln}'
+                                 if nick else f"{fn} {ln}"),
+                "weight_class_id": wc_id,
+                "weight_class_name": wc_name or "—",
+                "weight_class_short": _short_wc(wc_name),
+                "gender": gender,
+                "record_str": record_str,
+                "wins": w, "losses": l, "draws": d,
+                "win_streak": ws or 0, "loss_streak": ls or 0,
+                "stage_short": _decode_label(stage_short) if stage_short else "",
+                "momentum_short": _decode_label(mom_short) if mom_short else "",
+                "streak_phrase": streak_phrase,
+                "rank_str": rank_str,
+                "rank_num": rank_num,
+                "has_portrait": bool(portrait_path),
+                "height_cm": height_cm,
+                "reach_cm": reach_cm,
+                "stance": stance or "",
+                "marketability": mkt or 50,  # internal — NEVER shown raw
+                "popularity_tier": _popularity_tier(mkt),
+                "momentum_label": _momentum_label(ws, ls),
+                "recent_form": recent_form,
+                "title_chip": title_chip,
+                "champion_tier": champion_tier,
+                "age": age,
+                "style_archetype_name": style_archetype_name or "Balanced",
+                "date_of_birth": dob,
+            }
+        return briefs
+
     def _fighter_brief(self, conn, fid):
         """Build a brief fighter dict for the roster browser.
+
+        DEPRECATED for batched callers (Phase 6 / Task B2): the
+        Matchmaking screen now uses ``_fighter_briefs_batched`` which
+        runs 4 queries total instead of 4 per fighter (N+1 → constant).
+        This single-fighter helper is retained for callers that need
+        just one fighter's brief (e.g. ``_get_booked_fights_for_event``
+        iterating over the few booked fights on a card — that loop
+        stays N=number_of_booked_fights, not N=eligible_roster_size).
 
         Returns name + nickname + wc_name + ranking + record_str +
         momentum_short + has_portrait + weight_class_id + gender +
@@ -8739,10 +9140,21 @@ class Api:
                 return {"ok": False,
                         "error": "This fight belongs to another promotion."}
 
-            red_attrs = self._fighter_attributes_dict(conn, red_id)
-            blue_attrs = self._fighter_attributes_dict(conn, blue_id)
             red_brief = self._fighter_brief(conn, red_id) or {}
             blue_brief = self._fighter_brief(conn, blue_id) or {}
+
+            # Phase 6 / Task B1 — voice-compliant radar chart data.
+            # Was: _fighter_attributes_dict(conn, fighter_id) which
+            # returned the 26 raw 0-100 attribute ints (§14 violation
+            # — the radar polygon revealed relative attribute
+            # magnitudes). Now we route through
+            # fighter_descriptors.attribute_descriptors (JSON of voice
+            # phrases) and compute a tier pct per phrase (gold=100,
+            # steel=60, crimson=25) so the polygon shape still conveys
+            # "striker vs grappler" relative style without leaking
+            # raw attribute numbers.
+            (red_phrases, red_tiers) = _attribute_phrase_dicts(conn, red_id)
+            (blue_phrases, blue_tiers) = _attribute_phrase_dicts(conn, blue_id)
 
             # Reuse get_fight_analysis for the punditry take.
             analysis_resp = self.get_fight_analysis(red_id, blue_id)
@@ -8754,8 +9166,17 @@ class Api:
                 "event_id": eid,
                 "red_fighter": red_brief,
                 "blue_fighter": blue_brief,
-                "red_attributes": red_attrs,
-                "blue_attributes": blue_attrs,
+                # Phase 6 / Task B1 — voice-compliant radar data.
+                # red_attribute_phrases/blue_attribute_phrases: voice
+                #   phrases per attribute (from fighter_descriptors).
+                # red_attribute_tiers/blue_attribute_tiers: tier pct
+                #   (100 gold / 60 steel / 25 crimson) — drives the
+                #   radar polygon point radius. NO raw 0-100 attribute
+                #   ints are returned to JS anymore.
+                "red_attribute_phrases": red_phrases,
+                "blue_attribute_phrases": blue_phrases,
+                "red_attribute_tiers": red_tiers,
+                "blue_attribute_tiers": blue_tiers,
                 "analysis": analysis,
             }
         except Exception as e:
@@ -8764,8 +9185,16 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def _fighter_attributes_dict(self, conn, fighter_id):
-        """Return a dict of {attr_name: value} for the 25 attributes.
-        Used by the Compare modal's radar chart.
+        """Return a dict of {attr_name: value} for the 26 attributes.
+
+        DEPRECATED (Phase 6 / Task B1) — was used by get_fight_compare
+        to feed the radar chart with raw 0-100 attribute ints. The
+        radar chart now reads voice phrases + tier pct from
+        fighter_descriptors.attribute_descriptors via
+        _attribute_phrase_dicts(). Kept here as a private helper for
+        internal/server-side computations that may still need the raw
+        values (e.g. matchup scoring); NEVER expose the returned dict
+        to the JS layer.
         """
         if not fighter_id:
             return {}
@@ -12989,13 +13418,24 @@ class Api:
                 # different promo since the rankings row was last
                 # recomputed.
                 "f.current_promotion_id, p.name AS contracted_to_name, "
-                "(SELECT outcome FROM fight_history fh WHERE fh.fighter_id=r.fighter_id "
-                "  ORDER BY fh.fight_history_id DESC LIMIT 1) AS last_outcome "
+                # Phase 6 / Task C2 — last_outcome via a JOINED
+                # subquery (was: correlated subquery per row → 15
+                # subqueries). We pre-compute each fighter's MAX
+                # fight_history_id in a derived table, then JOIN back
+                # to fight_history once for the outcome on that row.
+                "last_fh.outcome AS last_outcome "
                 "FROM rankings r "
                 "JOIN fighters f ON f.fighter_id=r.fighter_id "
                 "LEFT JOIN promotions p ON p.promotion_id=f.current_promotion_id "
                 "LEFT JOIN fighter_career fc ON fc.fighter_id=r.fighter_id "
                 "LEFT JOIN fighter_descriptors fd ON fd.fighter_id=r.fighter_id "
+                "LEFT JOIN ("
+                "  SELECT fh.fighter_id, fh.outcome "
+                "  FROM fight_history fh "
+                "  JOIN (SELECT fighter_id, MAX(fight_history_id) AS max_fh_id "
+                "        FROM fight_history GROUP BY fighter_id) latest "
+                "    ON latest.max_fh_id = fh.fight_history_id"
+                ") last_fh ON last_fh.fighter_id = r.fighter_id "
                 "WHERE r.weight_class_id=? " + promo_clause +
                 "ORDER BY r.rating DESC, r.fighter_id ASC LIMIT 15",
                 query_params,
@@ -13382,6 +13822,14 @@ class Api:
 
             # Page rows — LEFT JOIN fighter count subquery (cheap; the
             # fighters.current_gym_id index exists from the seed).
+            #
+            # Phase 6 / Task B4 — LEFT JOIN gym_descriptors (the cache
+            # table populated by Task A1's gym_identity_engine; 329 rows).
+            # The `gyms` table itself is still a simulation table whose
+            # raw 0-100 ints (reputation/facility_quality/medical/…)
+            # are kept in the response for bar-fill widths (per §17.4
+            # carve-out), but the JS layer should display the voice
+            # phrases from gym_descriptors instead of the raw ints.
             rows_sql = (
                 "SELECT g.gym_id, g.name, "
                 "  g.reputation, g.facility_quality, g.medical_support, "
@@ -13389,6 +13837,8 @@ class Api:
                 "  g.weight_cut_support, g.culture_tone, "
                 "  g.membership_cost, "
                 "  c.name, n.name, "
+                "  gd.identity_label, gd.known_for, gd.produces, "
+                "  gd.weakness, gd.development_rating_desc, "
                 "  (SELECT COUNT(*) FROM fighters f "
                 "   WHERE f.current_gym_id = g.gym_id "
                 "   AND f.is_active = 1) AS fc, "
@@ -13398,6 +13848,7 @@ class Api:
                 "FROM gyms g "
                 "LEFT JOIN cities c ON c.city_id = g.city_id "
                 "LEFT JOIN nations n ON n.nation_id = g.nation_id "
+                "LEFT JOIN gym_descriptors gd ON gd.gym_id = g.gym_id "
                 + where_sql +
                 " ORDER BY " + order_sql +
                 " LIMIT ? OFFSET ?"
@@ -13407,7 +13858,10 @@ class Api:
             gyms = []
             for r in rows:
                 (gid, gname, rep, fac, med, spar, dev, wc_sup, tone,
-                 cost, cname, nname, fc, ac) = r
+                 cost, cname, nname,
+                 identity_label, known_for, produces, weakness,
+                 development_rating_desc,
+                 fc, ac) = r
                 # Voice phrase for overall quality (per brief).
                 quality_phrase = _gym_quality_phrase(fac)
                 gyms.append({
@@ -13415,6 +13869,12 @@ class Api:
                     "name": gname or "",
                     "city": cname or "",
                     "nation": nname or "",
+                    # Phase 6 / Task B4 — raw 0-100 ints are KEPT in
+                    # the response for bar-fill widths (§17.4 carve-out)
+                    # but the JS layer should NOT display them as text.
+                    # The matching voice phrases from gym_descriptors
+                    # are exposed below (identity_label, known_for,
+                    # produces, weakness, development_rating_desc).
                     "reputation": int(rep or 0),
                     "facility_quality": int(fac or 0),
                     "medical_support": int(med or 0),
@@ -13428,6 +13888,16 @@ class Api:
                     "fighter_count": int(fc or 0),
                     "active_camps_count": int(ac or 0),
                     "quality_phrase": quality_phrase,
+                    # Phase 6 / Task B4 — voice phrases from the
+                    # gym_descriptors cache table (§17.1). These
+                    # REPLACE the raw 0-100 ints as the player-facing
+                    # display values in gyms.js.
+                    "identity_label": identity_label or "",
+                    "known_for": known_for or "",
+                    "produces": produces or "",
+                    "weakness": weakness or "",
+                    "development_rating_desc": (development_rating_desc
+                                                or quality_phrase),
                 })
 
             # Culture-tone breakdown — for the filter dropdown counts.

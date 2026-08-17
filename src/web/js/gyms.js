@@ -374,17 +374,34 @@ window.CE.gyms = (function () {
       '</div>';
   }
 
-  function renderStatBar(label, value) {
+  /**
+   * Phase 6 / Task B4 — renderStatBar now takes a `phrase` arg
+   * (a voice phrase from gym_descriptors cache table). The raw int
+   * `value` is still used for the bar fill width (§17.4 carve-out)
+   * but is NOT displayed as text. When `phrase` is missing, we fall
+   * back to a tier label derived from the raw int so the player sees
+   * "elite" / "solid" / "adequate" rather than "82" or "47".
+   */
+  function tierPhraseFromInt(v) {
+    if (v >= 90) return 'world-class';
+    if (v >= 75) return 'elite';
+    if (v >= 60) return 'solid';
+    if (v >= 40) return 'adequate';
+    return 'bare-bones';
+  }
+
+  function renderStatBar(label, value, phrase) {
     var v = Math.max(0, Math.min(100, Number(value || 0)));
     var cls = 'ce-gym__gym-stat-bar--';
     if (v >= 75) cls += 'gold';
     else if (v >= 50) cls += 'mid';
     else cls += 'low';
+    var displayText = phrase || tierPhraseFromInt(v);
     return '' +
       '<div class="ce-gym__gym-stat">' +
         '<div class="ce-gym__gym-stat-row">' +
           '<span class="ce-gym__gym-stat-label">' + escapeHtml(label) + '</span>' +
-          '<span class="ce-gym__gym-stat-val ce-mono">' + v + '</span>' +
+          '<span class="ce-gym__gym-stat-val">' + escapeHtml(displayText) + '</span>' +
         '</div>' +
         '<div class="ce-gym__gym-stat-track">' +
           '<div class="ce-gym__gym-stat-bar ' + cls + '" style="width:' + v + '%"></div>' +
@@ -401,16 +418,23 @@ window.CE.gyms = (function () {
       : '';
     var cultureChip = '<span class="' + cultureChipClass(gym.culture_tone) + ' ce-gym__culture-chip">' +
       escapeHtml(gym.culture_tone_label) + '</span>';
+    // Phase 6 / Task B4 — gym.reputation (raw int) is NOT displayed.
+    // The card header now shows gym.identity_label (the voice phrase
+    // from gym_descriptors) — e.g. "The Complete Fighter Gym".
+    var identityHtml = (gym.identity_label || gym.quality_phrase)
+      ? '<span class="ce-gym__gym-identity">' + escapeHtml(gym.identity_label || gym.quality_phrase) + '</span>'
+      : '';
     return '' +
       '<article class="ce-gym__gym-card">' +
         '<div class="ce-gym__gym-header">' +
           '<div class="ce-gym__gym-info">' +
             '<div class="ce-gym__gym-name">' + escapeHtml(gym.name) + '</div>' +
             locHtml +
+            identityHtml +
           '</div>' +
           '<div class="ce-gym__gym-rep">' +
-            '<span class="ce-gym__gym-rep-val ce-mono">' + gym.reputation + '</span>' +
-            '<span class="ce-gym__gym-rep-label">REP</span>' +
+            '<span class="ce-gym__gym-rep-label">IDENTITY</span>' +
+            '<span class="ce-gym__gym-rep-phrase">' + escapeHtml(gym.identity_label || gym.quality_phrase || '—') + '</span>' +
           '</div>' +
         '</div>' +
         '<div class="ce-gym__gym-quality">' +
@@ -418,10 +442,10 @@ window.CE.gyms = (function () {
           '<span class="ce-gym__gym-quality-phrase">' + escapeHtml(gym.quality_phrase) + '</span>' +
         '</div>' +
         '<div class="ce-gym__gym-stats">' +
-          renderStatBar('Facility', gym.facility_quality) +
+          renderStatBar('Facility', gym.facility_quality, gym.quality_phrase) +
           renderStatBar('Medical', gym.medical_support) +
           renderStatBar('Sparring', gym.sparring_depth) +
-          renderStatBar('Dev Focus', gym.development_focus) +
+          renderStatBar('Dev Focus', gym.development_focus, gym.development_rating_desc) +
           renderStatBar('Weight Cut', gym.weight_cut_support) +
         '</div>' +
         '<div class="ce-gym__gym-footer">' +

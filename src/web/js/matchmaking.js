@@ -1581,12 +1581,19 @@ window.CE.matchmaking = (function () {
         showModalError('Compare failed', data && data.error ? data.error : 'unknown');
         return;
       }
-      // Fetch the 25 attributes separately via getFightCompare (using a
-      // fight_id if booked, otherwise fetch via the fighter IDs).
+      // Fetch the radar-chart data separately via getFightCompare
+      // (using a fight_id if booked, otherwise fetch via the fighter
+      // IDs). Phase 6 / Task B1 — the response no longer carries raw
+      // 0-100 attribute ints (§14 violation); instead it carries:
+      //   - red/blue_attribute_tiers: {attr: pct(100/60/25)}
+      //   - red/blue_attribute_phrases: {attr: voice phrase}
+      // renderRadarChart uses the tier pct values for the polygon
+      // radii; the phrases surface as hover titles on each axis.
       if (fight.fight_id) {
         window.CE.bridge.getFightCompare(fight.fight_id).then(function (cmpData) {
-          if (cmpData && cmpData.ok) {
-            renderCompareModal(data, cmpData.red_attributes, cmpData.blue_attributes);
+          if (cmpData && cmpData.ok && cmpData.red_attribute_tiers && cmpData.blue_attribute_tiers) {
+            renderCompareModal(data, cmpData.red_attribute_tiers, cmpData.blue_attribute_tiers,
+              cmpData.red_attribute_phrases, cmpData.blue_attribute_phrases);
           } else {
             // Radar chart unavailable — render without it.
             renderCompareModal(data, null, null);
@@ -1603,13 +1610,15 @@ window.CE.matchmaking = (function () {
     });
   }
 
-  function renderCompareModal(data, redAttrs, blueAttrs) {
+  function renderCompareModal(data, redAttrs, blueAttrs, redPhrases, bluePhrases) {
     var red = data.red_fighter || {};
     var blue = data.blue_fighter || {};
     var analysis = data.analysis || {};
     var rivalry = data.rivalry;
 
-    var radarSvg = (redAttrs && blueAttrs) ? renderRadarChart(redAttrs, blueAttrs) : '';
+    var radarSvg = (redAttrs && blueAttrs)
+      ? renderRadarChart(redAttrs, blueAttrs, redPhrases || {}, bluePhrases || {})
+      : '';
     var radarWrap = radarSvg
       ? '<div class="ce-mm-radar__svg-wrap">' + radarSvg + '</div>' +
         '<div class="ce-mm-radar__legend">' +
@@ -1675,8 +1684,15 @@ window.CE.matchmaking = (function () {
     showModalContent('COMPARE', html);
   }
 
-  function renderRadarChart(redAttrs, blueAttrs) {
+  function renderRadarChart(redAttrs, blueAttrs, redPhrases, bluePhrases) {
     // 25 attributes grouped into 5 domains.
+    // Phase 6 / Task B1 — `redAttrs` / `blueAttrs` are tier pct values
+    // (100 gold / 60 steel / 25 crimson) computed server-side from
+    // fighter_descriptors.attribute_descriptors voice phrases.
+    // `redPhrases` / `bluePhrases` carry the underlying voice phrase per
+    // attribute, surfaced as <title> hover tooltips on each axis label
+    // so the player can read "carries knockout power" instead of seeing
+    // a raw 0-100 int (§14 violation).
     var groups = [
       { name: 'Striking', attrs: ['punch_power', 'punch_accuracy', 'kick_power', 'kick_accuracy', 'head_movement'] },
       { name: 'Range',    attrs: ['footwork', 'clinch_striking', 'clinch_offense', 'clinch_defense'] },
@@ -1687,10 +1703,25 @@ window.CE.matchmaking = (function () {
     function avgGroup(attrs, fighterAttrs) {
       var sum = 0, n = 0;
       attrs.forEach(function (a) {
-        sum += Number(fighterAttrs[a] || 50);
+        // Tier pct values are already on a 0-100 scale
+        // (100 gold / 60 steel / 25 crimson). Averaging them gives
+        // a domain-level tier pct that drives the polygon radius.
+        sum += Number(fighterAttrs[a] || 60);
         n++;
       });
-      return n > 0 ? sum / n : 50;
+      return n > 0 ? sum / n : 60;
+    }
+    /** Build a hover tooltip for an axis showing each corner's voice
+     *  phrase (or "—" when the phrase is missing). */
+    function axisTooltip(g) {
+      function phraseList(attrs, phrases) {
+        return attrs.map(function (a) {
+          var ph = phrases ? (phrases[a] || '') : '';
+          return ph ? escapeHtml(ph) : '—';
+        }).join(' · ');
+      }
+      return 'RED: ' + phraseList(g.attrs, redPhrases) +
+        '  |  BLUE: ' + phraseList(g.attrs, bluePhrases);
     }
     var redPoints = groups.map(function (g) { return avgGroup(g.attrs, redAttrs); });
     var bluePoints = groups.map(function (g) { return avgGroup(g.attrs, blueAttrs); });
@@ -1722,7 +1753,13 @@ window.CE.matchmaking = (function () {
       var labelAngle = startAngle + i * angleStep;
       var lx = cx + labelR * Math.cos(labelAngle);
       var ly = cy + labelR * Math.sin(labelAngle);
-      labels += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" fill="var(--text-secondary)" font-size="10" font-family="Oswald, sans-serif" font-weight="600" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.04em">' + groups[i].name.toUpperCase() + '</text>';
+      // Phase 6 / Task B1 — wrap the axis label in a <g> with a
+      // <title> child so hovering reveals the voice phrases for
+      // both corners' underlying attributes (NO raw numbers).
+      var tip = axisTooltip(groups[i]);
+      labels += '<g><title>' + tip + '</title>' +
+        '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" fill="var(--text-secondary)" font-size="10" font-family="Oswald, sans-serif" font-weight="600" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.04em">' + groups[i].name.toUpperCase() + '</text>' +
+        '</g>';
     }
     var redPts = [];
     for (var i = 0; i < nAxes; i++) {

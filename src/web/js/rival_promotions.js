@@ -102,8 +102,35 @@ window.CE.rivalPromotions = (function () {
         : '<div class="ce-rival-card__logo ce-rival-card__logo--placeholder">' + escapeHtml((p.name || '?').charAt(0)) + '</div>';
 
       // Voice phrases (CR-9 §5.5: no raw numbers in UI where phrases exist).
-      var repPhrase = p.reputation_phrase || '—';
-      var trustPhrase = p.fan_trust_phrase || '—';
+      // Phase 6 / Task B8 — prefer the rich voice phrases from the
+      // promotion_descriptors cache (prestige_desc / market_position_desc
+      // / roster_quality_desc). Fall back to the legacy reputation_phrase
+      // / fan_trust_phrase when the descriptor row is missing (defensive
+      // LEFT JOIN — should never happen since all 10 promos are populated).
+      var repPhrase = p.prestige_desc || p.reputation_phrase || '—';
+      var trustPhrase = p.market_position_desc || p.fan_trust_phrase || '—';
+      // Roster quality — a third voice phrase from promotion_descriptors.
+      var rosterQualityPhrase = p.roster_quality_desc || '';
+
+      // Bar widths for the REPUTATION + FAN TRUST bars — use the raw
+      // ints (§17.4 carve-out) ONLY for style="width:X%".
+      var repBarW = Math.max(0, Math.min(100, Number(p.reputation || 0)));
+      var trustBarW = Math.max(0, Math.min(100, Number(p.fan_trust || 0)));
+
+      // Build the phrase row with a thin progress bar so the player
+      // gets a visual sense of relative magnitude without seeing the
+      // raw int as text.
+      function phraseBarRow(label, phrase, barW) {
+        if (!phrase) return '';
+        return '' +
+          '<div class="ce-rival-card__phrase-row">' +
+            '<span class="ce-rival-card__phrase-label">' + escapeHtml(label) + '</span>' +
+            '<span class="ce-rival-card__phrase-val">' + escapeHtml(phrase) + '</span>' +
+            '<div class="ce-rival-card__phrase-bar-track">' +
+              '<div class="ce-rival-card__phrase-bar" style="width:' + barW + '%"></div>' +
+            '</div>' +
+          '</div>';
+      }
 
       return '' +
         '<div class="ce-rival-card" data-promo-id="' + p.promotion_id + '">' +
@@ -114,14 +141,11 @@ window.CE.rivalPromotions = (function () {
             (p.broadcast_tier ? '<span class="ce-chip ce-chip-default">' + escapeHtml(p.broadcast_tier) + '</span>' : '') +
           '</div>' +
           '<div class="ce-rival-card__phrases">' +
-            '<div class="ce-rival-card__phrase-row">' +
-              '<span class="ce-rival-card__phrase-label">REPUTATION</span>' +
-              '<span class="ce-rival-card__phrase-val">' + escapeHtml(repPhrase) + '</span>' +
-            '</div>' +
-            '<div class="ce-rival-card__phrase-row">' +
-              '<span class="ce-rival-card__phrase-label">FAN TRUST</span>' +
-              '<span class="ce-rival-card__phrase-val">' + escapeHtml(trustPhrase) + '</span>' +
-            '</div>' +
+            phraseBarRow('PRESTIGE', repPhrase, repBarW) +
+            phraseBarRow('MARKET POSITION', trustPhrase, trustBarW) +
+            (rosterQualityPhrase
+              ? phraseBarRow('ROSTER QUALITY', rosterQualityPhrase, 0)
+              : '') +
           '</div>' +
           '<div class="ce-rival-card__stats">' +
             '<div class="ce-rival-card__stat">' +
