@@ -8,7 +8,7 @@ values based on size_tier:
 
   Major = $50,000,000
   Mid   = $10,000,000
-  Small = $5,000,000
+  Small = $8,000,000   (Phase 8 PHASE8-A-ECONOMICS — was $5M)
 
 Idempotent: running twice produces the same result.
 """
@@ -25,7 +25,7 @@ DB_PATH = PROJECT_ROOT / "data" / "cage_empire.db"
 CASH_BY_TIER = {
     "major": 50_000_000.0,
     "mid":   10_000_000.0,
-    "small":  5_000_000.0,
+    "small":  8_000_000.0,
 }
 
 

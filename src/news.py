@@ -748,7 +748,11 @@ def _write_news_item(conn, headline, body, sentiment="neutral",
 
     # HW4.3 — daily cap check. If we've already written N items of
     # this importance tier today (published_at = sim_date), suppress.
-    if _importance_cap_reached(conn, importance, published_at):
+    # Phase 8 (PHASE8-C): pass `topic` so _importance_cap_reached can
+    # apply the topic-specific override (memory_resurfacing has its
+    # OWN 2/day cap, decoupled from the SIGNIFICANT 5/day cap it
+    # used to compete for — see _MEMORY_RESURFACING_DAILY_CAP).
+    if _importance_cap_reached(conn, importance, published_at, topic=topic):
         return None
 
     src_name = _source_name(conn, source_id)
@@ -888,6 +892,15 @@ def _importance_for_topic(topic):
 # item is suppressed (returns None). The cap check uses the
 # idx_news_items_date_importance index (created by v3.30.0
 # migration) so it's O(1).
+#
+# Phase 8 (PHASE8-C) — TOPIC-SPECIFIC OVERRIDE: the
+# memory_resurfacing topic has its OWN daily cap
+# (_MEMORY_RESURFACING_DAILY_CAP = 2) checked INSTEAD of the
+# importance-tier cap when topic='memory_resurfacing'. The 5y soak
+# showed only 4 memory_resurfacing fires because the topic shares
+# the SIGNIFICANT 5/day cap with 8+ other SIGNIFICANT news types
+# (fight results, injuries, etc.) and usually lost the cap race.
+# See _importance_cap_reached below for the topic-specific check.
 _IMPORTANCE_DAILY_CAPS = {
     NEWS_IMPORTANCE_LEGENDARY: 1,
     NEWS_IMPORTANCE_MAJOR: 3,
@@ -895,6 +908,17 @@ _IMPORTANCE_DAILY_CAPS = {
     NEWS_IMPORTANCE_ROUTINE: 5,    # HW8.3: was 10, lowered to 5
     NEWS_IMPORTANCE_BACKGROUND: 5,
 }
+
+# Phase 8 (PHASE8-C) — memory_resurfacing gets its OWN daily cap,
+# separate from the shared SIGNIFICANT cap. This was the root cause
+# of the 5-year soak showing only 4 memory_resurfacing fires (vs
+# expected 100+): memory_resurfacing competed with 8+ other
+# SIGNIFICANT news types (fight results, injuries, etc.) for the
+# shared 5/day cap, and usually lost because it fires at fight
+# booking time when other SIGNIFICANT items were already queued.
+# New cap: 2/day — enough for fight previews + daily upcoming-fight
+# reminders, without flooding the news feed.
+_MEMORY_RESURFACING_DAILY_CAP = 2
 
 # HW8.3 — global daily cap (HARD cap, enforced by SQLite trigger).
 # Total news items per sim date across ALL importance tiers + ALL
@@ -907,7 +931,7 @@ _IMPORTANCE_DAILY_CAPS = {
 NEWS_GLOBAL_DAILY_CAP = 30
 
 
-def _importance_cap_reached(conn, importance, published_at):
+def _importance_cap_reached(conn, importance, published_at, topic=None):
     """Return True if the daily cap for `importance` has been reached
     on `published_at` (HW4.3).
 
@@ -918,6 +942,13 @@ def _importance_cap_reached(conn, importance, published_at):
             date). If None, the cap check is skipped (defensive —
             shouldn't happen since _write_news_item resolves the
             sim_date before calling here).
+        topic: optional str. Phase 8 (PHASE8-C) — if topic ==
+            'memory_resurfacing', the function checks the
+            _MEMORY_RESURFACING_DAILY_CAP (2/day, counted by topic
+            column) INSTEAD of the importance-tier cap. This decouples
+            memory_resurfacing from the shared SIGNIFICANT 5/day cap
+            it used to compete for (and usually lose to fight results
+            / injuries / etc.).
 
     Returns:
         bool — True if the cap is reached (suppress the item), False
@@ -927,6 +958,27 @@ def _importance_cap_reached(conn, importance, published_at):
     """
     if not published_at:
         return False
+
+    # Phase 8 (PHASE8-C) — topic-specific override for
+    # memory_resurfacing. Counts today's news items with topic =
+    # 'memory_resurfacing' (across ALL importance tiers — a torch-
+    # passing MAJOR item + a fight-preview SIGNIFICANT item both
+    # count toward the same 2/day memory_resurfacing budget).
+    if topic == "memory_resurfacing":
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM news_items "
+                "WHERE published_at=? AND topic=?",
+                (published_at, "memory_resurfacing"),
+            ).fetchone()
+            return int(row[0] if row else 0) >= _MEMORY_RESURFACING_DAILY_CAP
+        except Exception as e:
+            # Defensive — log + don't suppress (a failed cap check is
+            # better than a dropped news item).
+            print(f"[news._importance_cap_reached] WARN "
+                  f"(memory_resurfacing cap): {e}", flush=True)
+            return False
+
     cap = _IMPORTANCE_DAILY_CAPS.get(importance)
     if not cap:
         return False
@@ -1751,6 +1803,167 @@ def generate_fight_preview_memory_news(conn, fight_id, fighter_a_id,
         # (more interesting than ROUTINE, not as rare as MAJOR).
         importance=NEWS_IMPORTANCE_SIGNIFICANT,
     )
+
+
+# ----------------------------------------------------------------
+# Phase 8 (PHASE8-C) — daily memory-resurfacing pass for upcoming
+# fights.
+#
+# Memory resurfacing used to fire ONLY at fight booking time
+# (book_fight + schedule_next_event). For fights booked days or
+# weeks in advance, the player may forget the backstory by fight
+# day. This function is a DAILY TICK_ADVANCED subscriber that
+# surfaces memories for fights scheduled in the next 7 days.
+#
+# For each scheduled fight whose event_date is within 7 days of
+# the current sim date, calls generate_fight_preview_memory_news
+# to write a "fight coming up — here's the backstory" reminder.
+# Subject to the C1 memory_resurfacing daily cap (2/day, counted
+# by topic across all importance tiers — so a torch-passing MAJOR
+# + a fight-preview SIGNIFICANT both count toward the same budget).
+#
+# Defensive — NEVER raises. A failed memory lookup or DB error in
+# one fight must not crash the tick (per CONVENTIONS §6 smoke-test
+# protocol).
+# ----------------------------------------------------------------
+
+def generate_upcoming_fight_memory_news(conn, event):
+    """Phase 8 (PHASE8-C) — daily pass that surfaces memories for
+    fights scheduled in the next 7 days.
+
+    Subscriber for Events.TICK_ADVANCED. For each scheduled fight
+    (events.status='scheduled' AND event_date BETWEEN current_date
+    AND date(current_date, '+7 days')), checks if the two fighters
+    have any memory_link by calling generate_fight_preview_memory_
+    news. The downstream function calls surface_memories + writes
+    a memory_resurfacing news item IF memories exist (otherwise it
+    returns None silently).
+
+    Subject to the C1 memory_resurfacing daily cap (2/day). The cap
+    is enforced inside _write_news_item via the topic-specific
+    override in _importance_cap_reached. Once 2 memory_resurfacing
+    items have been written today (across ALL importance tiers),
+    subsequent calls return None silently.
+
+    Args:
+        conn: sqlite3.Connection (caller commits).
+        event: dict — the TICK_ADVANCED event payload (unused; the
+            function reads current_date from simulation_clock
+            instead, which is more reliable than the event payload
+            for daily subscribers per the generate_retirement_news
+            pattern at line 1927).
+
+    Returns:
+        int — count of memory_resurfacing news items written this
+        tick (0 if none, or if the daily cap was reached, or if no
+        scheduled fights had matching memories). The count is for
+        observability — the caller (event_bus) ignores it.
+    """
+    # Defensive — never raise. A failed tick must not crash the
+    # whole simulation (CONVENTIONS §6).
+    try:
+        # 1. Get current_date from simulation_clock.
+        row = conn.execute(
+            "SELECT simulation_clock.current_date "
+            "FROM simulation_clock WHERE clock_id=1"
+        ).fetchone()
+        if not row or not row[0]:
+            return 0  # no clock seeded — nothing to do
+        current_date = row[0]
+
+        # 2. Find fights scheduled in next 7 days. We join fights →
+        # events (status='scheduled') + flight_participants (need
+        # the 2 fighter_ids). One row per fight, ordered by event
+        # date ASC so the closest fights get preview priority (the
+        # daily cap of 2/day means later fights in the 7-day window
+        # may not get a preview today — but they'll get one tomorrow
+        # or the day after, before fight day).
+        #
+        # We use a GROUP BY + MIN/MAX to collapse the 2 participant
+        # rows into 1 row per fight. corner values are 'red'/'blue'
+        # but we don't care about the order — we just need both IDs.
+        upcoming = conn.execute(
+            """
+            SELECT
+                f.fight_id,
+                e.event_id,
+                e.promotion_id,
+                e.event_date,
+                MIN(fp.fighter_id) AS fighter_a_id,
+                MAX(fp.fighter_id) AS fighter_b_id
+            FROM fights f
+            JOIN events e ON e.event_id = f.event_id
+            JOIN fight_participants fp ON fp.fight_id = f.fight_id
+            WHERE e.status = 'scheduled'
+              AND e.event_date IS NOT NULL
+              AND e.event_date >= ?
+              AND e.event_date <= date(?, '+7 days')
+            GROUP BY f.fight_id, e.event_id, e.promotion_id, e.event_date
+            ORDER BY e.event_date ASC
+            """,
+            (current_date, current_date),
+        ).fetchall()
+
+        if not upcoming:
+            return 0  # no upcoming fights in the 7-day window
+
+        # 3. For each fight, call generate_fight_preview_memory_news.
+        # The function:
+        #   - calls surface_memories(conn, a, b) — read-only
+        #   - if memories found, writes a memory_resurfacing news
+        #     item (subject to the C1 daily cap)
+        #   - returns the news_item_id on success, None on suppression
+        #     or no-memories
+        # We iterate defensively — a single failed call must not
+        # abort the rest of the loop.
+        written = 0
+        for (fight_id, event_id, promotion_id, event_date,
+             fighter_a_id, fighter_b_id) in upcoming:
+            # Guard: skip if either ID is NULL (defensive — fight_
+            # participants should always have both, but a race or
+            # a half-booked fight could violate this).
+            if not fighter_a_id or not fighter_b_id:
+                continue
+            # Guard: skip if both IDs are the same (defensive —
+            # invariant #7 says no self-fights, but a bad row could
+            # sneak through).
+            if fighter_a_id == fighter_b_id:
+                continue
+            try:
+                nid = generate_fight_preview_memory_news(
+                    conn, fight_id, fighter_a_id, fighter_b_id,
+                    event_id=event_id,
+                    promotion_id=promotion_id,
+                    published_at=current_date,  # publish TODAY
+                )
+                if nid is not None:
+                    written += 1
+                    # Short-circuit: the C1 daily cap is 2/day. Once
+                    # we've written 2, future calls to _write_news_
+                    # item will return None (cap reached). Stop the
+                    # loop early to avoid wasted work — the remaining
+                    # fights in the window will be retried tomorrow.
+                    if written >= _MEMORY_RESURFACING_DAILY_CAP:
+                        break
+            except Exception as e:
+                # Defensive — log + continue. A failed memory lookup
+                # on one fight must not crash the tick.
+                import sys
+                print(f"WARNING: generate_upcoming_fight_memory_news: "
+                      f"fight_id={fight_id} (a={fighter_a_id}, "
+                      f"b={fighter_b_id}) failed: "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
+                continue
+
+        return written
+    except Exception as e:
+        # Top-level defensive — never raise. A failed tick must not
+        # crash the simulation.
+        import sys
+        print(f"WARNING: generate_upcoming_fight_memory_news: "
+              f"top-level failure: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        return 0
 
 
 # ----------------------------------------------------------------
@@ -5566,6 +5779,15 @@ def register_subscribers():
     bus.subscribe(
         Events.TICK_ADVANCED, generate_year_end_awards,
         name="news.generate_year_end_awards",
+    )
+    # Phase 8 (PHASE8-C) — daily memory-resurfacing pass for upcoming
+    # fights. For each scheduled fight happening in the next 7 days,
+    # calls surface_memories + writes a memory_resurfacing news item
+    # (subject to the C1 2/day cap). Mirrors the generate_retirement_
+    # news polling pattern. Defensive — never raises.
+    bus.subscribe(
+        Events.TICK_ADVANCED, generate_upcoming_fight_memory_news,
+        name="news.generate_upcoming_fight_memory_news",
     )
     # NEWS-FINANCE-GYM-LEGACY Issue 6.4 — rival promotion event
     # recaps. SIGNIFICANT news item per rival-promo EVENT_COMPLETED.

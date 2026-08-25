@@ -206,7 +206,8 @@ by cash reserves).
    - For each event, reassign venue_id to a tier-appropriate venue
 4. **Re-backfill finance_transactions**: wipe all + rerun
    `scripts/backfill_finance_transactions.py` with the new model
-5. **Reset promo cash** to starting values (Major=$50M, Mid=$10M, Small=$5M)
+5. **Reset promo cash** to starting values (Major=$50M, Mid=$10M, Small=$5M;
+   Phase 8 raised Small to $8M — see `docs/PHASE8_PLAN.md` Group A Task A4)
 6. **Verify economics**: run the avg-profit-by-tier query, confirm targets met
 7. **Run 30-day soak test**: confirm all 10 promos stay HEALTHY, 0 errors
 8. **Run invariants checker**: 8/8 PASS

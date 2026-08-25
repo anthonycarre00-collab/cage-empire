@@ -197,6 +197,24 @@ _PRUNE_POLICY = (
     # gym_transfer — ROUTINE news item per fighter gym change.
     ("news_items",        "published_at",         365,
      "topic = 'gym_transfer'"),
+    # ----------------------------------------------------------------
+    # PHASE8-B — fighter_memory_links unbounded growth fix.
+    #
+    # Phase 7 5-year soak showed this table grew 762 → 20,091 rows
+    # (+19,329 over 5y, ~3,866/year). At this rate a 20y soak would
+    # reach ~77K rows. Memory links are valuable for narrative ("this
+    # fighter is the successor to a former champion"), so we DON'T
+    # prune them too aggressively — only prune links older than 365
+    # days where BOTH fighters are retired (the link is no longer
+    # relevant to active gameplay). Active fighters' links are always
+    # kept regardless of age (they may surface in future memory
+    # resurfacing per src/interpretation/memory_engine.py).
+    # ----------------------------------------------------------------
+    ("fighter_memory_links", "created_at",          365,
+     "linked_fighter_id IN (SELECT fighter_id FROM fighters "
+     "WHERE is_retired=1) "
+     "AND fighter_id IN (SELECT fighter_id FROM fighters "
+     "WHERE is_retired=1)"),
 )
 
 

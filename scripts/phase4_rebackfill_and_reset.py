@@ -29,10 +29,16 @@ DB_PATH = PROJECT_DIR / "data" / "cage_empire.db"
 BACKFILL_SCRIPT = PROJECT_DIR / "scripts" / "backfill_finance_transactions.py"
 
 # Realistic starting cash per size_tier (matches Phase 3 signoff state).
+# Phase 8 (PHASE8-A-ECONOMICS) — raised Small from $5M → $8M to give
+# small promos ~60% more runway (5y soak showed -$6.1M cumulative loss
+# on $5M starting cash → $5M-$6.1M = -$1.1M bankrupt. With $8M-$6.1M
+# = $1.9M remaining, promos survive to year 5 even at the old per-event
+# loss; combined with A1-A3 fixes (per-event loss reduced to ~$0), the
+# buffer is robust).
 TIER_STARTING_CASH = {
     "major": 50_000_000,
     "mid":   10_000_000,
-    "small":  5_000_000,
+    "small":  8_000_000,
 }
 
 
@@ -62,7 +68,7 @@ def main() -> int:
         "ORDER BY size_tier, promotion_id",
     ).fetchall()
     for r in rows:
-        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 5_000_000)
+        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 8_000_000)
         print(
             f"  P{r['promotion_id']} ({r['size_tier']:6s}): "
             f"{r['name'][:30]:30s} cash ${r['current_cash']:>13,.0f} → "
@@ -99,7 +105,7 @@ def main() -> int:
         "ORDER BY size_tier, promotion_id",
     ).fetchall()
     for r in rows:
-        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 5_000_000)
+        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 8_000_000)
         print(
             f"  P{r['promotion_id']} ({r['size_tier']:6s}): "
             f"{r['name'][:30]:30s} cash ${r['current_cash']:>13,.0f} → "

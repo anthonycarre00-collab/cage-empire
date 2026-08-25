@@ -293,10 +293,25 @@ _DEFAULT_STAFF_SALARY_PER_EVENT = 5000  # fallback for unknown tier
 # _N_EVENTS_PER_YEAR), so a $200K/yr fighter on a major promo gets
 # ($200K / 3) × 3.0 = $200K/event base purse; the same fighter on a
 # small promo gets ($200K / 3) × 0.5 = $33K/event — realistic spread.
+#
+# Phase 8 (PHASE8-A-ECONOMICS) — reduced the small-tier multiplier from
+# 0.5 → 0.3 so small promo purses scale better relative to revenue.
+# A $15K/yr fighter on a small promo was getting ($15K/3) × 0.5 = $2.5K
+# base + $2.5K win + $25K finish = ~$15K/event avg per winner. For a
+# 6-fight card that's $90K total purses, which (combined with $14K
+# venue + $3K staff + $18K medical) = $125K expenses against ~$220K
+# revenue → ~$95K/event profit margin. But the Phase 7 5y soak showed
+# small promos at -$95K/event AVG (likely because non-finishing fights
+# + title fight bonuses + main event bonuses pulled total purses higher
+# than the simple estimate). Reducing the multiplier to 0.3 brings the
+# new base purse to $1.5K, avg purse ~$10K, total ~$60K for 6 fights
+# — bringing per-event expenses down to ~$95K total and lifting the
+# small promo's per-event profit to between -$10K and +$30K (the
+# Phase 8 target band).
 _PURSE_MULT_BY_TIER = {
     "major": 3.0,
     "mid":   1.5,
-    "small": 0.5,
+    "small": 0.3,
 }
 _DEFAULT_PURSE_MULT = 1.0  # fallback for unknown tier
 
@@ -330,6 +345,24 @@ _VENUE_COST_PER_SEAT_BY_TYPE = {
     "outdoor":  3,
 }
 _DEFAULT_VENUE_COST_PER_SEAT = 4  # fallback if venue_type unknown (was 5)
+
+# Phase 8 (PHASE8-A-ECONOMICS) — tier-scaled venue cost multiplier.
+# A 3,489-seat theater at $4/seat = $13,956/event, which is ~6% of a
+# small promo's typical $220K revenue — too high for regional shows.
+# Real-world regional MMA venues rent for ~$2K-$5K flat (high-school
+# gyms, community centers, ballrooms), while UFC-scale arenas run
+# $50K-$200K. The tier multiplier scales the per-seat cost so:
+#   - Major promos: 1.0x (unchanged — $8 arena, $6 ballroom, etc.)
+#   - Mid promos:   0.7x ($5.60 arena, $4.20 ballroom, $2.80 theater)
+#   - Small promos: 0.4x ($3.20 arena, $2.40 ballroom, $1.60 theater,
+#                   $1.20 outdoor). A 3,489-seat theater at $1.60 =
+#                   $5,582 — closer to real-world regional venue rent.
+_VENUE_COST_MULT_BY_TIER = {
+    "major": 1.0,
+    "mid":   0.7,
+    "small": 0.4,
+}
+_VENUE_COST_MULT_DEFAULT = 1.0
 
 # Legacy flat per-seat venue cost (kept for backward compat with any
 # caller that imports it — Phase E2.7 switches to the tiered dict).
@@ -664,35 +697,46 @@ def _compute_broadcast_revenue(conn, event_id, broadcast_tier,
     # flat $150K for 'streaming', $75K for 'tv_regional', $15K for
     # 'local_stream' regardless of rep — which overpaid low-rep promos
     # and underpaid high-rep ones. New ranges (per PHASE3_PLAN.md §3d):
-    #   - tv_regional / streaming: $100K-$300K (rep + fan_trust scaled)
-    #   - local_stream:             $10K-$50K  (rep scaled)
-    #   - none / unknown:           $0         (no broadcast partner)
+    #   - tv_regional / streaming: $120K-$300K (rep + fan_trust scaled)
+    #   - local_stream:             $25K-$80K   (rep scaled)
+    #   - none / unknown:          $0          (no broadcast partner)
     # 'streaming' is treated like 'tv_regional' (regional TV level) —
     # both are mid-tier broadcast deals where the partner pays a rights
     # fee that scales with the promo's brand power. The PPV tiers
     # (ppv_global, ppv_streaming) are handled by the early return above.
+    #
+    # Phase 8 (PHASE8-A-ECONOMICS) — raised the local_stream floor from
+    # $10K → $25K + ceiling from $50K → $80K so small promos get ~$60K
+    # avg instead of ~$30K (matches real-world regional streaming deals:
+    # UFC Fight Pass prelims pay $30K-$100K guaranteed). Also raised
+    # the tv_regional/streaming floor from $100K → $120K so mid promos
+    # aren't squeezed by negative per-event profit. Ceilings unchanged.
     rep = max(0, min(100, promo_reputation or 50))
     trust = max(0, min(100, promo_fan_trust or 50))
     if broadcast_tier in ("tv_regional", "streaming"):
         # Rep + fan_trust both contribute. Linear interpolation from
-        # $100K floor (rep=0, trust=0) to $300K cap (rep=100, trust=100):
-        #   rep=0,   trust=0   → $100K
-        #   rep=50,  trust=50  → $200K
+        # $120K floor (rep=0, trust=0) to $300K cap (rep=100, trust=100):
+        #   rep=0,   trust=0   → $120K
+        #   rep=50,  trust=50  → $210K
         #   rep=100, trust=100 → $300K
         # Capped at $300K (defensive — if rep+trust somehow exceeds 200
         # due to direct-DB edits, we don't pay out more than the spec).
-        factor = 1.0 + (rep + trust) / 100.0
+        # Phase 8 — floor raised from $100K to $120K to keep mid promos
+        # profitable per-event (was ~$200K avg, now ~$210K).
+        factor = 1.2 + (rep + trust) / 100.0
         return int(min(300000, 100000 * factor))
     if broadcast_tier == "local_stream":
         # Rep-only scaling (local stream deals are smaller and only
         # care about the promo's name recognition, not fan trust).
-        # Linear interpolation: $10K floor at rep=0 → $50K at rep=100.
-        #   rep=0   → $10K
-        #   rep=25  → $20K
-        #   rep=50  → $30K
-        #   rep=75  → $40K
-        #   rep=100 → $50K (cap)
-        return int(10000 + (rep / 100.0) * 40000)
+        # Linear interpolation: $25K floor at rep=0 → $80K at rep=100.
+        #   rep=0   → $25K  (was $10K)
+        #   rep=25  → $38.75K
+        #   rep=50  → $52.5K (was $30K)
+        #   rep=75  → $66.25K
+        #   rep=100 → $80K   (was $50K cap)
+        # Phase 8 — both floor + ceiling raised to give small promos
+        # (broadcast_tier='local_stream') realistic revenue.
+        return int(25000 + (rep / 100.0) * 55000)
     # 'none' or unknown tier — no broadcast partner, $0 revenue.
     return 0
 
@@ -1224,16 +1268,24 @@ def _process_event_finance_impl(conn, event):
     # 5. Venue rental (Phase E2.7 — tiered by venue_type per §3.2.3.
     #    Replaces the flat _VENUE_COST_PER_SEAT = $5 lookup with a
     #    4-tier model: arena $7, ballroom $5, theater $4, outdoor $3.
-    #    Falls back to $5 if venue_type is unknown/missing.)
+    #    Falls back to $5 if venue_type is unknown/missing.
+    #    Phase 8 (PHASE8-A-ECONOMICS) — additionally multiplies the
+    #    per-seat cost by a tier multiplier (major 1.0x, mid 0.7x,
+    #    small 0.4x) so small regional promos pay ~$2K-$5K venue rental
+    #    instead of $14K, matching real-world regional venue rent.)
     venue_type = _get_venue_type(conn, venue_id)
     cost_per_seat = _VENUE_COST_PER_SEAT_BY_TYPE.get(
         venue_type, _DEFAULT_VENUE_COST_PER_SEAT,
     )
-    venue_cost = venue_cap * cost_per_seat
+    venue_mult = _VENUE_COST_MULT_BY_TIER.get(
+        size_tier, _VENUE_COST_MULT_DEFAULT,
+    )
+    venue_cost = venue_cap * cost_per_seat * venue_mult
     _record_transaction(conn, promo_id, event_id, None,
                         'venue_rental', -venue_cost,
                         f"venue rental ({venue_cap} seats × "
-                        f"${cost_per_seat}/seat, {venue_type or 'unknown'})",
+                        f"${cost_per_seat}/seat × {venue_mult} tier_mult, "
+                        f"{venue_type or 'unknown'})",
                         event_date)
 
     # 6. Staff salaries (Phase 3 / PHASE3-IMPLEMENT — flat per-event

@@ -169,6 +169,25 @@ MEMORY_TYPE_CONTROVERSIAL_LOSS = "controversial_loss"
 MEMORY_TYPE_MAJOR_UPSET = "major_upset"
 MEMORY_TYPE_CAREER_MILESTONE = "career_milestone"
 
+# Phase 8 (PHASE8-C) — 2 NEW weaker-memory search types. Per the
+# 5y soak analysis: the original 9 search types returned None for
+# ~95% of fighter pairs (most pairs have never met, never shared a
+# gym, etc.). These 2 new searches find matches for a much larger
+# fraction of pairs (projected ~30%):
+#   - same_weight_class: are both fighters in the SAME weight class?
+#     (most fighters share a WC with ~200 others — common match).
+#   - ranked_proximity: are both fighters ranked within 5 spots of
+#     each other in their division? (creates "two top-10 contenders
+#     collide" narrative — a weaker memory than previous_fight, but
+#     still worth surfacing for fight previews).
+# These are deliberately LAST in the search order (search types 10
+# + 11) so the stronger memories (previous_fight, shared_gym, etc.)
+# take precedence when they match. The fight-preview news picks the
+# FIRST matching memory — adding these to the end means they only
+# surface when no stronger memory exists.
+MEMORY_TYPE_SAME_WEIGHT_CLASS = "same_weight_class"
+MEMORY_TYPE_RANKED_PROXIMITY = "ranked_proximity"
+
 ALL_MEMORY_TYPES = (
     MEMORY_TYPE_PREVIOUS_FIGHT,
     MEMORY_TYPE_SHARED_GYM,
@@ -180,6 +199,9 @@ ALL_MEMORY_TYPES = (
     MEMORY_TYPE_CONTROVERSIAL_LOSS,
     MEMORY_TYPE_MAJOR_UPSET,
     MEMORY_TYPE_CAREER_MILESTONE,
+    # Phase 8 (PHASE8-C) new types:
+    MEMORY_TYPE_SAME_WEIGHT_CLASS,
+    MEMORY_TYPE_RANKED_PROXIMITY,
 )
 
 
@@ -346,12 +368,12 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
     """Surface relevant memories for a fight between two fighters.
 
     Per spec §5 + PHASE_2_PLAN §5 Task 2.5 + HW3.2 (Hardening_Phase.md
-    §HW3.2): the Memory Engine searches 9 sources (4 MVP + 5 HW3) for
-    relevant history between the two fighters and returns a list of
-    voice-phrase strings. Each phrase is player-facing (no raw numbers
-    per CONVENTIONS §14).
+    §HW3.2): the Memory Engine searches 11 sources (4 MVP + 5 HW3 +
+    2 Phase-8-C) for relevant history between the two fighters and
+    returns a list of voice-phrase strings. Each phrase is player-
+    facing (no raw numbers per CONVENTIONS §14).
 
-    Search types (D1 + HW3.2):
+    Search types (D1 + HW3.2 + Phase 8 PHASE8-C):
       1. previous_fight        — have they fought before? (from fight_
                                   history)
       2. shared_gym            — do they currently share a gym? (from
@@ -376,8 +398,18 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
                                   milestone against the other? (HW3.2
                                   — from fighter_memory_links where
                                   link_type='milestone')
+     10. same_weight_class     — are both fighters in the same weight
+                                  class? (Phase 8 PHASE8-C — weaker
+                                  memory; common match because most
+                                  fighters share a WC with ~200
+                                  others)
+     11. ranked_proximity      — are both fighters ranked within 5
+                                  spots of each other in their
+                                  division? (Phase 8 PHASE8-C —
+                                  creates "two top-10 contenders
+                                  collide" narrative)
 
-    Returns up to 9 memories (one per search type). Each search
+    Returns up to 11 memories (one per search type). Each search
     returns 0 or 1 voice phrases. The engine is READ-ONLY (D3).
 
     Per D6: the engine NEVER raises — DB errors are caught and a
@@ -397,8 +429,9 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
         ordered by search type (previous_fight, shared_gym,
         former_teammate, injury_history, title_fight_history,
         former_champion, controversial_loss, major_upset,
-        career_milestone) — the same order the UI displays them on
-        the Fight Card screen. Empty list if no memories match.
+        career_milestone, same_weight_class, ranked_proximity) — the
+        same order the UI displays them on the Fight Card screen.
+        Empty list if no memories match.
     """
     # Resolve current_date from simulation_clock if not provided.
     if current_date is None:
@@ -520,6 +553,31 @@ def surface_memories(conn, fighter_a_id, fighter_b_id,
     except sqlite3.Error as e:
         import sys
         print(f"WARNING: memory_engine._search_career_milestone("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    # Phase 8 (PHASE8-C) — 2 new search types. These are weaker
+    # memories (no direct history between the two fighters) but
+    # they match a much larger fraction of pairs than the 9 above
+    # (~30% vs ~5%). They're deliberately LAST so the stronger
+    # memories take precedence when they match.
+    try:
+        m = _search_same_weight_class(conn, fighter_a_id, fighter_b_id)
+        if m:
+            memories.append((MEMORY_TYPE_SAME_WEIGHT_CLASS, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_same_weight_class("
+              f"a={fighter_a_id}, b={fighter_b_id}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        m = _search_ranked_proximity(conn, fighter_a_id, fighter_b_id)
+        if m:
+            memories.append((MEMORY_TYPE_RANKED_PROXIMITY, m))
+    except sqlite3.Error as e:
+        import sys
+        print(f"WARNING: memory_engine._search_ranked_proximity("
               f"a={fighter_a_id}, b={fighter_b_id}) failed: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
 
@@ -1122,4 +1180,148 @@ def _search_career_milestone(conn, fighter_a_id, fighter_b_id):
         return None
 
     return ("A career milestone was reached in this matchup.")
+
+
+# ============================================================
+# SEARCH 10 — same_weight_class (Phase 8 PHASE8-C)
+# ============================================================
+
+def _search_same_weight_class(conn, fighter_a_id, fighter_b_id):
+    """Phase 8 (PHASE8-C) — are the two fighters in the same weight class?
+
+    Per docs/PHASE8_PLAN.md Group C task C3: the existing 9 search
+    types returned None for ~95% of fighter pairs because most pairs
+    have no direct history. This search (and the ranked_proximity
+    search below) finds matches for a much larger fraction by looking
+    at CATEGORY overlap rather than direct history.
+
+    `same_weight_class` checks if both fighters have the same
+    weight_class_id in the fighters table. Most fighters share a WC
+    with ~200 others (a typical division), so this is a common match
+    — projected ~30% of pairs will hit it.
+
+    Voice phrase: "Two warriors from the {wc_name} division cross
+    paths" — voice-layered, no raw numbers (CONVENTIONS §14).
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+
+    Returns:
+        Voice phrase string, or None if either fighter has no weight
+        class, or they're in different weight classes.
+    """
+    # Single query — SELECT both fighters' weight_class_id + name in
+    # one pass via a JOIN on weight_class_id equality. Cheaper than 2
+    # separate lookups + the common case (different WC) returns
+    # empty rows immediately.
+    row = conn.execute(
+        """
+        SELECT wc.name
+        FROM fighters fa
+        JOIN fighters fb
+          ON fb.weight_class_id = fa.weight_class_id
+        JOIN weight_classes wc
+          ON wc.weight_class_id = fa.weight_class_id
+        WHERE fa.fighter_id = ?
+          AND fb.fighter_id = ?
+          AND fa.weight_class_id IS NOT NULL
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id),
+    ).fetchone()
+    if not row:
+        return None
+    wc_name = row[0] or "their division"
+    return f"Two warriors from the {wc_name} division cross paths"
+
+
+# ============================================================
+# SEARCH 11 — ranked_proximity (Phase 8 PHASE8-C)
+# ============================================================
+
+def _search_ranked_proximity(conn, fighter_a_id, fighter_b_id):
+    """Phase 8 (PHASE8-C) — are the two fighters ranked within 5
+    spots of each other in their division?
+
+    Per docs/PHASE8_PLAN.md Group C task C3: creates "two top-10
+    contenders collide" / "a clash of ranked fighters" narrative
+    for fight previews. A weaker memory than previous_fight but
+    still worth surfacing — gives the player context beyond
+    "they're in the same division".
+
+    `ranked_proximity` looks up both fighters' rank WITHIN THE
+    SAME weight_class_id + promotion_id. Ranks are computed
+    on-the-fly via ROW_NUMBER() OVER (PARTITION BY weight_class_id,
+    promotion_id ORDER BY rating DESC) because the `rankings` table
+    has no `rank` column (only rating + counters — rank is derived
+    by ordering). Both fighters must be in the SAME partition for
+    a meaningful proximity check (different weight classes or
+    different promotions would have separate rank lists — those
+    pairs are excluded; we let same_weight_class handle those).
+
+    Voice phrases (per docs/PHASE8_PLAN.md task C3):
+      - better rank <= 3  → "A top-{better_rank} contender squares off"
+      - better rank <= 10 → "Two top-10 contenders collide"
+      - better rank > 10  → "A clash of ranked fighters"
+
+    Args:
+        conn: sqlite3.Connection.
+        fighter_a_id: int.
+        fighter_b_id: int.
+
+    Returns:
+        Voice phrase string, or None if either fighter is unranked
+        or they're more than 5 ranks apart (or in different
+        weight_class_id / promotion_id partitions).
+    """
+    # Compute ranks within each (weight_class_id, promotion_id)
+    # partition using ROW_NUMBER. Then fetch the ranks for BOTH
+    # fighters. A single CTE + 2 lookups.
+    #
+    # Note: SQLite 3.25+ supports ROW_NUMBER() window functions.
+    # The build_db.py migrations require SQLite 3.30.0+ for the
+    # idx_news_items_date_importance index, so window functions
+    # are safe to use here.
+    rows = conn.execute(
+        """
+        WITH ranked AS (
+            SELECT fighter_id,
+                   weight_class_id,
+                   promotion_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY weight_class_id, promotion_id
+                       ORDER BY rating DESC, fights_count DESC
+                   ) AS rank
+            FROM rankings
+        )
+        SELECT ra.rank, rb.rank, ra.weight_class_id, ra.promotion_id
+        FROM ranked ra
+        JOIN ranked rb
+          ON ra.weight_class_id = rb.weight_class_id
+         AND ra.promotion_id = rb.promotion_id
+        WHERE ra.fighter_id = ?
+          AND rb.fighter_id = ?
+        LIMIT 1
+        """,
+        (fighter_a_id, fighter_b_id),
+    ).fetchone()
+    if not rows:
+        return None  # fighters not ranked, or in different partitions
+    a_rank, b_rank, _wc_id, _promo_id = rows
+    if a_rank is None or b_rank is None:
+        return None
+    if abs(a_rank - b_rank) > 5:
+        return None  # too far apart — no proximity narrative
+
+    # Voice phrase based on the BETTER (lower) rank.
+    better_rank = min(a_rank, b_rank)
+    if better_rank <= 3:
+        return f"A top-{better_rank} contender squares off"
+    elif better_rank <= 10:
+        return "Two top-10 contenders collide"
+    else:
+        return "A clash of ranked fighters"
+
 
