@@ -37,13 +37,26 @@
      - Pagination on both tabs.
      - Empty states with voice-appropriate phrasing.
 
-   Voice compliance (CONVENTIONS §14):
-     - Gym stats (0-100 ints) are OK to display — gym ratings, NOT
-       fighter attributes. facility_quality additionally wrapped
-       in a voice phrase ('world-class' / 'elite' / 'solid' /
-       'adequate' / 'bare-bones') per the brief.
-     - Camp stats (fatigue / morale / injury_risk — 0-100 ints)
-       are OK to display — camp-state ratings, NOT fighter attrs.
+   Voice compliance (CONVENTIONS §14 + §17.4 "Rich Not Thin"):
+     - Phase 6 / Task B4 + Phase 7 / Task A9-A10 + B2:
+       * Gym stats (facility / medical / sparring / dev / weight-cut
+         support — 0-100 ints) are NOT displayed as raw text. B4
+         routed gym rendering through `renderStatBar` (line ~393)
+         which shows `phrase || tierPhraseFromInt(v)` — the voice
+         phrase from `gym_descriptors` (e.g., "world-class" /
+         "elite" / "solid" / "adequate" / "bare-bones"). The raw
+         int survives ONLY as the bar-fill width (§17.4 carve-out
+         for visualization widths). Gym card header shows
+         `gym.identity_label` (the voice phrase, also from
+         `gym_descriptors`), NOT a raw int.
+       * Camp stats (fatigue / morale / injury_risk — 0-100 ints)
+         ARE displayed as raw text in the meter value chip
+         (line ~249, `renderMeter`). This is the standing Phase 6
+         B4 carve-out: camp-state ratings are operational state
+         (not fighter attributes — the camp is a transient ~7-14
+         day process, see app_web.get_training_camps_data's §17.2
+         carve-out docstring). The Phase 7 / Task A4 audit upheld
+         this decision.
      - attribute_changes JSON contains raw deltas (+2 punch_power)
        — these are deltas, not absolute values. Fighter Profile
        already displays similar trajectory chips via the existing

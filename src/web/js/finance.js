@@ -28,11 +28,15 @@
      - Empty state: "The books are open. Run your first show to see
        the numbers move."
 
-   Voice compliance (CONVENTIONS §14):
-     - Reputation + fan_trust → voice phrases ("Highly Respected" /
-       "Strong"), NEVER raw 0-100 ints in headers.
-     - Show rating → voice phrase ("instant classic" / "solid night"
-       / "lackluster"), NEVER raw int.
+   Voice compliance (CONVENTIONS §14 + §17.4 "Rich Not Thin"):
+     - Phase 7 / Task A7: raw `reputation`, `fan_trust`, and
+       `overall_rating` ints have been DROPPED from the JSON payload.
+       The Finance screen displays voice phrases ONLY:
+         - `reputation_phrase` ("Highly Respected" / "Respected" / …)
+         - `fan_trust_phrase` ("Strong" / "Moderate" / "Strained" / …)
+         - `rating_phrase` ("a night to forget" / "a solid night of
+           fights" / …) + `rating_tier` (DISASTER/OKAY/SOLID/GREAT/…)
+       No raw 0-100 ints cross the API boundary.
      - Cash amounts OK as dollar figures (the player owns the money).
      - Monthly burn OK as a dollar figure (it's a projection).
      - Fighter name hyperlinks → Fighter Profile.

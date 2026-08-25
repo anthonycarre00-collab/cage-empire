@@ -494,8 +494,13 @@ window.CE.dashboard = (function () {
   }
 
   function renderPromotionStatus(d) {
-    var repPct = Math.max(0, Math.min(100, d.reputation));
-    var ftPct = Math.max(0, Math.min(100, d.fan_trust));
+    // Phase 7 / Task A1 — `reputation` / `fan_trust` raw 0-100 ints
+    // are NO LONGER in the JSON (per §17.4 "Rich Not Thin"). Bar
+    // widths now use the banded tier pct (reputation_pct /
+    // fan_trust_pct — 100/75/60/35/20 for rep, 100/65/40/25 for
+    // trust) which derives from the same band as the voice phrase.
+    var repPct = Math.max(0, Math.min(100, Number(d.reputation_pct || 0)));
+    var ftPct = Math.max(0, Math.min(100, Number(d.fan_trust_pct || 0)));
     var champPct = Math.min(100, Math.round(d.champ_count * 100 / Math.max(1, d.total_wcs || 8)));
     var sizeTier = (d.size_tier || '').toUpperCase();
     var broadcast = (d.broadcast_tier || '').toUpperCase();

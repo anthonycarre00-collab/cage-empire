@@ -38,12 +38,16 @@
        * Confirm → bridge.assignScout(scout_id, target_fighter_id)
          → toast + modal closes + scout card refreshes.
 
-   Voice compliance (CONVENTIONS §14):
+   Voice compliance (CONVENTIONS §14 + §17.4 "Rich Not Thin"):
      - All estimated_* fields are voice descriptors (already in DB).
-     - scout_confidence (0-100 int) is OK to display — scout's own
-       confidence rating, NOT a fighter attribute. Wrapped in a
-       voice phrase ('highly confident' / 'moderately confident' /
-       'uncertain' / 'wild guess').
+     - Phase 7 / Task A5 + B3: the raw `scout_confidence` (0-100)
+       int has been DROPPED from the JSON payload. The UI shows
+       the voice phrase ONLY ('HIGHLY CONFIDENT' / 'MODERATELY
+       CONFIDENT' / 'UNCERTAIN' / 'WILD GUESS') — no "· 87" raw
+       int suffix anymore. Per §17.4, only the voice phrase crosses
+       the API boundary; the previous "scout's own rating, not a
+       fighter attribute" carve-out was a §14 violation (it's a
+       raw 0-100 int shown as text, regardless of semantics).
      - Scout attributes (eye_for_talent / technical_analysis /
        character_reading / mistake_rate) are NEVER shown raw —
        only voice phrases.
@@ -268,7 +272,7 @@ window.CE.scouting = (function () {
           '<div class="ce-sct__report-chips">' +
             staleChip +
             '<span class="' + confidenceChipClass(report.confidence_phrase) + '">' +
-              escapeHtml((report.confidence_phrase || '').toUpperCase()) + ' · ' + report.scout_confidence +
+              escapeHtml((report.confidence_phrase || '').toUpperCase()) +
             '</span>' +
           '</div>' +
         '</div>' +

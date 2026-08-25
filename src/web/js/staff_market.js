@@ -16,7 +16,8 @@
      - Filters: role_type (Coach/Scout/Doctor/Cutman/GM/Commentator),
        skill tier (world-class/established/promising/unproven), search.
      - Pagination: 20 rows/page (matches Free Agents).
-     - NEVER displays raw skill_level integer — only the voice phrase.
+     - Phase 7 / Task A6: raw skill_level (0-100 int) is NO LONGER
+       in the JSON payload — only `skill_phrase` is sent (per §17.4).
      - NEVER displays raw potential/ceiling — staff don't have potential.
 
    Hire flow (mirrors Free Agents' sign-free-agent modal):
@@ -32,9 +33,15 @@
      4. If rejected: toast shows the staff's floor + the player can
         re-open the modal and try a higher offer.
 
-   Voice/design (per CONVENTIONS §14 + task brief):
-     - Skill level shown as voice phrase ("world-class", "established",
-       "promising", "unproven") — NEVER the raw 0-100 number.
+   Voice/design (per CONVENTIONS §14 + §17.4 "Rich Not Thin" + task brief):
+     - Phase 7 / Task A6 + B4: raw `skill_level` (0-100 int) is NO
+       LONGER in the JSON payload. The UI shows `skill_phrase` ONLY
+       ("world-class" / "established" / "promising" / "unproven").
+       The old "NEVER displayed raw" comment at line ~19 was
+       accurate for the UI but the int was still leaking across
+       the API boundary — the server-side SQL ORDER BY still
+       uses `skill_level DESC` as the sort key (server-internal,
+       never serialized).
      - Role labels: "Coach", "Scout", "Doctor", "Cutman",
        "General Manager", "Commentator".
      - Empty state: "No staff available in your market. Try widening

@@ -32,14 +32,18 @@
        already lives on the card).
      - Pagination (mirrors staff_market + free_agents).
 
-   Voice compliance (CONVENTIONS §14):
-     - rivalry_heat (0-100 int) is OK to display — relationship
-       rating, NOT a fighter attribute.
-     - Heat phrase wraps the integer ("BOILING OVER · 92").
-     - Head-to-head record is a career stat — OK to display.
-     - Career-stage descriptors come from voice.describe_career_stage
-       (already voice-layered in the DB by rivalries.py).
-     - origin_description is already voice-layered.
+   Voice compliance (CONVENTIONS §14 + §17.4 "Rich Not Thin"):
+    - rivalry_heat (raw 0-100 int) is in the JSON ONLY as the
+      heat-meter bar-width percentage (§17.4 carve-out for
+      visualization widths). Phase 6 B6 removed the raw-int text
+      display (the old "BOILING OVER · 92" format is dead). The
+      heatPct at line ~229 is the sole consumer of the raw int.
+    - Heat phrase (heat_phrase) is the ONLY text label shown
+      ("READY TO EXPLODE" / "BOILING OVER" / etc.).
+    - Head-to-head record is a career stat — OK to display.
+    - Career-stage descriptors come from voice.describe_career_stage
+      (already voice-layered in the DB by rivalries.py).
+    - origin_description is already voice-layered.
    ============================================================ */
 
 window.CE = window.CE || {};

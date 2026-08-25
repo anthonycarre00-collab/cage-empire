@@ -223,6 +223,37 @@ def _fan_trust_phrase(trust):
     return "Weak"
 
 
+def _reputation_pct(rep):
+    """Tier-based bar-fill pct (0-100) for the dashboard reputation meter.
+
+    Phase 7 / Task A1 — replaces the raw 0-100 `reputation` int in
+    the dashboard JSON payload (per CONVENTIONS §17.4 "Rich Not
+    Thin": only voice phrases should cross the API boundary as text,
+    but visualization widths are an explicit carve-out). The pct is
+    banded to the same tiers as `_reputation_phrase()` so the bar
+    fill visually tracks the phrase without leaking the exact int
+    (e.g., a "Respected" promo (60-79) shows 75% — same band every
+    time, no information loss vs. the phrase).
+    """
+    if rep >= 80: return 100   # Highly Respected — gold
+    if rep >= 60: return 75    # Respected — gold-leaning
+    if rep >= 40: return 60    # Established — steel
+    if rep >= 20: return 35    # Emerging — crimson-leaning
+    return 20                  # Unknown — crimson
+
+
+def _fan_trust_pct(trust):
+    """Tier-based bar-fill pct (0-100) for the dashboard fan-trust meter.
+
+    Phase 7 / Task A1 — companion to `_reputation_pct()`. Same
+    carve-out rationale (§17.4 visualization-width exemption).
+    """
+    if trust >= 70: return 100  # Strong — gold
+    if trust >= 50: return 65   # Moderate — steel
+    if trust >= 30: return 40   # Strained — crimson-leaning
+    return 25                   # Weak — crimson
+
+
 def _rating_tier(rating):
     if not rating: return ("unrated", "#6b7280")
     if rating >= 80: return ("a spectacular night of fights", "#4ade80")
@@ -360,9 +391,11 @@ def _role_label(role_type):
 #     character_reading) are 0-100 ints — NEVER shown raw. Wrapped
 #     in voice phrases.
 #   - mistake_rate (0-100) is shown as a reliability phrase.
-#   - scout_confidence (0-100) is OK to display as raw int (it's
-#     the scout's own confidence rating, NOT a fighter attribute),
-#     but it ALSO gets a voice phrase wrapper for the chip.
+#   - scout_confidence (0-100) was DROPPED from JSON payloads in
+#     Phase 7 / Task A5 (per §17.4 "Rich Not Thin"). Only the voice
+#     phrase `_scout_confidence_phrase()` is sent; the UI shows
+#     "HIGHLY CONFIDENT" / "MODERATELY CONFIDENT" / "UNCERTAIN" /
+#     "WILD GUESS" — no raw int crosses the API boundary.
 def _scout_attr_phrase(value, kind):
     """Voice phrase for a scout attribute (0-100).
 
@@ -3238,9 +3271,16 @@ class Api:
                 # Phase 5 Task 2 — sparkline + trend arrow data
                 "cash_history": cash_history,
                 "yesterday_cash": yesterday_cash,
-                "reputation": rep,
+                # Phase 7 / Task A1 — raw 0-100 reputation/fan_trust
+                # ints DROPPED from the JSON payload (per §17.4 "Rich
+                # Not Thin"). The JS bar fill uses the banded tier pct
+                # (_reputation_pct / _fan_trust_pct — 100/75/60/35/20
+                # for rep, 100/65/40/25 for trust); text display uses
+                # the voice phrase. No exact int leaks across the
+                # API boundary.
+                "reputation_pct": _reputation_pct(rep),
                 "reputation_phrase": _reputation_phrase(rep),
-                "fan_trust": fan_trust,
+                "fan_trust_pct": _fan_trust_pct(fan_trust),
                 "fan_trust_phrase": _fan_trust_phrase(fan_trust),
                 "size_tier": size_tier,
                 "broadcast_tier": broadcast,
@@ -6193,16 +6233,33 @@ class Api:
                 "  AND e.status IN ('scheduled', 'card_confirmed')",
                 (conflict_window_start, conflict_window_end),
             ).fetchall()
-            player_dates = []   # list of (date_str, event_name) for player
-            rival_dates = []    # list of (date_str, event_name, promo_name) for rivals
+            # Phase 7 / Task A3 — replace the O(N×M) nested loop with
+            # an O(N+M) date-keyed dict lookup. The previous code
+            # iterated `rival_dates` + `player_dates` lists per day
+            # (31 days × ~50 events × datetime.strptime → up to ~1550
+            # strptime calls per call). The new code builds an
+            # ``events_by_date_window`` dict ONCE (keyed by date_str),
+            # pre-parses each date_str into a datetime ONCE, then per
+            # day iterates ±7 offsets (15 dict lookups, no strptime).
+            events_by_date_window = {}  # date_str → {"player":[(ename,dt)], "rival":[(ename,pname,dt)]}
             for r in conflict_rows:
                 (_eid, ename, edate, epromo, pname) = r
+                try:
+                    e_dt = datetime.strptime(edate, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    continue
+                bucket = events_by_date_window.setdefault(
+                    edate, {"player": [], "rival": []})
                 if epromo == pid:
-                    player_dates.append((edate, ename or ""))
+                    bucket["player"].append((ename or "", e_dt))
                 else:
-                    rival_dates.append((edate, ename or "", pname or "Rival"))
+                    bucket["rival"].append((ename or "", pname or "Rival", e_dt))
 
             today_str = sim_date_str
+            # Pre-compute the ±7-day offset datetimes ONCE per calendar
+            # day. Each per-day conflict scan is then a flat 15-iteration
+            # loop with dict lookups — no strptime inside.
+            one_day = timedelta(days=1)
             for d in range(1, n_days + 1):
                 date_str = f"{y_:04d}-{m_:02d}-{d:02d}"
                 date_dt = datetime(y_, m_, d)
@@ -6232,39 +6289,61 @@ class Api:
                 # Conflicts (per spec §2.2):
                 #   rival event within ±2 days → counter-programming risk
                 #   own event within 7 days → short turnaround
+                #
+                # Phase 7 / Task A3 — iterate ±7 offsets (15 total) with
+                # dict lookups instead of scanning rival_dates/player_dates
+                # lists linearly per day. Skips offset=0 (same-day, handled
+                # by the player_events / rival_events slots above).
                 conflicts = []
                 if not is_past:
-                    for (r_date_str, r_ename, r_pname) in rival_dates:
-                        if r_date_str == date_str:
+                    offset_dt = date_dt - timedelta(days=7)
+                    for offset in range(-7, 8):
+                        if offset == 0:
+                            offset_dt = date_dt
                             continue
-                        try:
-                            r_dt = datetime.strptime(r_date_str, "%Y-%m-%d")
-                        except (ValueError, TypeError):
-                            continue
-                        delta = abs((r_dt - date_dt).days)
-                        if delta <= 2:
-                            weekday_str = r_dt.strftime("%a")
-                            conflicts.append(
-                                f"{r_pname} is running '{r_ename}' on "
-                                f"{weekday_str} — counter-programming will "
-                                f"split the gate."
-                            )
-                            break
-                    for (o_date_str, o_ename) in player_dates:
-                        if o_date_str == date_str:
-                            continue
-                        try:
-                            o_dt = datetime.strptime(o_date_str, "%Y-%m-%d")
-                        except (ValueError, TypeError):
-                            continue
-                        delta = abs((o_dt - date_dt).days)
-                        if delta <= 7:
-                            weekday_str = o_dt.strftime("%a")
-                            conflicts.append(
-                                f"You're already running '{o_ename}' on "
-                                f"{weekday_str} — short turnaround."
-                            )
-                            break
+                        # Walk offset_dt forward by 1 day each iteration —
+                        # no strptime, no re-allocation.
+                        bucket = events_by_date_window.get(
+                            offset_dt.strftime("%Y-%m-%d"))
+                        if bucket:
+                            # Rival conflicts only matter within ±2 days.
+                            if -2 <= offset <= 2 and bucket["rival"]:
+                                for (r_ename, r_pname, _r_dt) in bucket["rival"]:
+                                    weekday_str = offset_dt.strftime("%a")
+                                    conflicts.append(
+                                        f"{r_pname} is running '{r_ename}' on "
+                                        f"{weekday_str} — counter-programming will "
+                                        f"split the gate."
+                                    )
+                                    break
+                            # Player conflicts matter within ±7 days.
+                            if bucket["player"]:
+                                for (o_ename, _o_dt) in bucket["player"]:
+                                    weekday_str = offset_dt.strftime("%a")
+                                    conflicts.append(
+                                        f"You're already running '{o_ename}' on "
+                                        f"{weekday_str} — short turnaround."
+                                    )
+                                    break
+                        offset_dt = offset_dt + one_day
+                    # Deduplicate — same rival/player event could appear
+                    # at multiple offsets (rare but possible if ±2 and
+                    # ±7 windows overlap for the same neighbor day). The
+                    # original code broke on first match per category;
+                    # the dict-lookup version surfaces ALL neighbor days
+                    # which is more informative (shows every conflicting
+                    # event, not just the first). To preserve the
+                    # "one conflict per category" behavior of the
+                    # original, take only the FIRST rival + FIRST player
+                    # conflict and skip the rest.
+                    if conflicts:
+                        first_rival = next(
+                            (c for c in conflicts
+                             if "counter-programming" in c), None)
+                        first_own = next(
+                            (c for c in conflicts
+                             if "short turnaround" in c), None)
+                        conflicts = [c for c in [first_rival, first_own] if c]
 
                 days.append({
                     "day": d,
@@ -7167,6 +7246,21 @@ class Api:
             "by_type":     [{type, label, count, avg_heat}, ...],
             "page", "per_page": 20, "total", "total_pages", "filters"
           }
+
+        Voice compliance — CONVENTIONS §17.4 "Rich Not Thin" carve-out
+        (Phase 7 / Task A8):
+          * ``rivalry_heat`` (raw 0-100 int) is KEPT in the JSON ONLY
+            as the bar-width percentage for the heat meter in
+            ``rivalries.js:229`` (``heatPct``). Per §17.4, visualization
+            widths are an explicit carve-out — the polygon / bar fill
+            conveys relative magnitude without leaking the underlying
+            rating as a displayed number.
+          * Text display uses ``heat_phrase`` ONLY ("BOILING OVER",
+            "READY TO EXPLODE", etc. — already voice-layered via
+            ``_rivalry_heat_phrase()``). Phase 6 B6 removed the raw-int
+            text display (the old "BOILING OVER · 92" format); only the
+            phrase survives in the rendered card.
+          * The raw int is NOT shown as text anywhere in the UI.
         """
         try:
             pid = self.get_player_promotion()
@@ -7608,7 +7702,11 @@ class Api:
                 "height_cm": height_cm,
                 "reach_cm": reach_cm,
                 "stance": stance or "",
-                "marketability": mkt or 50,  # internal — NEVER shown raw
+                # Phase 7 / Task A2 — `marketability` raw int DROPPED
+                # from the brief (per §17.4 "Rich Not Thin"). The voice
+                # phrase `popularity_tier` below carries the same info
+                # in voice form. (Mirrors the single-fighter
+                # `_fighter_brief` change.)
                 "popularity_tier": _popularity_tier(mkt),
                 "momentum_label": _momentum_label(ws, ls),
                 "recent_form": recent_form,
@@ -7632,8 +7730,7 @@ class Api:
         stays N=number_of_booked_fights, not N=eligible_roster_size).
 
         Returns name + nickname + wc_name + ranking + record_str +
-        momentum_short + has_portrait + weight_class_id + gender +
-        marketability (raw — internal use only, NEVER displayed).
+        momentum_short + has_portrait + weight_class_id + gender.
 
         MM1.2 (Matchmaking V2): also returns the 9 corner-slot fields
         the matchmaking screen needs at a glance:
@@ -7644,6 +7741,16 @@ class Api:
           - rank_num (1-15 or 0 for unranked)
           - age (int)
           - style_archetype_name (Striker / Grappler / Wrestler / …)
+
+        Phase 7 / Task A2 — the raw 0-100 `marketability` int has
+        been DROPPED from the brief dict (per CONVENTIONS §17.4
+        "Rich Not Thin": only the voice phrase `popularity_tier`
+        crosses the API boundary; the raw int leaked in every brief
+        despite the "internal — NEVER shown raw" comment). The
+        server-side callers that need marketability for matchup
+        scoring use `_build_fighter_dict_for_matchup` (which reads
+        `fighters.marketability` directly from the DB) — they do
+        NOT consume this brief's `marketability` field.
         """
         row = conn.execute(
             "SELECT f.fighter_id, f.first_name, f.last_name, f.nickname, "
@@ -7754,7 +7861,11 @@ class Api:
             "height_cm": height_cm,
             "reach_cm": reach_cm,
             "stance": stance or "",
-            "marketability": mkt or 50,  # internal — NEVER shown raw
+            # Phase 7 / Task A2 — `marketability` raw int DROPPED
+            # from the brief (per §17.4 "Rich Not Thin"). The voice
+            # phrase `popularity_tier` below carries the same info
+            # in voice form. Server-side matchup scoring reads
+            # marketability via `_build_fighter_dict_for_matchup`.
             # MM1.2 — 9 corner-slot fields:
             "popularity_tier": popularity_tier,
             "momentum_label": momentum_label,
@@ -10417,7 +10528,13 @@ class Api:
                     "age": age,
                     "role_type": role_type,
                     "role_label": _role_label(role_type),
-                    "skill_level": skill_level,  # NEVER displayed raw
+                    # Phase 7 / Task A6 — raw skill_level (0-100) int
+                    # DROPPED from the JSON payload (per §17.4 "Rich
+                    # Not Thin"). The UI shows `skill_phrase` ONLY
+                    # ("world-class" / "established" / "promising" /
+                    # "unproven"). The SQL ORDER BY still uses
+                    # `s.skill_level DESC` internally (server-side sort
+                    # key — never crosses the API boundary).
                     "skill_phrase": _skill_phrase(skill_level),
                     "salary_ask": float(salary_ask or 0),
                     "salary_ask_display": _format_cash(
@@ -10499,7 +10616,7 @@ class Api:
                 "injury_risk_assessment",
                 "contract_cost_estimate",
                 "contract_cost_display",
-                "scout_confidence", "confidence_phrase",
+                "confidence_phrase",
                 "is_stale", "report_text"
               }, ...
             ],
@@ -10507,12 +10624,17 @@ class Api:
             "player_promo_id": int
           }
 
-        Voice compliance (CONVENTIONS §14):
+        Voice compliance (CONVENTIONS §14 + §17.4 "Rich Not Thin"):
           - All estimated_* fields are voice descriptors (already
             in the DB per scouting.generate_scouting_report).
-          - scout_confidence (0-100 int) is OK to display — it's
-            the scout's own confidence rating, NOT a fighter
-            attribute. Wrapped in a voice phrase.
+          - Phase 7 / Task A5: the raw `scout_confidence` (0-100)
+            int has been DROPPED from the JSON payload. The UI
+            shows `confidence_phrase` ONLY ("HIGHLY CONFIDENT" /
+            "MODERATELY CONFIDENT" / "UNCERTAIN" / "WILD GUESS").
+            The previous "scout's own rating, NOT a fighter
+            attribute" carve-out was a §14 violation — a raw 0-100
+            int shown as text violates §17.4 regardless of
+            semantics. Same drop in `get_scouting_report()`.
           - contract_cost_estimate is a dollar value (carve-out OK).
           - eye_for_talent / technical_analysis / character_reading
             are scout attributes (0-100 ints) — wrapped in voice
@@ -10668,7 +10790,10 @@ class Api:
                     "contract_cost_estimate": contract_cost,
                     "contract_cost_display": _format_cash(
                         float(contract_cost or 0)) if contract_cost else "—",
-                    "scout_confidence": int(confidence or 0),
+                    # Phase 7 / Task A5 — raw scout_confidence (0-100
+                    # int) DROPPED from the JSON payload (per §17.4
+                    # "Rich Not Thin"). The UI shows `confidence_phrase`
+                    # ONLY ("HIGHLY CONFIDENT" / "UNCERTAIN" / etc.).
                     "confidence_phrase": _scout_confidence_phrase(
                         int(confidence or 0)),
                     "is_stale": bool(is_stale),
@@ -10924,7 +11049,10 @@ class Api:
                 "contract_cost_estimate": contract_cost,
                 "contract_cost_display": _format_cash(
                     float(contract_cost or 0)) if contract_cost else "—",
-                "scout_confidence": int(confidence or 0),
+                # Phase 7 / Task A5 — raw scout_confidence (0-100
+                # int) DROPPED from the JSON payload (per §17.4
+                # "Rich Not Thin"). The UI shows `confidence_phrase`
+                # ONLY. (Mirrors `get_scouting_data` change.)
                 "confidence_phrase": _scout_confidence_phrase(
                     int(confidence or 0)),
                 "is_stale": bool(is_stale),
@@ -13937,6 +14065,49 @@ class Api:
     def get_training_camps_data(self, page=1, filters=None):
         """Return paginated training camps for the Active Camps tab.
 
+        Phase 7 / Task A4 — §17.1 cache-table decision (NO-OP):
+
+          ``training_camps`` is listed as a SIMULATION table in
+          CONVENTIONS §17.3 (alongside `events`, `fights`, etc.).
+          Per §17.1, Office Mode UI screens MUST read from
+          `*_descriptors` cache tables only — direct reads of
+          simulation tables are a §14-class violation.
+
+          HOWEVER, training camps are short-lived operational
+          state, not fighter identity:
+
+            * A camp starts, trains for ~7-14 sim days, then ends
+              (``is_active`` → ``is_completed``).
+            * During the camp, ``camp_morale`` / ``camp_fatigue`` /
+              ``camp_injury_risk`` fluctuate per tick.
+            * When the camp ends, ``attribute_changes`` are applied
+              to the fighter's ``fighter_attributes`` row (which IS
+              then re-projected into ``fighter_descriptors`` via
+              the interpretation layer's standard refresh).
+
+          Building a ``training_camps_descriptors`` cache would be
+          a net loss — the data is too volatile (per-tick state
+          changes) and the projection would be stale before the
+          player could read it. This is operationally analogous to
+          the §17.2 Fight Night Exception: live operational data
+          that updates between ticks is read directly.
+
+          DECISION: NO CACHE — ``get_training_camps_data`` reads
+          directly from ``training_camps`` (acceptable per the
+          §17.2 carve-out spirit). The fighter-identity projection
+          (career_phase, momentum, etc.) is still routed through
+          ``fighter_descriptors`` via the standard interpretation
+          pass — this carve-out applies ONLY to the camp-state
+          fields (morale / fatigue / risk / days_remaining).
+
+          Future-proofing: if a future audit demotes this carve-
+          out, the fix would be to add a
+          ``training_camps_descriptors`` table written by the
+          existing daily interpretation pass (per-tick refresh
+          is too costly). The UI contract (camp_morale /
+          camp_fatigue / camp_injury_risk as 0-100 ints for bar
+          widths) would not change.
+
         Args:
           page:    int page number (20 camps per page)
           filters: {
@@ -14228,8 +14399,13 @@ class Api:
             "promo": {
               "promotion_id", "name", "current_cash", "starting_budget",
               "cash_display", "budget_display",
-              "reputation", "reputation_phrase",
-              "fan_trust", "fan_trust_phrase"
+              "reputation_phrase", "fan_trust_phrase"
+              # Phase 7 / Task A7 — raw reputation / fan_trust ints
+              # DROPPED from the JSON (per §17.4 "Rich Not Thin").
+              # The Finance screen's REPUTATION/FAN TRUST tiles use
+              # the voice phrases only. If a future Finance UI wants
+              # a bar fill, switch to _reputation_pct/_fan_trust_pct
+              # (already defined near _reputation_phrase).
             },
             "monthly_burn": {
               "total_expenses_30d", "daily_burn_30d",
@@ -14258,7 +14434,9 @@ class Api:
               "revenue_total", "expense_total",
               "net_profit", "net_profit_display",
               "show_rating": {
-                "overall_rating", "rating_phrase", "rating_tier", "rating_color"
+                "rating_phrase", "rating_tier", "rating_color"
+                # Phase 7 / Task A7 — raw overall_rating int DROPPED
+                # (per §17.4). UI shows rating_phrase + rating_tier only.
               } | null
             } | null,
             "type_options": [{"value", "label", "is_revenue"}]
@@ -14522,7 +14700,13 @@ class Api:
                     phrase, tier, color = self._archive_rating_phrase(
                         int(sr_overall) if sr_overall is not None else None)
                     show_rating = {
-                        "overall_rating": int(sr_overall) if sr_overall is not None else None,
+                        # Phase 7 / Task A7 — raw overall_rating int
+                        # DROPPED from the JSON (per §17.4 "Rich Not
+                        # Thin"). The finance UI shows rating_phrase +
+                        # rating_tier + rating_color (all voice/visual).
+                        # `sr_overall` is still consumed server-side to
+                        # pick the phrase/tier/color — it just doesn't
+                        # cross the API boundary as a raw int.
                         "rating_phrase": phrase,
                         "rating_tier": tier,
                         "rating_color": color,
@@ -14550,9 +14734,10 @@ class Api:
                     "starting_budget": starting_budget,
                     "cash_display": _format_cash(current_cash),
                     "budget_display": _format_cash(starting_budget),
-                    "reputation": reputation,
+                    # Phase 7 / Task A7 — raw reputation / fan_trust
+                    # ints DROPPED (per §17.4 "Rich Not Thin"). The
+                    # finance UI shows the voice phrases only.
                     "reputation_phrase": _reputation_phrase(reputation),
-                    "fan_trust": fan_trust,
                     "fan_trust_phrase": _fan_trust_phrase(fan_trust),
                 },
                 "monthly_burn": monthly_burn,

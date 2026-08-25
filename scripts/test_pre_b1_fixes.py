@@ -176,6 +176,22 @@ def build_fresh_db():
         check=True,
         cwd=PROJECT_DIR,
     )
+    # Force deterministic clock — Case F+G depend on tick advancing to
+    # 2026-07-21 (fighter's birthday, set via set_dob to 1980-07-21)
+    # for retirement to fire. build_db.py seeds the clock to 2026-01-01
+    # (NOT 2026-07-20), which breaks the test because tick → 2026-01-02
+    # is not the fighter's birthday. This override makes the test
+    # reproducible: SEEDED_CLOCK_DATE above is the source of truth.
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE simulation_clock "
+        "SET current_date='2026-07-20', current_day=20, "
+        "current_week=3, current_month=7, current_year=2026, "
+        "current_tick_type='day', tick_counter=0, "
+        "updated_at=CURRENT_TIMESTAMP WHERE clock_id=1"
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_column_info(conn, table_name):
@@ -770,9 +786,12 @@ def main():
         f"got={reigns_row}",
     ))
 
-    # F.4 Snapshot fighter_memory_links count before tick.
+    # F.4 Snapshot 'successor' fighter_memory_links count before tick.
+    # (Filtered to link_type='successor' — Phase 6 / v3.8.0 also creates
+    # a 'style_echo' link via services.memory_svc.populate_style_echo
+    # which is unrelated to the champion-successor feature under test.)
     mem_before = conn.execute(
-        "SELECT COUNT(*) FROM fighter_memory_links"
+        "SELECT COUNT(*) FROM fighter_memory_links WHERE link_type='successor'"
     ).fetchone()[0]
 
     # F.5 Set fighter 1 DOB to 1980-01-01 (age 46 → mandatory retirement).
@@ -795,11 +814,12 @@ def main():
 
     # F.8 Verify a fighter_memory_links 'successor' row was created
     #     linking the new replacement fighter to fighter 1.
+    # (Filtered to link_type='successor' — see F.4 note.)
     mem_after = conn.execute(
-        "SELECT COUNT(*) FROM fighter_memory_links"
+        "SELECT COUNT(*) FROM fighter_memory_links WHERE link_type='successor'"
     ).fetchone()[0]
     results.append((
-        "F", "1 fighter_memory_links row created by champion retirement",
+        "F", "1 'successor' fighter_memory_links row created by champion retirement",
         mem_after - mem_before == 1,
         f"before={mem_before}, after={mem_after}",
     ))
@@ -923,7 +943,7 @@ def main():
     conn.commit()
 
     mem_before_g = conn.execute(
-        "SELECT COUNT(*) FROM fighter_memory_links"
+        "SELECT COUNT(*) FROM fighter_memory_links WHERE link_type='successor'"
     ).fetchone()[0]
     legacy_before_g = conn.execute(
         "SELECT COUNT(*) FROM news_items WHERE topic='legacy'"
@@ -943,13 +963,18 @@ def main():
         f"got={f1_status_g}",
     ))
 
-    # G.6 Verify NO new fighter_memory_links rows created.
+    # G.6 Verify NO new 'successor' fighter_memory_links rows created.
+    # (Filtered to link_type='successor' — Phase 6 / v3.8.0 also creates
+    # a 'style_echo' link via services.memory_svc.populate_style_echo for
+    # ANY retirement where the replacement inherits the retiring
+    # fighter's archetype. The 'style_echo' link is unrelated to the
+    # champion-successor feature under test, so we filter it out.)
     mem_after_g = conn.execute(
-        "SELECT COUNT(*) FROM fighter_memory_links"
+        "SELECT COUNT(*) FROM fighter_memory_links WHERE link_type='successor'"
     ).fetchone()[0]
     results.append((
         "G",
-        "no fighter_memory_links rows created for non-champion retirement",
+        "no 'successor' fighter_memory_links rows created for non-champion retirement",
         mem_after_g == mem_before_g,
         f"before={mem_before_g}, after={mem_after_g}",
     ))
