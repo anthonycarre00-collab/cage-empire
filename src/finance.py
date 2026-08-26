@@ -354,13 +354,17 @@ _DEFAULT_VENUE_COST_PER_SEAT = 4  # fallback if venue_type unknown (was 5)
 # $50K-$200K. The tier multiplier scales the per-seat cost so:
 #   - Major promos: 1.0x (unchanged — $8 arena, $6 ballroom, etc.)
 #   - Mid promos:   0.7x ($5.60 arena, $4.20 ballroom, $2.80 theater)
-#   - Small promos: 0.4x ($3.20 arena, $2.40 ballroom, $1.60 theater,
-#                   $1.20 outdoor). A 3,489-seat theater at $1.60 =
-#                   $5,582 — closer to real-world regional venue rent.
+#   - Small promos: 0.3x ($2.40 arena, $1.80 ballroom, $1.20 theater,
+#                   $0.90 outdoor). A 3,489-seat theater at $1.20 =
+#                   $4,187 — close to real-world regional venue rent.
+#                   PHASE9-B: was 0.4x ($5,582), reduced to 0.3x to
+#                   give small promos more sustainability margin
+#                   (Phase 8 5y soak showed P5 + P9 nearly bankrupt
+#                   at -95%/-98%).
 _VENUE_COST_MULT_BY_TIER = {
     "major": 1.0,
     "mid":   0.7,
-    "small": 0.4,
+    "small": 0.3,
 }
 _VENUE_COST_MULT_DEFAULT = 1.0
 

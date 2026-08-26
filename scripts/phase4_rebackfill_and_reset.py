@@ -38,7 +38,7 @@ BACKFILL_SCRIPT = PROJECT_DIR / "scripts" / "backfill_finance_transactions.py"
 TIER_STARTING_CASH = {
     "major": 50_000_000,
     "mid":   10_000_000,
-    "small":  8_000_000,
+    "small":  10_000_000,  # PHASE9-B: was 8_000_000 (Phase 8), was 5_000_000 (Phase 4)
 }
 
 
@@ -68,7 +68,7 @@ def main() -> int:
         "ORDER BY size_tier, promotion_id",
     ).fetchall()
     for r in rows:
-        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 8_000_000)
+        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 10_000_000)
         print(
             f"  P{r['promotion_id']} ({r['size_tier']:6s}): "
             f"{r['name'][:30]:30s} cash ${r['current_cash']:>13,.0f} → "
@@ -105,7 +105,7 @@ def main() -> int:
         "ORDER BY size_tier, promotion_id",
     ).fetchall()
     for r in rows:
-        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 8_000_000)
+        new_cash = TIER_STARTING_CASH.get(r["size_tier"], 10_000_000)
         print(
             f"  P{r['promotion_id']} ({r['size_tier']:6s}): "
             f"{r['name'][:30]:30s} cash ${r['current_cash']:>13,.0f} → "

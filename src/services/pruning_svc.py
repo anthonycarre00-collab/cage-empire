@@ -198,23 +198,43 @@ _PRUNE_POLICY = (
     ("news_items",        "published_at",         365,
      "topic = 'gym_transfer'"),
     # ----------------------------------------------------------------
-    # PHASE8-B — fighter_memory_links unbounded growth fix.
+    # PHASE8-B + PHASE9-A — fighter_memory_links unbounded growth fix.
     #
     # Phase 7 5-year soak showed this table grew 762 → 20,091 rows
     # (+19,329 over 5y, ~3,866/year). At this rate a 20y soak would
     # reach ~77K rows. Memory links are valuable for narrative ("this
     # fighter is the successor to a former champion"), so we DON'T
-    # prune them too aggressively — only prune links older than 365
-    # days where BOTH fighters are retired (the link is no longer
-    # relevant to active gameplay). Active fighters' links are always
-    # kept regardless of age (they may surface in future memory
-    # resurfacing per src/interpretation/memory_engine.py).
+    # prune them too aggressively.
+    #
+    # PHASE8-B (original): pruned links older than 365 days where BOTH
+    # fighters were retired. Phase 8 5y soak showed this was too strict
+    # — most 'successor' links connect a retired champion (linked_
+    # fighter_id) to their ACTIVE replacement (fighter_id), so the
+    # "both retired" condition was rarely met. Table still grew to
+    # 19,976 rows over 5y.
+    #
+    # PHASE9-A (loosened): prune links older than 365 days where the
+    # linked_fighter_id (the older fighter — typically the retired
+    # champion) is retired, regardless of fighter_id's status. This
+    # prunes old successor links once the retired champion has been
+    # gone for a year. The active replacement's other links (style_
+    # echo, etc.) are kept because they may still surface in memory
+    # resurfacing.
     # ----------------------------------------------------------------
     ("fighter_memory_links", "created_at",          365,
-     "linked_fighter_id IN (SELECT fighter_id FROM fighters "
-     "WHERE is_retired=1) "
-     "AND fighter_id IN (SELECT fighter_id FROM fighters "
+     "link_type != 'style_echo' "
+     "AND linked_fighter_id IN (SELECT fighter_id FROM fighters "
      "WHERE is_retired=1)"),
+    # ----------------------------------------------------------------
+    # PHASE9-A — style_echo links: aggressive prune (90 days, no
+    # retirement condition). style_echo links are created on every
+    # retirement (populate_style_echo in services/memory_svc.py) + are
+    # less narratively valuable than successor links — they just record
+    # "this replacement fighter inherited the retiring fighter's
+    # archetype." After 90 days the narrative value is gone.
+    # ----------------------------------------------------------------
+    ("fighter_memory_links", "created_at",           90,
+     "link_type = 'style_echo'"),
 )
 
 

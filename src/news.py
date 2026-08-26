@@ -1929,6 +1929,31 @@ def generate_upcoming_fight_memory_news(conn, event):
             # sneak through).
             if fighter_a_id == fighter_b_id:
                 continue
+            # PHASE9-C — Fast pre-check: skip if no memory_links AND
+            # no fight_history exist between the two fighters (the
+            # common case — most fighter pairs have never met). This
+            # saves the 11-query surface_memories call per skipped
+            # fight, a ~10x speedup for the daily pass. Only fights
+            # with real history (links or previous fights) get the
+            # full surface_memories treatment.
+            has_link = conn.execute(
+                "SELECT 1 FROM fighter_memory_links "
+                "WHERE (fighter_id=? AND linked_fighter_id=?) "
+                "   OR (fighter_id=? AND linked_fighter_id=?) "
+                "LIMIT 1",
+                (fighter_a_id, fighter_b_id,
+                 fighter_b_id, fighter_a_id),
+            ).fetchone()
+            has_history = conn.execute(
+                "SELECT 1 FROM fight_history "
+                "WHERE (fighter_id=? AND opponent_id=?) "
+                "   OR (fighter_id=? AND opponent_id=?) "
+                "LIMIT 1",
+                (fighter_a_id, fighter_b_id,
+                 fighter_b_id, fighter_a_id),
+            ).fetchone()
+            if not has_link and not has_history:
+                continue  # no real history — skip surface_memories
             try:
                 nid = generate_fight_preview_memory_news(
                     conn, fight_id, fighter_a_id, fighter_b_id,

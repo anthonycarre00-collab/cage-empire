@@ -35,7 +35,7 @@ SIM_DATE = date(2026, 7, 20)
 CASH_BY_TIER = {
     "major": 50_000_000,
     "mid":   10_000_000,
-    "small":  8_000_000,  # Phase 8 PHASE8-A-ECONOMICS — was 5_000_000 (and 2_000_000 before NEWS-FINANCE-GYM-LEGACY Issue 7.3)
+    "small":  10_000_000,  # PHASE9-B: was 8M (Phase 8), was 5M (Phase 4), was 2M (NEWS-FINANCE-GYM-LEGACY Issue 7.3)
 }
 
 

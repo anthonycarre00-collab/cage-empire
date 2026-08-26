@@ -25,7 +25,7 @@ DB_PATH = PROJECT_ROOT / "data" / "cage_empire.db"
 CASH_BY_TIER = {
     "major": 50_000_000.0,
     "mid":   10_000_000.0,
-    "small":  8_000_000.0,
+    "small":  10_000_000.0,  # PHASE9-B: was 8M (Phase 8), 5M (Phase 4)
 }
 
 

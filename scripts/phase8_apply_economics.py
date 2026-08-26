@@ -51,9 +51,9 @@ BACKFILL_SCRIPT = PROJECT_DIR / "scripts" / "backfill_finance_transactions.py"
 TIER_STARTING_CASH = {
     "major": 50_000_000,
     "mid":   10_000_000,
-    "small":  8_000_000,
+    "small":  10_000_000,  # PHASE9-B: was 8_000_000, raised to 10M for sustainability
 }
-TIER_STARTING_CASH_FALLBACK = 8_000_000  # for unknown tier — be generous
+TIER_STARTING_CASH_FALLBACK = 10_000_000  # for unknown tier — be generous (PHASE9-B)
 
 
 def backup_db() -> int:
@@ -200,7 +200,7 @@ def main() -> int:
         print()
         print("=== Step 3: Reset all promo cash to Phase 8 starting values ===")
         n = reset_cash(db)
-        print(f"  Reset {n} promos to starting cash (small=$8M, mid=$10M, major=$50M)")
+        print(f"  Reset {n} promos to starting cash (small=$10M, mid=$10M, major=$50M)")
     finally:
         db.close()
 
