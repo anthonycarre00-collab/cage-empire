@@ -2,7 +2,7 @@
 
 A text-based MMA promotion management simulation. Build your promotion from the ground up — sign fighters, scout prospects, book cards, manage finances, and follow long-running fighter careers through retirement, injury, decline, and regeneration. The world evolves autonomously whether you're playing or not.
 
-> **Current state:** Schema 3.36.0 — 4,000 reseeded fighters (7-tier pyramid from Elite to Fringe), 2,000 grey-name historical opponents, 80,000 fight history rows, 78 champions across 10 promotions, 343 rivalries, full interpretation layer, autonomous rival AI with memory, roster caps, 5-year soak test completes in 7.5 minutes.
+> **Current state:** Schema 3.37.0, ENGINE_VERSION 1.10.0 — 4,470 active fighters (7-tier pyramid from Elite to Fringe), 2,000 grey-name historical opponents, 80,000 fight history rows, 78 champions across 10 promotions, 343 rivalries, full interpretation layer (fighter + gym + promotion descriptors), autonomous rival AI with memory, roster caps. 5-year soak test completes with 0 bankruptcies; 10-year soak test completes with 0 bankruptcies + 0 tick errors. Active UI is pywebview (desktop web app).
 
 ---
 
@@ -135,8 +135,8 @@ UI (web — 22 JS modules via bridge.js API)
 ```
 
 ### Database
-- **SQLite**, schema 3.36.0, 63+ tables, 48 migrations
-- **4,000 fighters** (7-tier pyramid) + 2,000 grey-name historical opponents
+- **SQLite**, schema 3.37.0, 63+ tables, 48 migrations, ENGINE_VERSION 1.10.0
+- **4,470 active fighters** (7-tier pyramid) + 2,000 grey-name historical opponents
 - **80,000 fight history rows** (avg 20 fights per fighter)
 - **Provenance:** world_version + seed_version in schema_meta
 - **Save:** file-copy + WAL checkpoint + .meta.json sidecar + 4-step compatibility check
